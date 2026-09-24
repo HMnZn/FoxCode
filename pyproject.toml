@@ -1,0 +1,16 @@
+[project]
+name = "foxcode"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "anthropic>=1.8.0",
+    "httpx>=0.28.1",
+    "ipykernel>=7.3.0",
+    "json-repair>=0.63.5",
+    "jsonschema>=4.26.0",
+    "openai>=3.19.0",
+    "pydantic>=2.13.5",
+    "pyyaml>=6.0.2",
+]

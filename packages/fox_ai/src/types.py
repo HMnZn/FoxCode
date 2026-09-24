@@ -1,0 +1,409 @@
+"""fox-ai 核心类型系统。
+"""
+
+from __future__ import annotations
+
+from typing import Annotated, Any, Literal
+
+from pydantic import BaseModel, ConfigDict, Field
+
+#: foxcode 已知的 API 名。
+KnownApi = Literal[
+    "openai-completions",
+    "mistral-conversations",
+    "openai-responses",
+    "azure-openai-responses",
+    "openai-codex-responses",
+    "anthropic-messages",
+    "bedrock-converse-stream",
+    "google-generative-ai",
+    "google-vertex",
+    "pi-messages",
+]
+
+#: Model.api 可以放任意字符串；允许第三方扩展
+Api = str
+
+#: 已知的 provider 名。
+KnownProvider = Literal[
+    "amazon-bedrock",
+    "anthropic",
+    "google",
+    "google-vertex",
+    "openai",
+    "azure-openai-responses",
+    "openai-codex",
+    "deepseek",
+    "github-copilot",
+    "xai",
+    "groq",
+    "cerebras",
+    "openrouter",
+    "vercel-ai-gateway",
+    "zai",
+    "zai-coding-cn",
+    "mistral",
+    "moonshotai",
+    "moonshotai-cn",
+    "together",
+    "fireworks",
+    "huggingface",
+    "nvidia",
+    "minimax",
+    "minimax-cn",
+    "qwen-token-plan",
+    "qwen-token-plan-cn",
+    "qwen-token-plan-individual",
+    "baseten",
+    "xiaomi",
+    "kimi-coding",
+    "opencode",
+    "opencode-go",
+    "cloudflare-workers-ai",
+    "cloudflare-ai-gateway",
+    "radius",
+    "ant-ling",
+]
+#: Model.provider 可以放任意字符串；允许第三方扩展
+ProviderId = str
+
+#: 思考级别（不含 off）。
+ThinkingLevel = Literal["minimal", "low", "medium", "high", "xhigh", "max"]
+
+#: 思考级别（含 off）。
+ModelThinkingLevel = Literal["off", "minimal", "low", "medium", "high", "xhigh", "max"]
+
+#: 是否调用工具。
+ToolChoice = Literal["auto", "none"]
+
+#: 不同 OpenAI-compatible 服务，对“思考 token 上限”的字段名称不一样。
+#: thinking_token_budget（vLLM）/ thinking_budget（Qwen/DashScope/SGLang）/
+#: thinking_budget_tokens（llama.cpp）。
+ThinkingTokenBudgetField = Literal[
+    "thinking_token_budget", "thinking_budget", "thinking_budget_tokens"
+]
+
+#: API 底层连接能力：
+CacheRetention = Literal["none", "short", "long"]
+Transport = Literal["sse", "websocket", "websocket-cached", "auto"]
+SessionAffinityFormat = Literal["openai", "openai-nosession", "openrouter"] #保持某些服务端会话的一致性。
+
+#: fox返回停止原因。
+StopReason = Literal["pending", "stop", "length", "toolUse", "error", "aborted"]
+
+class TextContent(BaseModel):
+    """文本内容块。"""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    type: Literal["text"] = "text"
+    text: str
+    #: 遗留签名或 TextSignatureV1 JSON。
+    text_signature: str | None = Field(default=None, alias="textSignature")
+
+class ThinkingContent(BaseModel):
+    """思考（reasoning）内容块。"""
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    type: Literal["thinking"] = "thinking"
+    thinking: str
+    #: reasoning API 不允许客户端简单地把 reasoning_details JSON 放在 content 里，
+    # 因此 provider 可能会返回一个签名，客户端可用它去请求 reasoning_details。
+    #: （如 OpenAI reasoning item ID / reasoning_details JSON）。
+    thinking_signature: str | None = Field(default=None, alias="thinkingSignature")
+    #: 为 True 时真实载荷在 thinking_signature 里。
+    redacted: bool = False
+
+class ToolCall(BaseModel):
+    """工具调用块。注意 discriminator 是 ``"toolCall"。"""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    type: Literal["toolCall"] = "toolCall"
+    id: str
+    name: str
+    arguments: dict[str, Any] = Field(default_factory=dict)
+    #: Google 特有的思考签名。
+    thought_signature: str | None = Field(default=None, alias="thoughtSignature")
+    #: OpenAI Responses 的命名空间（动态加载/命名空间工具调用）。仅类型对齐，
+    namespace: str | None = None
+
+class ImageContent(BaseModel):
+    """图像内容块。``data`` 为 base64 编码。"""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    type: Literal["image"] = "image"
+    data: str
+    mime_type: str = Field(alias="mimeType")
+
+#: 助手消息允许的内容块联合（无图像）。
+AssistantContentBlock = Annotated[
+    TextContent | ThinkingContent | ToolCall,
+    Field(discriminator="type"),
+]
+
+#: 用户消息允许的内容块联合（无思考、无工具调用）。
+UserContentBlock = Annotated[
+    TextContent | ImageContent,
+    Field(discriminator="type"),
+]
+
+#: 工具结果消息允许的内容块联合。
+ToolResultContentBlock = Annotated[
+    TextContent | ImageContent,
+    Field(discriminator="type"),
+]
+
+class UsageCost(BaseModel):
+    """单次调用的费用拆解（美元）。"""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    input: float = 0.0
+    output: float = 0.0
+    cache_read: float = Field(default=0.0, alias="cacheRead")
+    cache_write: float = Field(default=0.0, alias="cacheWrite")
+    total: float = 0.0
+
+class Usage(BaseModel):
+    """token 用量与费用。
+    """
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    input: int = 0
+    output: int = 0
+    cache_read: int = Field(default=0, alias="cacheRead")
+    cache_write: int = Field(default=0, alias="cacheWrite")
+    #: 仅 Anthropic 的 1h 缓存写入子集。
+    cache_write_1h: int | None = Field(default=None, alias="cacheWrite1h")
+    #: output 的子集；provider 不报告时为 None。
+    reasoning: int | None = None
+    total_tokens: int = Field(default=0, alias="totalTokens")
+    cost: UsageCost = Field(default_factory=UsageCost)
+
+# ============================================================
+# 消息（discriminated union on ``role``）
+# ============================================================
+class UserMessage(BaseModel):
+    """用户消息。``content`` 可为纯字符串或内容块数组。"""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    role: Literal["user"] = "user"
+    content: str | list[UserContentBlock]
+    #: Unix 毫秒时间戳。
+    timestamp: int = 0
+
+
+class AssistantMessage(BaseModel):
+    """助手消息。``content`` 始终为数组，含工具调用。"""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    role: Literal["assistant"] = "assistant"
+    content: list[AssistantContentBlock] = Field(default_factory=list)
+    api: Api = ""
+    provider: ProviderId = ""
+    model: str = ""
+    response_model: str | None = Field(default=None, alias="responseModel")
+    response_id: str | None = Field(default=None, alias="responseId")
+    #: 本次响应用到的 provider 原生 effort 级别；遗留/非托管响应为 None。
+    #: 对应上游 ``providerThinkingLevel``。
+    provider_thinking_level: str | None = Field(default=None, alias="providerThinkingLevel")
+    diagnostics: list[dict[str, Any]] | None = None
+    usage: Usage = Field(default_factory=Usage)
+    stop_reason: StopReason = Field(default="pending", alias="stopReason")
+    error_message: str | None = Field(default=None, alias="errorMessage")
+    raw_stop_reason: str | None = Field(default=None, alias="rawStopReason")
+    #: provider 是否显式结束了本轮（如 Codex end_turn）。仅用于调试，
+    #: 不影响 agent 控制流。仅类型对齐，本端未实现 Responses/Codex API。
+    end_turn: bool | None = Field(default=None, alias="endTurn")
+    timestamp: int = 0
+
+class ToolResultMessage(BaseModel):
+    """工具结果消息。"""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    role: Literal["toolResult"] = "toolResult"
+    tool_call_id: str = Field(alias="toolCallId")
+    tool_name: str = Field(alias="toolName")
+    content: list[ToolResultContentBlock] = Field(default_factory=list)
+    details: Any = None
+    usage: Usage | None = None
+    added_tool_names: list[str] | None = Field(default=None, alias="addedToolNames")
+    is_error: bool = Field(default=False, alias="isError")
+    timestamp: int = 0
+
+#: 消息联合（按 role 判别）。对应上游 ``Message``。
+Message = Annotated[
+    UserMessage | AssistantMessage | ToolResultMessage,
+    Field(discriminator="role"),
+]
+
+# ============================================================
+# Tool / Context
+# ============================================================
+class Tool(BaseModel):
+    """工具定义。``parameters`` 是 JSON Schema dict（对应上游 typebox TSchema）。"""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    name: str
+    description: str
+    parameters: dict[str, Any] = Field(default_factory=dict)
+    constrained_sampling: dict[str, Any] | Literal[False] | None = Field(
+        default=None, alias="constrainedSampling"
+    )
+
+    def to_json_schema(self) -> dict[str, Any]:
+        """返回给 LLM 的 JSON Schema。"""
+        schema = dict(self.parameters)
+        schema.pop("title", None)
+        return schema
+class Context(BaseModel):
+    """LLM 调用上下文。system prompt 是普通字符串字段（无 SystemMessage）。"""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    system_prompt: str | None = Field(default=None, alias="systemPrompt")
+    messages: list[Message] = Field(default_factory=list)
+    tools: list[Tool] | None = None
+
+# ============================================================
+# Model
+# ============================================================
+class ModelCostRates(BaseModel):
+    """每百万 token 的费率（美元）。"""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    input: float = 0.0
+    output: float = 0.0
+    cache_read: float = Field(default=0.0, alias="cacheRead")
+    cache_write: float = Field(default=0.0, alias="cacheWrite")
+class ModelCostTier(ModelCostRates):
+    """阶梯费率：超过 ``input_tokens_above`` 后适用。"""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    input_tokens_above: int = Field(alias="inputTokensAbove")
+class ModelCost(ModelCostRates):
+    """模型费率（可含阶梯）。"""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    tiers: list[ModelCostTier] | None = None
+
+class Model(BaseModel): #模型元数据 + 如何连接模型的信息。
+    """LLM 模型描述。对应上游 ``Model<TApi>``（泛型在 Python 退化为 ``api: str``）。
+
+    ``compat`` 按 ``api`` 值条件存在；此处用宽松 dict 承载，具体校验在 provider 侧。
+    """
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    id: str
+    name: str
+    api: Api
+    provider: ProviderId
+    base_url: str = Field(alias="baseUrl")
+    reasoning: bool = False
+    thinking_level_map: dict[str, str | None] | None = Field(default=None, alias="thinkingLevelMap")
+    input: list[Literal["text", "image"]] = Field(default_factory=list)
+    cost: ModelCost = Field(default_factory=ModelCost)
+    context_window: int = Field(default=0, alias="contextWindow")
+    max_tokens: int = Field(default=0, alias="maxTokens")
+    #: 模型级默认采样参数。对应上游 ``Model.samplingParams``。
+    #: 由 OpenAI-compatible 适配器合并进请求体；请求级 ``StreamOptions.sampling_params``
+    #: 按 key 覆盖模型级。其他 API 忽略。
+    sampling_params: dict[str, Any] | None = Field(default=None, alias="samplingParams")
+    headers: dict[str, str] | None = None
+    compat: dict[str, Any] | None = None #Provider/API 兼容性逃生口。
+
+# ============================================================
+# 流式选项
+# ============================================================
+
+
+class StreamOptions(BaseModel): #这一次怎么调用？
+    """流式调用选项。函数类型的字段（onPayload/onResponse/signal）不放进模型，
+    由 provider 实现按需从 options 取用。"""
+
+    model_config = ConfigDict(extra="allow", populate_by_name=True, arbitrary_types_allowed=True)
+
+    temperature: float | None = None
+    max_tokens: int | None = Field(default=None, alias="maxTokens")
+    #: 请求级采样参数。对应上游 ``StreamOptions.samplingParams``。
+    #: 由 OpenAI-compatible 适配器在具名字段之后合并进请求体（因此自定义键覆盖
+    #: 具名字段），合并时按 key 覆盖 ``Model.sampling_params``。例如可传
+    #: ``top_p``/``top_k``/``min_p``/``repetition_penalty`` 给 llama.cpp/vLLM/SGLang
+    #: 等服务器。其他 API 忽略。
+    sampling_params: dict[str, Any] | None = Field(default=None, alias="samplingParams")
+    api_key: str | None = Field(default=None, alias="apiKey")
+    http_client: Any = Field(default=None, alias="httpClient", exclude=True)
+    transport: Transport | None = None
+    cache_retention: CacheRetention | None = Field(default=None, alias="cacheRetention")
+    session_id: str | None = Field(default=None, alias="sessionId")
+    headers: dict[str, str | None] | None = None
+    timeout_ms: int | None = Field(default=None, alias="timeoutMs")
+    max_retries: int | None = Field(default=None, alias="maxRetries")
+    max_retry_delay_ms: int | None = Field(default=None, alias="maxRetryDelayMs")
+    cancel_event: Any = Field(default=None, alias="cancelEvent", exclude=True) #打断
+    metadata: dict[str, Any] | None = None
+    env: dict[str, str] | None = None
+class SimpleStreamOptions(StreamOptions):
+    """带思考级别的简化流式选项。"""
+
+    model_config = ConfigDict(extra="allow", populate_by_name=True, arbitrary_types_allowed=True)
+
+    reasoning: ThinkingLevel | None = None
+    thinking_budgets: dict[str, int] | None = Field(default=None, alias="thinkingBudgets")
+    #: provider 中性的工具选择（"auto"/"none"）。省略时适配器使用
+    #: provider 私有行为。对应上游 ``SimpleStreamOptions.toolChoice``。
+    tool_choice: ToolChoice | None = Field(default=None, alias="toolChoice")
+
+__all__ = [
+    # 字面量
+    "Api",
+    "KnownApi",
+    "KnownProvider",
+    "ProviderId",
+    "ThinkingLevel",
+    "ModelThinkingLevel",
+    "ToolChoice",
+    "ThinkingTokenBudgetField",
+    "CacheRetention",
+    "Transport",
+    "SessionAffinityFormat",
+    "StopReason",
+    # 内容块
+    "TextContent",
+    "ThinkingContent",
+    "ImageContent",
+    "ToolCall",
+    "AssistantContentBlock",
+    "UserContentBlock",
+    "ToolResultContentBlock",
+    # usage
+    "UsageCost",
+    "Usage",
+    # 消息
+    "UserMessage",
+    "AssistantMessage",
+    "ToolResultMessage",
+    "Message",
+    # tool / context
+    "Tool",
+    "Context",
+    # model
+    "ModelCostRates",
+    "ModelCostTier",
+    "ModelCost",
+    "Model",
+    # 选项
+    "StreamOptions",
+    "SimpleStreamOptions",
+]
