@@ -5,14 +5,16 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from fox_ai.src import AssistantMessage, EventStream, StartEvent, TextContent, ToolCall, ToolResultMessage, UserMessage
 from fox_ai.src.providers.faux import FAUX_MODEL, FauxScript, clear_scripts, faux_api_provider, push_script
-from fox_agent_core import (
-    Agent, AgentOptions, AgentContext, AgentLoopConfig, AgentState, AgentToolResult,
-    AgentHarness, AgentHarnessOptions, CompactionSettings, FunctionTool,
-    Session, JsonlSessionStorage, agent_loop, agent_loop_continue, compact, find_cut_point,
+from fox_agent_core.src import (
+    Agent, AgentOptions, AgentContext, AgentLoopConfig, AgentState, AgentToolResult, agent_loop, agent_loop_continue
+)
+from fox_coding_agent.src import (
+    AgentHarness, AgentHarnessOptions, CompactionSettings, Session, JsonlSessionStorage, compact, find_cut_point
 )
 
 
@@ -36,11 +38,17 @@ def make_agent(stream, tools=None, **options):
     return Agent(AgentOptions(initial_state={"model": FAUX_MODEL, "tools": tools or []}, stream_fn=stream, **options))
 
 
+def tool_fixture(name, description, parameters, handler, execution_mode=None):
+    """Test-only structural AgentTool fixture; execute handlers are asynchronous."""
+    return SimpleNamespace(name=name, label=name, description=description, parameters=parameters,
+                           execute=handler, execution_mode=execution_mode)
+
+
 def echo_tool(handler=None, mode=None):
     async def echo(call_id, args, cancel, update):
         return AgentToolResult([TextContent(text=args["value"])])
 
-    return FunctionTool("echo", "Echo text", {"type": "object", "properties": {"value": {"type": "string"}},
+    return tool_fixture("echo", "Echo text", {"type": "object", "properties": {"value": {"type": "string"}},
                         "required": ["value"], "additionalProperties": False}, handler or echo, execution_mode=mode)
 
 
@@ -300,7 +308,7 @@ class SessionAndHarnessTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(restored.build_context()), 2)
         before = file.read_bytes()
         count = len(restored.get_entries())
-        with patch("fox_agent_core.harness.session.os.replace", side_effect=OSError("disk full")):
+        with patch("fox_coding_agent.src.core.session.os.replace", side_effect=OSError("disk full")):
             with self.assertRaises(OSError):
                 restored.append_message(UserMessage(content="lost"))
         self.assertEqual(file.read_bytes(), before)

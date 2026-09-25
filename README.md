@@ -1,19 +1,51 @@
-# FoxCode · 精简 Agent 内核
+# FoxCode · Mini Coding Agent
 
-`packages/fox_agent_core` 是参考 pi-agent 分层设计的 Python 实现，模型调用由现有 `fox_ai` 提供。
+`fox_agent_core` 提供通用循环与状态；`fox_coding_agent/src/core` 提供 Session、Compaction、Tools、Skill、配置、System Prompt、Extensions 和运行时。包边界遵循 pi 的 agent-core → coding-agent 分层，模型调用由 `fox_ai` 提供。
 
-面试准备与架构学习可阅读：[fox_agent_core 架构学习与面试指南](packages/fox_agent_core/ARCHITECTURE_GUIDE.md)。文档按 16 章讲解职责划分、运行流程、设计理由、失败处理与工程取舍。
+现已增加可复用的 `AgentSessionRuntime`、`SettingsManager`、`ResourceLoader`，以及独立 `fox_coding_agent` CLI。分层设计、配置示例与恢复语义见 [架构指南·宿主运行时与 CLI](packages/fox_coding_agent/ARCHITECTURE_GUIDE.md#ch01)。
 
-动手实验可打开：[fox_agent_core 真实模型 Notebook](packages/fox_agent_core/AGENT_CORE_LAB.ipynb)。默认沿用已有 DeepSeek 配置，依次学习真实工具调用、JSONL 会话恢复、Skill 加载，以及真实摘要请求驱动的手动和自动压缩；包含事件观察、文件验证和请求用量统计。在 VS Code 中选择项目 `.venv` 的 Python 3.14 内核，从上到下运行即可，密钥从 `DEEPSEEK_API_KEY` 或根目录 `.env` 读取。
+在项目根目录运行 `uv sync` 安装 `fox`。模型目录与凭据统一放在用户级 `~/.foxcode/auth.json`，Windows 下为 `C:\Users\Qin\.foxcode\auth.json`。模板见 [examples/auth.json](examples/auth.json)，填写其中的 `apiKey`；无需创建 settings.json。模型 ID、预算、费率和兼容映射沿用用户提供的配置。
 
-Notebook 默认将实验保存在项目的 `.foxcode/labs/agent-core/<运行编号>/`，其中 `sessions/main.jsonl` 保存会话，`workspace/` 保存练习文件和 Skill，`request_metrics.json` 保存用量。配置单元中设置 `STORAGE_SCOPE = "user"` 可改存到 `Path.home() / ".foxcode"`（使用 Windows Python 时为 `C:\Users\Qin\.foxcode`）。每次重新运行准备单元都会创建独立目录，旧会话保留；项目 `.foxcode/` 已加入 Git 忽略规则。
+```powershell
+uv run fox --interactive
+uv run fox --list-models
+uv run fox --model deepseek/deepseek-v4-pro --thinking high -p "阅读 README.md，说明项目架构"
+uv run fox --resume -p "继续解释 Session"
+uv run fox -p "检查目录结构" --json
+uv run fox --resume --compact
+```
+
+会话默认写入项目 `.foxcode/sessions/`；配置 `session_scope: "user"` 后写入用户 `.foxcode/sessions/<项目路径哈希>/`。`--resume <文件路径>` 支持指定历史会话，`--resume` 不带路径选取当前项目最近会话。正常输出在 stdout，会话路径和诊断在 stderr。
+
+交互中用 `/model` 列出模型，`/model deepseek/deepseek-v4-pro` 切换；`/thinking` 查看当前强度，`/thinking high`、`/thinking xhigh` 或 `/thinking off` 设置。新会话默认选 auth.json 中第一个模型、思考关闭；模型与思考级别会保存到 Session。`/cwd` 切换项目后继续从同一用户目录取凭据，密钥不会进入 Session。修改 auth.json 后使用 `/reload`；想应用已修改的模型元数据，再执行 `/model 名称`。
+
+设置文件只作为可选的运行策略覆盖。当前项目原来的配置备份为 `.foxcode/settings.before-auth.json`，不会参与加载；工具、压缩等使用代码默认值。
+
+面试准备先读内核的 11 章，再读编码宿主的 8 章，分别理解通用机制与项目策略。
+
+学习资料按包拆分，每个包各一份指南和可独立运行的真实模型 Notebook：
+
+| 包 | 架构讲解 | 动手实验 |
+| --- | --- | --- |
+| fox_agent_core | [内核指南](packages/fox_agent_core/ARCHITECTURE_GUIDE.md) | [模型、工具协议、事件和 follow-up](packages/fox_agent_core/AGENT_CORE_LAB.ipynb) |
+| fox_coding_agent | [宿主指南](packages/fox_coding_agent/ARCHITECTURE_GUIDE.md) | [文件工具、Session、Skill、压缩和 Runtime](packages/fox_coding_agent/CODING_AGENT_LAB.ipynb) |
+
+VS Code 选择 Python 3.14+ 内核，按顺序运行。密钥从 `DEEPSEEK_API_KEY` 或根目录 `.env` 读取，宿主实验数据保存到项目 `.foxcode/labs/coding-agent/`。拆分后的 Notebook 已清空旧输出。
+
+编码宿主 Notebook 的实验目录包含 `sessions/main.jsonl`、`workspace/` 和 `request_metrics.json`。准备 workspace 的单元中设置 `STORAGE_SCOPE = "user"` 可改存到 `Path.home() / ".foxcode"`（Windows Python 下通常是 `C:\Users\Qin\.foxcode`）。每次准备实验都会创建独立目录，旧会话保留；项目 `.foxcode/` 已加入 Git 忽略规则。内核 Notebook 不保存会话。
 
 ```text
-AgentHarness                 对外入口：会话、压缩、技能、基础工具
-    └── Agent                状态、订阅、steering / follow-up、取消
-          └── agent_loop     多轮模型调用 → 参数校验 → 工具执行 → 回传结果
-                └── fox_ai   OpenAI / Anthropic / Faux 流式接口
+fox CLI / Notebook
+    └── AgentSessionRuntime  Session/cwd 切换、Settings、ResourceLoader、重载
+        └── AgentHarness     会话、压缩、技能、基础工具
+            └── Agent        状态、订阅、steering / follow-up、取消
+                └── agent_loop  多轮模型调用 → 参数校验 → 工具执行 → 回传结果
+                    └── fox_ai  OpenAI / Anthropic / Faux 流式接口
 ```
+
+连续对话中支持 `/help`、`/new`、`/resume 文件`、`/cwd 目录`、`/reload`、`/compact`、`/tools`、`/model`、`/thinking`、`/skill 名称`、`/prompt 名称` 和扩展命令。`fox` 在交互终端无任务参数时也会进入连续对话。
+
+扩展示例：[project_info.py](examples/extensions/project_info.py)。显式加载：`fox --extension examples/extensions/project_info.py --command project-info`（需先配置模型）。详细 API 与边界见[宿主指南·第六章](packages/fox_coding_agent/ARCHITECTURE_GUIDE.md#ch06)。
 
 ## 运行离线示例
 
@@ -26,7 +58,7 @@ uv run python examples/mini_agent.py
 
 示例用 Faux 模型在临时目录执行 `write → read → 最终回复`，随后从 JSONL 恢复会话。不使用真实模型，也不需要 API key。
 
-项目采用 `packages/` 源码布局。运行自己的脚本或测试前，把它加入模块搜索路径：
+项目采用 `packages/` 源码布局，内核实现在 `fox_agent_core/src/`，通用 Agent 从 `fox_agent_core.src` 导入，宿主与运行时从 `fox_coding_agent` 导入。`uv sync` 安装项目后可直接导入；未安装时可把源码目录加入模块搜索路径：
 
 ```powershell
 $env:PYTHONPATH = "$PWD/packages"
@@ -44,7 +76,7 @@ PYTHONPATH=packages uv run python -m unittest discover -s tests -v
 ```python
 import asyncio
 from fox_ai.src import get_model
-from fox_agent_core import AgentHarness, AgentHarnessOptions, Session, JsonlSessionStorage
+from fox_coding_agent.src import AgentHarness, AgentHarnessOptions, Session, JsonlSessionStorage
 
 async def main():
     model = get_model("openai", "gpt-4o-mini")  # 使用 fox_ai 本地注册表中的模型
@@ -72,7 +104,7 @@ asyncio.run(main())
 
 真实调用的凭据通过 `OPENAI_API_KEY` / `ANTHROPIC_API_KEY`、`stream_options["api_key"]` 或 `get_api_key(provider)` 提供。内核不自动加载 `.env`。重新打开相同 JSONL 会恢复消息与配置；省略 `model` 时使用会话保存的模型，显式传入则切换模型。工具的 Python 实现和技能仍由当前进程提供。
 
-不需要持久化时，省略 `session`，默认使用内存会话。`tools=None` 使用四个内置工具，`tools=[]` 禁用工具；`skills=None` 自动发现技能，`skills=[]` 禁用技能。
+不需要持久化时，省略 `session`，默认使用内存会话。`tools=None` 使用内置编码工具，`tools=[]` 禁用工具；`skills=None` 自动发现技能，`skills=[]` 禁用技能。
 
 ## 循环与队列
 
@@ -100,31 +132,34 @@ asyncio.run(main())
 | `write` | `path`, `content` | 创建父目录，原子覆盖文件 |
 | `edit` | `path`, `old_text`, `new_text` | 精确匹配一次后替换；无匹配或多次匹配时报错 |
 | `bash` | `command`, `timeout?` | 执行命令，默认超时 120 秒，输出有上限 |
+| `grep` | `pattern`, `path?`, `glob?`, `literal?`, `ignoreCase?`, `context?`, `limit?` | 内容搜索；正则需要 rg，纯文本搜索可使用 Python 后备实现 |
+| `find` | `pattern`, `path?`, `limit?` | glob 查找文件，尊重嵌套 .gitignore |
+| `ls` | `path?`, `limit?` | 列出目录，包含隐藏条目 |
+| `powershell` | `command`, `timeout?` | PowerShell 命令，支持超时、取消和输出上限 |
 
 Windows 上 `bash` 需要 Git Bash，或自行传入 `BashTool(cwd, shell=...)`。`cwd` 只用于解析相对路径，不是沙箱。需要限制工具权限时，在 `before_tool_call` 中返回 `{"block": True, "reason": "..."}`。文件工具限制单个文本文件 10 MiB，输出限制约 20000 字符。
 
 批次默认并行；只要存在标记为 `sequential` 的工具，整批串行。`write/edit/bash` 默认为串行，避免同批文件修改互相竞争。参数按 JSON Schema 校验，错误作为工具结果交给模型。
 
-自定义工具可以实现 `AgentTool` 协议，也可以使用包装器：
+自定义工具直接实现 `AgentTool` 协议，无需继承基类或额外包装器：
 
 ```python
 from fox_ai.src import TextContent
-from fox_agent_core import FunctionTool, AgentToolResult
+from fox_agent_core.src import AgentToolResult
 
-async def greet(call_id, params, cancel_event, on_update):
-    return AgentToolResult(content=[TextContent(text=f"你好，{params['name']}")])
+class GreetTool:
+    name = "greet"
+    label = "打招呼"
+    description = "向指定的人打招呼"
+    parameters = {
+        "type": "object", "properties": {"name": {"type": "string"}},
+        "required": ["name"], "additionalProperties": False,
+    }
 
-tool = FunctionTool(
-    name="greet",
-    description="向指定的人打招呼",
-    parameters={
-        "type": "object",
-        "properties": {"name": {"type": "string"}},
-        "required": ["name"],
-        "additionalProperties": False,
-    },
-    handler=greet,
-)
+    async def execute(self, call_id, params, cancel_event=None, on_update=None):
+        return AgentToolResult(content=[TextContent(text=f"你好，{params['name']}")])
+
+tool = GreetTool()
 ```
 
 自定义异步工具应在 `finally` 中释放资源，并允许 `CancelledError` 传播。同步阻塞代码不能被 asyncio 及时取消。`on_update(AgentToolResult(...))` 可发送进度，内核会保证这些更新先于工具结束事件。
@@ -136,7 +171,7 @@ Session 保存树形历史，`harness.move_to(entry_id)` 切换分支，`harness
 JSONL 使用临时文件与原子替换，写入失败不会覆盖旧文件；它适合单进程、单写入者的小型会话。进程中断后，缺失的工具结果会标记为“结果未知”，不会自动重放可能已经写过文件的工具。
 
 ```python
-from fox_agent_core import CompactionSettings
+from fox_coding_agent.src import CompactionSettings
 
 options = AgentHarnessOptions(
     model=model,
@@ -156,6 +191,6 @@ token 数采用字符与图片的启发式估算，不是精确 tokenizer。摘�
 
 ## 精简范围
 
-已包含多轮调用、流式事件、队列、取消、工具钩子与校验、会话恢复与分支、自动/手动压缩、技能和四个编码工具。`max_retries` 透传给 fox_ai，处理建立模型请求时的短暂失败；不自动重放工具或重试已经输出部分内容的整轮对话。
+已包含多轮调用、流式事件、队列、取消、工具钩子与校验、会话恢复与分支、自动/手动压缩、技能和八种编码工具（PowerShell 默认仅在 Windows 启用）。`max_retries` 透传给 fox_ai，处理建立模型请求时的短暂失败；不自动重放工具或重试已经输出部分内容的整轮对话。
 
-尚未实现 pi-main 的持久任务调度、lane、checkpoint/replay、扩展系统、交互式权限 UI、终端界面和完整 provider 兼容层。`branch_summary/session_info` 等预留条目类型也没有完整业务流程。这些可以作为宿主层后续能力添加，普通 agent 循环不依赖它们。
+已增加配置管理、统一资源加载、运行时切换、按工具组装的 system prompt、Python 扩展，以及 CLI（单次文本/JSON、纯文本连续对话、恢复会话）。尚未实现 pi-main 的持久任务调度、lane、checkpoint/replay、完整插件系统、交互式权限 UI、终端界面和完整 provider 兼容层。ExtensionRunner 支持显式加载扩展、工具注册、命令、提示规则与事件钩子，ResourceLoader 仍保留资源 provider 接口；`branch_summary/session_info` 等预留条目类型仍没有完整业务流程。这些可以作为宿主层后续能力添加，普通 agent 循环不依赖它们。

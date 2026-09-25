@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "packages"))
 
 from fox_ai.src import ToolCall
 from fox_ai.src.providers.faux import FAUX_MODEL, FauxScript, clear_scripts, push_script
-from fox_agent_core import AgentHarness, AgentHarnessOptions, JsonlSessionStorage, Session
+from fox_coding_agent.src import AgentHarness, AgentHarnessOptions, JsonlSessionStorage, Session
 
 
 async def main():

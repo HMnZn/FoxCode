@@ -1,6 +1,6 @@
 """上下文压缩（Compaction）。
 
-对应上游 ``packages/agent/src/harness/compaction/compaction.ts``。
+参考上游 ``packages/coding-agent/src/core/compaction/compaction.ts``。
 
 核心功能：
 - ``estimate_tokens``：粗估消息的 token 数（字符数 / 4 的启发式）。
@@ -31,7 +31,7 @@ from fox_ai.src import (
     ImageContent,
     stream_simple,
 )
-from .._async import cancellable, check_cancelled
+from fox_agent_core.src._async import cancellable, check_cancelled
 
 #: ASCII 文本约 4 字符/token；非 ASCII 字符另按 1 字符/token 粗估。
 _CHARS_PER_TOKEN = 4

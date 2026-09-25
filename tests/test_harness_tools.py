@@ -9,10 +9,11 @@ from unittest.mock import AsyncMock, patch
 
 from fox_ai.src import AssistantMessage, Context, EventStream, SimpleStreamOptions, TextContent, ThinkingContent, UserMessage
 from fox_ai.src.providers.faux import FAUX_MODEL
-from fox_agent_core import (
-    Agent, AgentOptions, AgentState, AgentHarness, AgentHarnessOptions,
-    Session, CompactionSettings, ReadTool, WriteTool, EditTool, BashTool,
-    LoadSkillsOptions, load_skills, generate_summary,
+from fox_agent_core.src import (
+    Agent, AgentOptions, AgentState
+)
+from fox_coding_agent.src import (
+    AgentHarness, AgentHarnessOptions, Session, CompactionSettings, ReadTool, WriteTool, EditTool, BashTool, LoadSkillsOptions, load_skills, generate_summary
 )
 
 

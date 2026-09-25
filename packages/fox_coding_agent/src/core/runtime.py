@@ -1,0 +1,426 @@
+"""AgentHarness 的宿主生命周期：切换 Session/cwd、重载资源、保持订阅。"""
+
+from __future__ import annotations
+
+import hashlib
+import os
+from pathlib import Path
+from uuid import uuid4
+
+from fox_ai.src import Model, SimpleStreamOptions, stream_simple
+from fox_agent_core.src._async import maybe_await, cancellable
+import asyncio
+from .harness import AgentHarness, AgentHarnessOptions
+from .resources import ResourceLoader
+from .session import InMemorySessionStorage, JsonlSessionStorage, Session
+from .settings import SettingsManager
+from .auth import AuthStore
+from .tools import create_all_tools
+from .system_prompt import build_system_prompt
+from .extensions import ExtensionRunner, ExtensionContext
+
+
+class AgentSessionRuntime:
+    """一个 runtime 拥有一个当前 Harness；订阅在切换后继续生效。
+
+    使用 prompt/continue_/invoke_* 启动任务。切换会取消并等待旧任务持久化；
+    change_cwd 创建独立新会话，reload 保留当前会话和待处理消息。
+    构造或加载失败时保留旧 Harness。工具工厂接收新 cwd，避免复用旧路径。
+    """
+
+    def __init__(self, cwd: str | Path = ".", *, model: Model | None = None,
+                 session_file: str | Path | None = None, user_dir: str | Path | None = None,
+                 settings_overrides: dict | None = None, stream_fn=None, stream_options: dict | None = None,
+                 resource_providers=(), tool_factory=None, before_tool_call=None, after_tool_call=None,
+                 extension_paths=(), extension_factories=(), summary_fn=None):
+        self.user_dir = Path(user_dir).expanduser().resolve() if user_dir else Path.home() / ".foxcode"
+        self.auth_store = AuthStore(self.user_dir)
+        self._overrides = settings_overrides or {}
+        self._stream_fn, self._stream_options = stream_fn, dict(stream_options or {})
+        self._providers = tuple(resource_providers)
+        self._tool_factory = tool_factory or create_all_tools
+        self._extension_paths = tuple(Path(p).expanduser().resolve() for p in extension_paths)
+        self._extension_factories = tuple(extension_factories)
+        self._summary_fn = summary_fn
+        self._preparing = False
+        self._hook_cancel = None
+        self._before, self._after = before_tool_call, after_tool_call
+        self._listeners = []
+        self._changing = False
+        self._closed = False
+        cwd = Path(cwd).expanduser().resolve()
+        session = None
+        if session_file is not None:
+            path = self._existing_file(session_file)
+            session = Session(JsonlSessionStorage(path))
+            cwd = Path(session.storage.get_metadata().get("cwd", str(cwd))).expanduser().resolve()
+        else:
+            path = None
+        settings, loader, resources = self._prepare(cwd)
+        selected = self._model(model, session, settings)
+        if session is None:
+            path, session = self._new_session(cwd, settings)
+        harness = self._build(cwd, session, selected, settings, resources)
+        try:
+            self._persist_new(harness, path)
+        except BaseException:
+            harness.extensions.dispose()
+            raise
+        self._install(cwd, path, settings, loader, resources, harness)
+
+    @staticmethod
+    def _existing_file(path) -> Path:
+        path = Path(path).expanduser().resolve()
+        if not path.is_file() or path.stat().st_size == 0:
+            raise FileNotFoundError(f"Session file does not exist or is empty: {path}")
+        return path
+
+    def _prepare(self, cwd):
+        if not cwd.is_dir():
+            raise NotADirectoryError(f"Working directory does not exist: {cwd}")
+        settings = SettingsManager(cwd, user_dir=self.user_dir, overrides=self._overrides)
+        loader = ResourceLoader(cwd, user_dir=self.user_dir, providers=self._providers)
+        return settings, loader, loader.load()
+
+    def _model(self, explicit, session, manager):
+        saved = session.build_settings().get("model") if session is not None else None
+        selected = explicit or (Model.model_validate(saved) if saved else manager.settings.model)
+        if selected is None:
+            configured = self.auth_store.default()
+            selected = configured.model if configured else None
+        if selected is None:
+            raise ValueError(f"A model is required: configure {self.user_dir / 'auth.json'} or pass --model.")
+        return selected
+
+    @staticmethod
+    def _session_dir(cwd: Path, manager: SettingsManager) -> Path:
+        if manager.settings.session_scope == "user":
+            # A separate namespace per project keeps --resume from selecting another project's history.
+            key = hashlib.sha256(os.path.normcase(str(cwd)).encode()).hexdigest()[:16]
+            return manager.user_dir / "sessions" / key
+        return cwd / ".foxcode" / "sessions"
+
+    @classmethod
+    def latest_session(cls, cwd: str | Path = ".", *, user_dir=None) -> Path:
+        cwd = Path(cwd).expanduser().resolve()
+        manager = SettingsManager(cwd, user_dir=user_dir)
+        files = list(cls._session_dir(cwd, manager).glob("*.jsonl"))
+        if not files:
+            raise FileNotFoundError(f"No saved sessions for {cwd}")
+        return max(files, key=lambda path: (path.stat().st_mtime_ns, path.name))
+
+    def _new_session(self, cwd, settings):
+        path = self._session_dir(cwd, settings) / f"{uuid4().hex}.jsonl"
+        return path, Session(InMemorySessionStorage(metadata={"cwd": str(cwd)}))
+
+    @staticmethod
+    def _persist_new(harness, path):
+        """Validate the new Harness before publishing a file discoverable by --resume."""
+        if isinstance(harness.session.storage, JsonlSessionStorage):
+            return
+        if path.exists():
+            raise FileExistsError(f"Refusing to overwrite session: {path}")
+        try:
+            storage = JsonlSessionStorage(path, metadata=harness.session.storage.get_metadata())
+            for entry in harness.session.get_entries():
+                storage.append_entry(entry)
+        except BaseException:
+            # This method owns this newly created UUID path; existing sessions never enter here.
+            path.unlink(missing_ok=True)
+            raise
+        harness.session = Session(storage)
+        harness.options.session = harness.session
+
+    def _build(self, cwd, session, model, manager, resources):
+        paths = [Path(p).expanduser() for p in manager.settings.extensions]
+        paths = [p if p.is_absolute() else cwd / p for p in paths]
+        extensions = ExtensionRunner.load([*paths, *self._extension_paths], self._extension_factories)
+        try:
+            return self._build_with_extensions(cwd, session, model, manager, resources, extensions)
+        except BaseException:
+            extensions.dispose()
+            raise
+
+    def _build_with_extensions(self, cwd, session, model, manager, resources, extensions):
+        settings = manager.settings
+        had_tool_selection = "active_tools" in session.build_settings()
+        tools = [*self._tool_factory(cwd), *extensions.api.tools]
+        available = {tool.name for tool in tools}
+        if len(available) != len(tools):
+            raise ValueError("Extension tool names must not collide with built-in/custom tools")
+        if settings.tools is not None and (len(settings.tools) != len(set(settings.tools))
+                                            or set(settings.tools) - available):
+            raise ValueError("Configured tools must be unique and available in this runtime")
+        stream_options = {**settings.stream_options, **self._stream_options}
+        stream = self._stream_fn or stream_simple
+
+        def authenticated_stream(request_model, context, options):
+            # Resolve on every request, including summaries and branch/model
+            # changes. Never reuse another provider's cached credential.
+            options = options or SimpleStreamOptions()
+            key = options.api_key
+            if not key and settings.api_key_env:
+                key = os.environ.get(settings.api_key_env)
+            if not key:
+                key = self.auth_store.key_for_model(request_model)
+            if key:
+                options = options.model_copy(update={"api_key": key})
+            return stream(request_model, context, options)
+        async def before(data, cancel):
+            if self._before:
+                outcome = await maybe_await(self._before(data, cancel))
+                if outcome and outcome.get("block"):
+                    return outcome
+            return await extensions.before_tool(data, cancel, harness.extension_context)
+
+        async def after(data, cancel):
+            outcome = await extensions.after_tool(data, cancel, harness.extension_context) or {}
+            if self._after:
+                outcome.update(await maybe_await(self._after(data, cancel)) or {})
+            return outcome or None
+
+        def prompt_builder(active, skills, workdir):
+            return build_system_prompt(cwd=workdir, tools=active, skills=skills, resources=resources,
+                custom_prompt=settings.system_prompt or resources.system_prompt_override,
+                append_prompt=settings.append_system_prompt, guidelines=extensions.api.guidelines)
+
+        harness = AgentHarness(AgentHarnessOptions(
+            model=model, cwd=cwd, session=session, tools=tools, skills=resources.skills,
+            system_prompt_builder=prompt_builder,
+            compaction=settings.compaction, max_turns=settings.max_turns,
+            tool_execution=settings.tool_execution, stream_fn=authenticated_stream,
+            stream_options=stream_options, before_tool_call=before, after_tool_call=after,
+            summary_fn=self._summary_fn,
+        ))
+        harness.extensions = extensions
+        harness.extension_context = ExtensionContext(cwd, harness)
+        if settings.tools is not None and [t.name for t in harness.state.tools] != settings.tools:
+            harness.set_active_tools(settings.tools)
+        elif settings.tools is None and os.name != "nt" and "powershell" in available:
+            # Keep saved choices; hide Windows-specific commands only for brand-new sessions.
+            if not had_tool_selection:
+                harness.set_active_tools([t.name for t in harness.state.tools if t.name != "powershell"])
+        return harness
+
+    def _install(self, cwd, path, settings, loader, resources, harness):
+        previous_unsubscribe = getattr(self, "_unsubscribe", None)
+        previous = getattr(self, "harness", None)
+        self.cwd, self.session_file = cwd, path
+        self.settings_manager, self.resource_loader, self.resources = settings, loader, resources
+        self.harness = harness
+        self._extensions_started = False
+        self._unsubscribe = harness.subscribe(self._forward)
+        if previous_unsubscribe:
+            previous_unsubscribe()
+        if previous:
+            previous.extensions.dispose()
+
+    async def _forward(self, event, cancel_event):
+        await self.harness.extensions.emit(event.type, event, self.harness.extension_context)
+        for listener in list(self._listeners):
+            await maybe_await(listener(event, cancel_event))
+
+    def subscribe(self, listener):
+        self._listeners.append(listener)
+
+        def unsubscribe():
+            if listener in self._listeners:
+                self._listeners.remove(listener)
+        return unsubscribe
+
+    @property
+    def state(self):
+        return self.harness.state
+
+    @property
+    def session(self):
+        return self.harness.session
+
+    @property
+    def available_models(self):
+        """Models from the user-level auth.json, without exposing credentials."""
+        return self.auth_store.models
+
+    def select_model(self, reference: str) -> Model:
+        """Switch the current Session to an auth.json model while idle."""
+        self._ensure_available()
+        self.harness._ensure_idle()
+        selected = self.auth_store.resolve(reference)
+        self.harness.set_model(selected.model)
+        if not selected.model.reasoning and self.state.thinking_level:
+            self.harness.set_thinking_level("off")
+        return selected.model
+
+    def set_thinking_level(self, level: str) -> None:
+        self._ensure_available()
+        self.harness._ensure_idle()
+        if level != "off" and not self.state.model.reasoning:
+            raise ValueError(f"Model {self.state.model.provider}/{self.state.model.id} does not support reasoning")
+        self.harness.set_thinking_level(level)
+
+    def _ensure_available(self):
+        if self._closed:
+            raise RuntimeError("Runtime is closed")
+        if self._changing:
+            raise RuntimeError("Runtime is switching or reloading; wait for it to finish")
+        if self._preparing:
+            raise RuntimeError("Runtime is preparing a request or running an extension command")
+
+    async def _start_extensions(self):
+        if not self._extensions_started:
+            await self.harness.extensions.emit("session_start", {"type": "session_start", "cwd": self.cwd},
+                                               self.harness.extension_context)
+            self._extensions_started = True
+
+    async def _prepare_start(self):
+        self._ensure_available()
+        self.harness._ensure_idle()
+        self._preparing = True
+        self._hook_cancel = asyncio.Event()
+        try:
+            await cancellable(self._start_extensions(), self._hook_cancel)
+        finally:
+            self._preparing = False
+            self._hook_cancel = None
+
+    async def prompt(self, message):
+        self._ensure_available()
+        self.harness._ensure_idle()
+        self._preparing = True
+        self._hook_cancel = asyncio.Event()
+        try:
+            await cancellable(self._start_extensions(), self._hook_cancel)
+            outcomes = await cancellable(self.harness.extensions.emit("before_prompt", {"message": message},
+                self.harness.extension_context), self._hook_cancel)
+            for outcome in outcomes:
+                if outcome and "message" in outcome:
+                    message = outcome["message"]
+        finally:
+            self._preparing = False
+            self._hook_cancel = None
+        await self.harness.prompt(message)
+
+    async def continue_(self):
+        await self._prepare_start()
+        await self.harness.continue_()
+
+    async def invoke_skill(self, name, instructions=""):
+        from .skills import format_skill_invocation
+        skill = next((s for s in self.harness.skills if s.name == name), None)
+        if skill is None:
+            raise ValueError(f"Unknown skill: {name}")
+        await self.prompt(format_skill_invocation(skill, instructions))
+
+    async def invoke_prompt(self, name, arguments=""):
+        self._ensure_available()
+        if name not in self.resources.prompts:
+            raise ValueError(f"Unknown prompt template: {name}")
+        await self.prompt(self.resources.prompts[name].render(arguments))
+
+    def abort(self):
+        self.harness.abort()
+        if self._hook_cancel is not None:
+            self._hook_cancel.set()
+
+    async def compact(self):
+        await self._prepare_start()
+        return await self.harness.compact()
+
+    async def run_command(self, name, arguments=""):
+        self._ensure_available()
+        self.harness._ensure_idle()
+        self._preparing = True
+        self._hook_cancel = asyncio.Event()
+        try:
+            await cancellable(self._start_extensions(), self._hook_cancel)
+            return await cancellable(self.harness.extensions.command(name, arguments, self.harness.extension_context),
+                                     self._hook_cancel)
+        finally:
+            self._preparing = False
+            self._hook_cancel = None
+
+    async def _replace(self, *, cwd=None, session_file=None, reload=False, model=None):
+        self._ensure_available()
+        self._changing = True
+        candidate = None
+        try:
+            target_cwd = Path(cwd).expanduser().resolve() if cwd is not None else self.cwd
+            path, session = None, None
+            if session_file is not None:
+                path = self._existing_file(session_file)
+                # Read metadata before touching the old runtime. Reopen after it settles.
+                preview = Session(JsonlSessionStorage(path))
+                target_cwd = Path(preview.storage.get_metadata().get("cwd", str(target_cwd))).expanduser().resolve()
+            if reload:
+                path = self.session_file
+            settings, loader, resources = self._prepare(target_cwd)
+            old = self.harness
+            old.abort()
+            await old.wait_for_idle()
+            if reload:
+                session = old.session
+            elif path is not None:
+                session = Session(JsonlSessionStorage(path))
+            # New projects use their configured model, falling back to the current model.
+            fallback = self.state.model if session is None and settings.settings.model is None else None
+            selected = self._model(model or fallback, session, settings)
+            is_new_session = session is None
+            if session is None:
+                path, session = self._new_session(target_cwd, settings)
+            candidate = self._build(target_cwd, session, selected, settings, resources)
+            if is_new_session and selected.reasoning and old.state.thinking_level:
+                candidate.set_thinking_level(old.state.thinking_level)
+            if self._extensions_started:
+                await old.extensions.emit("session_shutdown", {"type": "session_shutdown", "reason": "reload" if reload else "switch"},
+                                          old.extension_context)
+            self._persist_new(candidate, path)
+            if reload:
+                candidate.agent.steering_queue = old.agent.steering_queue
+                candidate.agent.follow_up_queue = old.agent.follow_up_queue
+            self._install(target_cwd, path, settings, loader, resources, candidate)
+        except BaseException:
+            if candidate is not None and candidate is not self.harness:
+                candidate.extensions.dispose()
+            raise
+        finally:
+            self._changing = False
+
+    async def switch_session(self, session_file: str | Path):
+        await self._replace(session_file=session_file)
+
+    async def change_cwd(self, cwd: str | Path, *, model: Model | None = None):
+        """切换项目并新建会话；不把旧项目的消息自动带入新项目。"""
+        await self._replace(cwd=cwd, model=model)
+
+    async def new_session(self, *, model: Model | None = None):
+        await self._replace(model=model or self.state.model)
+
+    async def reload(self):
+        """重读设置/资源并重建 cwd 绑定工具；保留当前模型、历史、队列。"""
+        self._ensure_available()
+        old_auth = self.auth_store
+        self.auth_store = AuthStore(self.user_dir)
+        try:
+            await self._replace(reload=True)
+        except BaseException:
+            self.auth_store = old_auth
+            raise
+
+    async def close(self):
+        if self._closed:
+            return
+        self._ensure_available()
+        self._changing = True
+        try:
+            self.abort()
+            await self.harness.wait_for_idle()
+            try:
+                if self._extensions_started:
+                    await self.harness.extensions.emit("session_shutdown", {"type": "session_shutdown", "reason": "close"},
+                                                       self.harness.extension_context)
+            finally:
+                self.harness.extensions.dispose()
+                self._unsubscribe()
+                self._closed = True
+        finally:
+            self._changing = False

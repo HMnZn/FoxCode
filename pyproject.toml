@@ -1,7 +1,7 @@
 [project]
 name = "foxcode"
 version = "0.1.0"
-description = "Add your description here"
+description = "Minimal coding agent runtime and CLI"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
@@ -13,4 +13,17 @@ dependencies = [
     "openai>=3.19.0",
     "pydantic>=2.13.5",
     "pyyaml>=6.0.2",
+    "pathspec>=0.12.1",
 ]
+
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project.scripts]
+fox = "fox_coding_agent.src.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["packages"]
+include = ["fox_agent_core*", "fox_ai*", "fox_coding_agent*"]
+namespaces = true

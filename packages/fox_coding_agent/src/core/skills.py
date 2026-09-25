@@ -1,7 +1,7 @@
 """技能（Skill）加载系统。
 
-对应上游 ``packages/agent/src/harness/skills.ts``（库层加载器）+
-``system-prompt.ts``（格式化）。
+参考上游 ``packages/coding-agent/src/core/skills.ts``（加载器）与
+``packages/coding-agent/src/core/system-prompt.ts``（提示词组装）。
 
 发现算法（两阶段，与上游一致）：
 1. 阶段一：遍历目录条目，任何名为 ``SKILL.md`` 的文件 → 加载并立即返回（不递归）。

@@ -14,13 +14,13 @@ from pathlib import Path
 from typing import Any, Literal
 
 from fox_ai.src import AssistantMessage, Model, TextContent, ToolCall, ToolResultMessage
-from .._async import check_cancelled, maybe_await
-from ..agent import Agent, AgentOptions
-from ..types import AgentContext, AgentMessage, AgentState, MessageEndEvent, StreamFn
+from fox_agent_core.src._async import check_cancelled, maybe_await
+from fox_agent_core.src.agent import Agent, AgentOptions
+from fox_agent_core.src.types import AgentContext, AgentMessage, AgentState, MessageEndEvent, StreamFn
 from .compaction import CompactionResult, CompactionSettings, compact, estimate_context_tokens, estimate_tokens, should_compact
 from .session import Session
 from .skills import LoadSkillsOptions, Skill, format_skill_invocation, format_skills_for_prompt, load_skills
-from .tool import create_coding_tools
+from .tools import create_coding_tools
 
 
 @dataclass
@@ -37,7 +37,8 @@ class AgentHarnessOptions:
     session: Session | None = None
     cwd: str | Path = "."
     system_prompt: str = "You are a coding assistant. Inspect relevant files before editing."
-    tools: list[Any] | None = None  # None 使用四个内置工具；[] 表示禁用工具。
+    system_prompt_builder: Any = None
+    tools: list[Any] | None = None  # None 使用内置编码工具；[] 表示禁用工具。
     skills: list[Skill] | None = None  # None 自动发现；[] 表示禁用技能。
     skill_options: LoadSkillsOptions | None = None
     compaction: CompactionSettings = field(default_factory=CompactionSettings)
@@ -88,6 +89,8 @@ class AgentHarness:
         system = "\n\n".join(part for part in (
             options.system_prompt, f"Working directory: {self.cwd}", format_skills_for_prompt(self.skills)
         ) if part)
+        if options.system_prompt_builder:
+            system = options.system_prompt_builder([self._tools[n] for n in active_names], self.skills, self.cwd)
         stream_options = dict(options.stream_options)
         stream_options.setdefault("session_id", self.session.storage.get_metadata().get("id"))
         self.agent = Agent(AgentOptions(
@@ -236,7 +239,7 @@ class AgentHarness:
 
     def set_thinking_level(self, level) -> None:
         self._ensure_idle()
-        if level not in (None, "off", "minimal", "low", "medium", "high", "xhigh"):
+        if level not in (None, "off", "minimal", "low", "medium", "high", "xhigh", "max"):
             raise ValueError(f"Invalid thinking level: {level}")
         level = None if level == "off" else level
         self.session.append_thinking_level_change(level)
@@ -254,6 +257,11 @@ class AgentHarness:
         self._validate_tool_names(names)
         self.session.append_active_tools_change(names)
         self.state.tools = [self._tools[name] for name in names]
+        self._refresh_system_prompt()
+
+    def _refresh_system_prompt(self):
+        if self.options.system_prompt_builder:
+            self.state.system_prompt = self.options.system_prompt_builder(self.state.tools, self.skills, self.cwd)
 
     def move_to(self, entry_id: str | None) -> None:
         self._ensure_idle()
@@ -264,6 +272,7 @@ class AgentHarness:
         names = saved.get("active_tools", self._default_tool_names)
         self._validate_tool_names(names)
         self.state.tools = [self._tools[n] for n in names]
+        self._refresh_system_prompt()
         self.state.messages = self.session.build_context()
         self.state.error_message = None
         self.agent.clear_all_queues()

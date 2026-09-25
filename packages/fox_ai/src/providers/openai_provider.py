@@ -104,6 +104,33 @@ def _clamp_reasoning(level: str) -> str:
     return "high" if level in ("xhigh", "max") else level
 
 
+def _apply_reasoning_options(params: dict[str, Any], model: Model, options: StreamOptions | None) -> None:
+    """Translate the current thinking level into actual OpenAI SDK parameters."""
+    if not model.reasoning:
+        return
+    compat = model.compat or {}
+    level = getattr(options, "reasoning", None) if options else None
+    mapping = model.thinking_level_map or compat.get("reasoningEffortMap") or {}
+    effort = mapping.get(level, level) if level else mapping.get("off")
+    kind = compat.get("thinkingFormat")
+    if kind is None:
+        kind = "deepseek" if model.provider == "deepseek" else "openai"
+    if kind == "deepseek":
+        # thinking is a provider-specific body field, not a create() keyword.
+        body = dict(params.get("extra_body") or {})
+        body.pop("reasoning_effort", None)
+        params.pop("reasoning_effort", None)
+        if level or mapping.get("off", "disabled") is not None:
+            body["thinking"] = {"type": "enabled" if level else "disabled"}
+        else:
+            body.pop("thinking", None)
+        if level and effort is not None and compat.get("supportsReasoningEffort", True):
+            body["reasoning_effort"] = effort
+        params["extra_body"] = body
+    elif kind == "openai" and effort is not None and compat.get("supportsReasoningEffort", True):
+        params["reasoning_effort"] = effort
+
+
 def _thinking_budget_for_level(reasoning_level: str, custom_budgets: dict[str, int] | None) -> int:
     """按级别取 thinking token 预算（自定义覆盖默认）。对应上游 ``thinkingBudgetForLevel``。"""
     budgets = {**_DEFAULT_THINKING_BUDGETS, **(custom_budgets or {})}
@@ -607,6 +634,7 @@ def _run_openai_stream(
             params.update(model.sampling_params)
         if options and options.sampling_params:
             params.update(options.sampling_params)
+        _apply_reasoning_options(params, model, options)
 
         # 流式块状态：用真实模型实例累加，保证 output.content 始终持合法对象
         text_block: TextContent | None = None

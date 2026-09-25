@@ -1,6 +1,6 @@
 """会话（Session）持久化与树结构。
 
-对应上游 ``packages/agent/src/harness/session/``。
+参考上游 ``packages/coding-agent/src/core/session-manager.ts``，保留精简的历史树与持久化接口。
 
 会话以**树结构**存储条目（message / compaction / branch_summary / thinking_level_change
 / model_change / active_tools_change / label 等）。每个条目有 id、parent_id、
