@@ -3,6 +3,14 @@
 from .agent import Agent, AgentOptions
 from .agent_loop import agent_loop, agent_loop_continue
 from .event_stream import create_agent_stream
+from .harness import (
+    AgentHarness,
+    AgentHarnessConfig,
+    HarnessHooks,
+    SessionEntry,
+    SessionStorage,
+    InMemorySessionStorage,
+)
 from .types import (
     AgentContext,
     AgentEndEvent,
@@ -35,6 +43,12 @@ __all__ = [
     "agent_loop",
     "agent_loop_continue",
     "create_agent_stream",
+    "AgentHarness",
+    "AgentHarnessConfig",
+    "HarnessHooks",
+    "SessionEntry",
+    "SessionStorage",
+    "InMemorySessionStorage",
     "AgentContext",
     "AgentEndEvent",
     "AgentEvent",

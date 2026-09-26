@@ -105,16 +105,20 @@ def _clamp_reasoning(level: str) -> str:
 
 
 def _apply_reasoning_options(params: dict[str, Any], model: Model, options: StreamOptions | None) -> None:
-    """Translate the current thinking level into actual OpenAI SDK parameters."""
+    """Serialize a normalized Model's thinking level for this wire protocol.
+
+    Config-file parsing belongs to the host application.  This provider only
+    consumes ``Model.thinking_level_map`` and provider compatibility metadata.
+    """
     if not model.reasoning:
         return
     compat = model.compat or {}
     level = getattr(options, "reasoning", None) if options else None
-    mapping = model.thinking_level_map or compat.get("reasoningEffortMap") or {}
+    mapping = model.thinking_level_map or {}
     effort = mapping.get(level, level) if level else mapping.get("off")
-    kind = compat.get("thinkingFormat")
-    if kind is None:
-        kind = "deepseek" if model.provider == "deepseek" else "openai"
+    # The wire format is a model capability, not something inferred from a
+    # provider name. OpenAI semantics are the protocol default.
+    kind = compat.get("thinkingFormat", "openai")
     if kind == "deepseek":
         # thinking is a provider-specific body field, not a create() keyword.
         body = dict(params.get("extra_body") or {})

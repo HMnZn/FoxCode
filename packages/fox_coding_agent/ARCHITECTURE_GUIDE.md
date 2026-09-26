@@ -1,51 +1,65 @@
 # fox_coding_agent：编码宿主架构与面试指南
 
-本篇讲 `fox_coding_agent/src` 如何把通用循环组装为可用的编码助手：Runtime、Harness、Session、Compaction、Settings、Resources、Skill、Tools、System Prompt、Extensions 与 CLI。通用循环的调度细节见 [agent-core 指南](../fox_agent_core/ARCHITECTURE_GUIDE.md)。
+本篇讲 `fox_coding_agent/src` 如何把通用 Agent 机制组装成可使用的编码助手：模型目录与凭据、`AgentSession`、`SessionManager`、工具、资源、项目信任、扩展和 CLI。底层循环见 [agent-core 指南](../fox_agent_core/ARCHITECTURE_GUIDE.md)。
 
-配套 [CODING_AGENT_LAB.ipynb](CODING_AGENT_LAB.ipynb) 独立演示文件工具、Session 恢复、Skill、真实摘要压缩和 Runtime/扩展；不依赖另一本 Notebook 的变量或运行结果。
-
-阅读路线：第一章先跑起来并理解配置，第二章理解工具与提示词，第三至五章学习历史、压缩和技能，第六至七章理解扩展与入口，第八章准备面试。
+配套 [CODING_AGENT_LAB.ipynb](CODING_AGENT_LAB.ipynb) 演示真实模型、文件工具、Session、Skill 和压缩。
 
 <a id="ch01"></a>
 
-## 第一章：从 AgentHarness 到可运行的 mini coding agent
+## 第一章：从通用内核到 mini coding agent
 
-这次增加的能力对应 pi coding-agent 的宿主层。`Agent` 和 `agent_loop` 继续负责单个任务的运行，`AgentHarness` 继续组合工具、Session、Skill 和压缩；`AgentSessionRuntime` 管理当前 Harness 的生命周期。
+### 1.1 三个独立包与单向依赖
 
-### 1.1 通用内核与 coding-agent 的包边界
-
-| 模块 | 位置 | 解决的问题 |
-| --- | --- | --- |
-| `SettingsManager` | `fox_coding_agent/src/core/settings.py` | 合并用户级、项目级配置，校验并保存 |
-| `AuthStore` | `fox_coding_agent/src/core/auth.py` | 读取用户级模型目录，为实际请求选择凭据 |
-| `ResourceLoader` | `fox_coding_agent/src/core/resources.py` | 加载项目指令、Skill、Prompt，提供扩展资源接口 |
-| `AgentSessionRuntime` | `fox_coding_agent/src/core/runtime.py` | 管理 Session/cwd 切换、重载、取消、事件订阅 |
-| `fox` CLI | `packages/fox_coding_agent/src/cli.py` | 解释命令行参数，把事件输出为文本或 JSON |
-
-**与 pi 的真实包边界对照**：本地 pi-main 的 `AgentSessionRuntime` 位于 `packages/coding-agent/src/core/agent-session-runtime.ts`，`SettingsManager` 和 `ResourceLoader` 也位于 `packages/coding-agent/src/core/`。它们属于 coding-agent 的宿主层，未放入 `packages/agent/src`。
-
-Fox 已按这一边界拆分：运行时、配置、资源、Session、Skill、Compaction、Harness 和具体编码工具均位于 `fox_coding_agent/src/core`。`fox_agent_core/src` 只保留 Agent、循环、类型、事件；依赖单向从 coding-agent 指向 agent-core。Notebook 和未来的 UI 通过 coding-agent SDK 复用这些宿主能力。
-
-当前 CLI 的参数解析、stdout/stderr 与退出码位于独立的 `fox_coding_agent` 包。底层循环无需知道配置文件、命令行或项目目录发现规则。
-
-Python 通过 `from fox_agent_core.src import Agent, AgentOptions` 导入通用内核，通过 `from fox_coding_agent.src import AgentSessionRuntime, AgentHarness` 导入宿主。顶层 `fox_agent_core/__init__.py` 已移除，没有从通用内核反向导入编码宿主的兼容层。
+仓库现在是 uv workspace，每个目录都有独立 `pyproject.toml`：
 
 ```text
-fox CLI / Notebook / 未来的 UI
-  └── AgentSessionRuntime
-       ├── SettingsManager
-       ├── ResourceLoader → AGENTS.md / Skill / Prompt / 显式资源 provider
-       └── 当前 AgentHarness
-            ├── Session（JSONL）
-            ├── Compaction / Tools
-            └── Agent → agent_loop → fox_ai
+fox-coding-agent  →  fox-agent-core  →  fox-ai
+   CLI、项目策略       循环、状态、Harness    Provider 协议
 ```
 
-### 1.2 安装与运行
+| 包 | 对应 pi | 稳定职责 |
+| --- | --- | --- |
+| `fox_ai` | pi-ai | 标准模型、消息、流事件、Provider 请求与凭据协议 |
+| `fox_agent_core` | pi-agent-core | Agent loop、状态、工具协议、通用 `AgentHarness`、Session 存储协议和压缩算法 |
+| `fox_coding_agent` | pi-coding-agent | `AgentSession`、JSONL 会话、项目工具、资源、信任、扩展和 CLI |
 
-在 FoxCode 根目录运行 `uv sync`，项目会安装 `fox` 命令。需要 Python 3.14+。
+构建系统声明并检查这个方向。`fox_ai` 不读取 `.foxcode`；`fox_agent_core` 不导入 coding-agent；只有宿主知道用户目录、cwd 和终端命令。
 
-用户级 `C:\Users\Qin\.foxcode\auth.json` 保存 provider 连接信息、密钥和模型列表。完整模板见 [examples/auth.json](../../examples/auth.json)，结构如下：
+### 1.2 为什么同时有 AgentHarness、AgentSession 和 Runtime
+
+三个名字对应三层生命周期：
+
+- `fox_agent_core.harness.AgentHarness` 是通用运行壳，只负责“单操作互斥、事件转发、持久化钩子”。它不知道 cwd、Skill 和 JSONL。
+- `fox_coding_agent.AgentSession` 组合模型、工具、Skill、压缩和一个 `SessionManager`，代表一个可对话的编码会话。
+- `AgentSessionRuntime` 管理当前 `AgentSession`，负责切换 cwd/会话、重载模型与资源、项目信任及扩展生命周期。
+
+公开名称按职责划分：通用层使用 `AgentHarness` 与 `AgentHarnessConfig`；编码层使用 `AgentSession` 与 `AgentSessionConfig`；会话历史由 `SessionManager` 管理。同一概念不再提供第二套别名。
+
+```text
+CLI / future UI
+  └─ AgentSessionRuntime
+       ├─ ModelRuntime ─ ModelRegistry + CredentialStore
+       ├─ SettingsManager / ResourceLoader / ProjectTrustManager
+       └─ AgentSession
+            ├─ SessionManager (JSONL tree)
+            ├─ Compaction / Skills / coding tools
+            └─ fox_agent_core.AgentHarness
+                 └─ Agent → agent_loop → fox_ai
+```
+
+### 1.3 models.json 与 auth.json 为什么必须拆开
+
+模型元数据和密钥的生命周期不同。模型目录适合校验、展示和版本管理；凭据必须限制读取面，也不能进入日志、异常或 Session。用户级目录采用：
+
+```text
+~/.foxcode/
+├─ models.json       # provider endpoint、协议、模型能力和价格
+├─ auth.json         # provider → api_key / oauth 凭据
+├─ settings.json     # 可选运行策略
+└─ trust.json        # 项目路径的信任决定
+```
+
+`models.json` 示例：
 
 ```json
 {
@@ -53,7 +67,6 @@ fox CLI / Notebook / 未来的 UI
     "deepseek": {
       "baseUrl": "https://api.deepseek.com",
       "api": "openai-completions",
-      "apiKey": "填写你的密钥",
       "models": [
         {
           "id": "deepseek-v4-flash",
@@ -62,13 +75,8 @@ fox CLI / Notebook / 未来的 UI
           "maxTokens": 384000,
           "input": ["text"],
           "reasoning": true,
-          "compat": {
-            "thinkingFormat": "deepseek",
-            "reasoningEffortMap": {
-              "minimal": "high", "low": "high", "medium": "high",
-              "high": "high", "xhigh": "max"
-            }
-          }
+          "thinkingLevelMap": {"minimal": "high", "high": "high", "xhigh": "max"},
+          "compat": {"thinkingFormat": "deepseek"}
         }
       ]
     }
@@ -76,158 +84,74 @@ fox CLI / Notebook / 未来的 UI
 }
 ```
 
-这些模型元数据沿用用户提供的配置，配置加载器不负责验证服务商当前价格或最大窗口。`baseUrl` 必须是普通 URL，不能填 Markdown 链接。API key 不存入会话；模型 ID、地址、参数等元数据会保存在会话中。
+`auth.json` 示例：
 
-之后使用：
-
-```powershell
-uv run fox --interactive
-uv run fox --list-models
-uv run fox --model deepseek/deepseek-v4-pro --thinking xhigh -p "检查项目结构"
-uv run fox --resume -p "继续，列出主要模块"
-uv run fox --resume .foxcode/sessions/<会话编号>.jsonl -p "解释上次的结果"
-uv run fox -p "阅读 README.md" --json
+```json
+{
+  "deepseek": {
+    "type": "api_key",
+    "key": "在本机填写"
+  }
+}
 ```
 
-`--resume` 不带路径会选择当前项目、当前存储范围下最近修改的会话。它不会扫描 Notebook 的 `labs/`；恢复实验会话请明确指定其 JSONL 路径。
+`ModelConfig` 只解析模型目录，`ModelRegistry` 负责默认模型和 `provider/id` 查找，`CredentialStore` 只处理凭据，`ModelRuntime` 在请求边界把当前模型与当前 provider 的凭据配对。`models.json` 中出现密钥或 `auth.json` 中出现模型目录都会校验失败，避免同一数据拥有两种来源。
 
-`--resume` 不带 `-p` 用于继续末尾为 user/toolResult 的未完成历史。已完成的对话可提供新的 `-p`；连续对话使用 `--interactive`（纯文本输入，无 TUI）。
+`fox_ai` 的 OpenAI provider 不解析这些文件。它只接收归一化后的 `Model.thinking_level_map` 与 `compat.thinkingFormat`，再把通用 thinking level 编码成具体 HTTP 参数。
 
-文本模式只向 stdout 输出最终回答，会话路径与诊断写入 stderr。`--json` 输出逐行 JSON，包括 `session_start`、Agent 事件和错误事件，适合其他进程订阅。正常完成退出码为 0，配置/模型/运行错误为 1，参数用法错误为 2，Ctrl+C 为 130。
+### 1.4 Settings 与模型目录不是同一类配置
 
-### 1.3 配置：用户默认值与项目差异
+`settings.json` 用于运行策略，例如最大轮次、工具执行方式和压缩预算。默认值已经在代码中，文件可以不存在。加载优先级为：
 
 ```text
-用户主目录/.foxcode/
-  auth.json                             # 凭据与模型目录
-  settings.json                         # 可选，覆盖运行策略
-  AGENTS.md
-  skills/<名称>/SKILL.md
-  prompts/<名称>.md
-  sessions/<项目路径哈希>/<会话编号>.jsonl  # session_scope=user 时
-
-项目目录/
-  AGENTS.md
-  .foxcode/
-    settings.json                       # 可选，不存放凭据
-    skills/<名称>/SKILL.md
-    prompts/<名称>.md
-    sessions/<会话编号>.jsonl             # 默认 session_scope=project
+代码默认值 < 用户 ~/.foxcode/settings.json
+           < 已信任项目 .foxcode/settings.json < CLI/SDK overrides
 ```
 
-默认用户目录为 `Path.home() / ".foxcode"`：Windows Python 下通常是 `C:\Users\Qin\.foxcode`，WSL 内核则使用 Linux 用户目录。SDK 的 `user_dir=` 和 CLI 的 `--user-dir` 可显式指定位置。
+模型清单来自 `models.json`，凭据来自 `auth.json`。Session 记录实际使用的完整模型快照和 thinking level，保证恢复历史时含义稳定；密钥永远不写进 Session。
 
-优先级是默认值 → 用户配置 → 项目配置 → 显式 overrides。对象递归合并，列表整体替换。例如用户配置保留摘要尾部 8000 tokens，项目仅修改 `compaction.keep_recent_tokens` 为 1000，不会丢掉用户设置的 `reserve_tokens`。
+需要固定默认模型时，用户级文件只写引用即可：`{"model": "deepseek/deepseek-v4-flash"}`。模型能力与端点始终来自 `models.json`，`settings.json` 不接受完整 `Model` 对象。
 
-上述优先级只用于可选的 settings.json；auth.json 始终只读用户目录，不加载项目目录中的同名文件。当前只需要维护 auth.json，其余运行参数使用代码默认值。下面的 SettingsManager 示例用于解释已有覆盖机制。
+### 1.5 项目信任边界
 
-```python
-from fox_coding_agent.src import SettingsManager
+未知项目在 CLI 中默认不受信任。未信任时：
 
-settings = SettingsManager(".")
-settings.update({"max_turns": 30}, scope="user")
-settings.update({"compaction": {"keep_recent_tokens": 1000}}, scope="project")
+- 不自动加载项目/祖先的 `AGENTS.md`；
+- 不加载项目 Skill 和项目 settings 中声明的 Extension；
+- 所有 coding tool 调用在执行前被阻止；
+- 显式调用的纯文本 Prompt 模板仍可读取，它不会自行执行代码。
+
+使用 `fox --trust-project ...` 或交互命令 `/trust` 记录决定；`/untrust` 会重建当前 Session 的宿主资源。`/cwd` 与 `/resume` 都会依据目标 Session 的真实 cwd 重新查询 trust，避免把源项目的决定带到另一个目录。
+
+SDK 直接构造 Runtime 时默认 trusted；嵌入式产品可以传 `project_trusted=False` 或 `trust_resolver` 建立自己的策略。
+
+### 1.6 Runtime 的事务式切换
+
+切换 cwd、恢复 Session 或 reload 时，Runtime 先构造候选 Settings、Resources、Extension、Tools 和 `AgentSession`。候选全部成功后才替换当前对象；失败则继续使用旧会话。
+
+正在运行时切换会先发出取消并等待工具清理和消息持久化。新的 cwd 使用新的工具实例，避免文件工具仍绑定旧目录。Session 文件中的 metadata 决定恢复后的 cwd。
+
+### 1.7 恢复、统计与导出
+
+`AgentSession` 只对“未产生任何内容的安全失败”自动恢复：
+
+- context overflow：回到失败消息的父节点，压缩上下文，再重试一次；
+- timeout、429、连接中断和 5xx：回到父节点，按 `model_retry_attempts` 重试；
+- 已产生部分内容或已经执行过工具的轮次不自动整轮重放。
+
+失败节点仍保留在 Session 树中，但不污染恢复后的 active branch。`SessionManager.usage_totals()` 汇总活动分支的 token 与费用；`/usage` 查看，`/export file.json|file.md` 导出完整树或当前对话。
+
+### 1.8 运行入口
+
+```powershell
+uv sync
+uv run fox --list-models
+uv run fox --trust-project --interactive
+uv run fox --model deepseek/deepseek-v4-pro --thinking high -p "检查这个项目"
+uv run fox --resume -p "继续"
 ```
 
-`update()` 先校验合并结果，再通过临时文件原子替换目标配置。写入失败保留旧文件与旧配置快照。它适用于单写入者，不提供多进程事务锁。
-
-可配置项：`model`、`system_prompt`、`append_system_prompt`、`extensions`、`api_key_env`、`stream_options`、`compaction`、`tools`、`max_turns`、`tool_execution`、`session_scope`。未知顶层键报错。
-
-`tools=null` 保留会话保存的工具选择，新会话默认启用 read/write/edit/bash/grep/find/ls，Windows 还启用 powershell；`tools=[]` 禁用工具；列表显式指定启用的内置或扩展工具。修改配置文件后，对已打开的 runtime 调用 `reload()` 才生效。
-
-新会话使用显式模型，否则兼容旧 settings 的 model，最后选择 auth.json 的第一个模型。恢复优先采用保存的模型，显式 `model=` / `--model` 可覆盖。`reload()` 保留当前会话模型，CLI 用 `/model provider/id` 切换，SDK 用 `runtime.select_model(reference)`。加载新的 auth.json 后，再次选择模型才会应用它修改后的元数据。
-
-### 1.4 运行时：会话与工作目录一起管理
-
-```python
-from fox_coding_agent.src import AgentSessionRuntime
-
-# model 可省略，此时使用用户 auth.json 的第一个模型。
-runtime = AgentSessionRuntime(cwd=".")
-runtime.subscribe(lambda event, cancel: print(event.type))
-try:
-    await runtime.prompt("阅读项目说明")
-    first_session = runtime.session_file
-    await runtime.reload()
-    await runtime.change_cwd("../another-project")
-    await runtime.prompt("阅读这个项目的说明")
-    await runtime.switch_session(first_session)
-finally:
-    await runtime.close()
-```
-
-| 操作 | Session | cwd / 资源 / 工具 |
-| --- | --- | --- |
-| `new_session()` | 新建历史；旧 JSONL 保留 | 当前项目重载，默认沿用当前模型 |
-| `change_cwd(path)` | 为目标项目创建新历史 | 目标配置与资源重新加载，工具绑定新路径 |
-| `switch_session(file)` | 从指定 JSONL 恢复 | 恢复元数据中的 cwd 并重建宿主 |
-| `reload()` | 保留历史、模型、排队消息 | 重新加载配置、指令、技能、模板和工具 |
-| `close()` | 保留已保存历史 | 取消并等待当前任务，解除运行时订阅 |
-
-切换时先加载并检查目标资源，再取消旧任务、等待旧任务完成清理和持久化，随后构建新 Harness。切换中的新 prompt 会被拒绝。切换成功前不替换当前 Harness，失败后仍可继续使用原 Harness；若已经发出取消，旧任务不会自动重启。新会话在 Harness 成功构建后才写入 JSONL，避免失败初始化留下可被 `--resume` 选中的空文件。
-
-工具必须绑定目标 cwd。内置工具每次重建；自定义工具通过 `tool_factory(cwd)` 提供，工厂应返回适用于传入 cwd 的新工具对象。runtime 不调用全局 `os.chdir()`，多个 runtime 可以使用不同项目。
-
-Runtime 的订阅独立于当前 Harness，因此切换后无需重新 subscribe。事件回调中不要等待当前任务的切换或关闭操作；应在外层调度这些操作，避免任务等待自己的结束。
-
-早期 Notebook 的 Session 没有 cwd 元数据。恢复这类旧文件时，请通过 `cwd=` 或 `--cwd` 指向对应实验 `workspace/`，例如 `.foxcode/labs/agent-core/fox-agent-core-lab-9tr1uzmn/workspace`。有 cwd 元数据的新会话自动恢复原项目；CLI 显式 `--cwd` 与它冲突时会报错。
-
-### 1.5 资源加载：方法、指令和工具分开
-
-`AGENTS.md` 按用户级、文件系统祖先目录到当前目录的顺序加入 system prompt，重复物理路径只读取一次。这一版只加载启动 cwd 及祖先的指令，不会在模型读取任意子目录文件时动态加载该子目录的指令。
-
-Skill 复用现有解析器，读取用户 `.foxcode/skills` 与项目 `.foxcode/skills`，同时兼容旧用户目录 `.foxcode/agent/skills`。目录优先级：旧用户目录 → 用户目录 → 项目目录。重名时后者覆盖前者并产生诊断。直接调用旧的 `load_skills()` 仍保留它原先的“先加载优先”规则；新规则由统一 ResourceLoader 实现。
-
-Skill 的描述进入 system prompt；正文按需通过 read 或 `invoke_skill()` 加入。Prompt 模板则是可复用的用户输入：
-
-```markdown
----
-description: 检查指定模块
----
-请检查 $ARGUMENTS 的职责、错误处理和测试覆盖。
-```
-
-保存为 `.foxcode/prompts/review.md` 后调用：
-
-```python
-await runtime.reload()
-await runtime.invoke_prompt("review", "packages/fox_agent_core/src/agent_loop.py")
-```
-
-模板采用字面量 `$ARGUMENTS` 替换，不执行 Python 或 Shell。Prompt 也支持子目录，例如 `prompts/code/review.md` 的名称为 `code/review`。
-
-资源回调仍可通过 `resource_providers=(callback,)` 注入，接收 cwd 并返回 `Resources`。可执行扩展通过 ExtensionRunner 显式加载，注册工具、命令、提示规则和事件钩子，详见第六章。当前没有扩展市场或 pi 完整插件协议。
-
-### 1.6 与 pi 的边界和面试表达
-
-这四项解决的是“同一个 Agent 循环如何服务不同项目和入口”。Session 保存历史，Settings 决定运行策略，Resources 提供项目知识，Runtime 负责把它们与 cwd 对齐，CLI 负责用户输入输出。
-
-没有为这四项修改 agent loop 的执行算法。保留这种依赖方向，可以在以后添加 TUI、HTTP/RPC 或插件时继续复用核心循环。当前仍是单进程、单会话写入者的精简实现；完整 TUI、OAuth 管理、项目可信任 UI、跨进程会话锁和插件市场属于后续应用层能力。
-
-验证命令：`uv run python -m unittest discover -s tests -v`。测试覆盖配置优先级、原子写失败、资源覆盖、cwd 工具重绑定、会话恢复、运行中取消、重载保留队列和 CLI JSON/退出码。测试显式注入 Faux 模型；正常 CLI 使用用户选择的真实 Provider，不会在请求失败时回退模拟模型。
-
-### 1.7 为什么认证必须独立于 cwd
-
-原先 `/cwd` 切换项目后，只继承了模型对象，新项目未配置 `api_key_env`，请求因此找不到 DeepSeek 密钥。现在每次请求通过 AuthStore 按实际模型的 provider、API 和服务地址查找凭据。模型切换、分支恢复及摘要调用共享这条路径，不缓存一个与当前模型无关的密钥。
-
-auth.json 存在用户目录，项目 cwd 只影响工具、资源和会话位置。项目不能通过放置一个同名 auth.json 覆盖用户凭据。Session 保存模型与思考级别，但不保存 apiKey；`/reload` 可以读取更新后的凭据，加载失败保留之前有效的目录。
-
-| 操作 | 结果 |
-| --- | --- |
-| `/model` | 列出目录并显示当前模型 |
-| `/model deepseek/deepseek-v4-pro` | 保留消息，切换模型并保存模型变更 |
-| `/thinking` | 查看当前思考级别，新会话默认 off |
-| `/thinking high` | 设置框架级思考强度并保存 |
-| `/thinking xhigh` | 按本例的映射发送 DeepSeek `max` |
-| `/thinking off` | 发送关闭思考的参数，不只是隐藏思考文本 |
-| `/cwd DIR`、`/new` | 新建会话并保留当前模型与可用的思考级别 |
-| `/resume FILE` | 恢复会话保存的模型和思考级别 |
-
-支持 `off/minimal/low/medium/high/xhigh/max`。提供的 DeepSeek 配置把 minimal 至 high 映射为同一服务端级别 high，xhigh 映射为 max；因此这些名称不表示服务端一定有七种不同模式。普通模型不允许启用思考。切换到不支持思考的模型时自动关闭思考。
-
-底层通过 OpenAI SDK 的 extra_body 发送 DeepSeek 的 thinking 与 reasoning_effort 字段；框架思考状态优先于采样参数中固定的 thinking 值，避免旧的 disabled 参数使 `/thinking high` 失效。
-
-原项目设置备份为 `.foxcode/settings.before-auth.json`，不参与加载。无需新建 settings.json；模型目录以外的项目策略继续使用代码默认值。CLI 入口是 `fox_coding_agent.src.cli:main`，升级后运行 `uv sync` 刷新安装元数据。
+常用交互命令：`/new`、`/resume`、`/cwd`、`/reload`、`/trust`、`/compact`、`/usage`、`/export`、`/tools`、`/model`、`/thinking`、`/skill` 和 `/prompt`。
 
 <a id="ch02"></a>
 
@@ -479,7 +403,7 @@ Skill 可以指导模型怎样组合工具，但技能文件本身不会因为�
 | `after_tool_call` | 适用的结果处理阶段 | 修改内容、详情、错误标记或终止提示 |
 | `should_stop_after_turn` | 当前轮次完成后 | 宿主要求提前停止 |
 
-这张表描述内核与 Agent 的扩展面。当前 `AgentHarnessOptions` 只直接暴露其中一部分，其余能力可以使用较低层的 Agent 接口或扩展 Harness，不能假设每个选项都能原样传给所有层。
+这张表描述内核与 Agent 的扩展面。当前 `AgentSessionConfig` 只直接暴露其中一部分，其余能力可以使用较低层的 Agent 接口或扩展 Harness，不能假设每个选项都能原样传给所有层。
 
 `after_tool_call` 也不是无论发生什么都执行的 finally 钩子，例如取消或参数校验未完成时，不一定进入它。资源释放仍应放在工具自身的清理路径中。
 
@@ -508,8 +432,10 @@ Skill 可以指导模型怎样组合工具，但技能文件本身不会因为�
 | `register_command(name, handler, description)` | 注册 CLI 命令；也可由 SDK 调用 |
 | `add_prompt_guideline(text)` | 补充 system prompt 规则 |
 | `on(event, handler)` | 订阅 Agent/Compaction 事件和宿主钩子 |
+| `register_service(name, service)` | 注册供扩展协作的进程内服务 |
+| `register_context_transform(name, fn)` | 只转换本次模型请求的消息副本 |
 
-handler 支持同步或异步，签名为 `(data, context)`；`context.cwd` 是所属项目，`context.harness` 和 `context.session` 提供当前宿主与会话。Agent/Compaction 事件的 data 是事件对象；`before_prompt`、`tool_call`、`tool_result`、`session_start`、`session_shutdown` 的 data 是字典。
+handler 支持同步或异步，签名为 `(data, context)`；`context.cwd` 是所属项目，`context.agent_session` 和 `context.session` 提供当前宿主与会话。Agent/Compaction 事件的 data 是事件对象；`before_prompt`、`tool_call`、`tool_result`、`session_start`、`session_shutdown` 的 data 是字典。
 
 `before_prompt` 可返回 `{"message": "替换后的输入"}`；`tool_call` 可返回 `{"block": True, "reason": "原因"}`；`tool_result` 可补充或替换 content/details/is_error 等结果字段。普通事件只用于观察，返回值不改变核心循环。宿主传入的工具阻止策略先执行，扩展不会使已阻止的工具真正执行。
 
@@ -532,7 +458,7 @@ uv run fox --extension examples/extensions/project_info.py --command project-inf
 uv run fox --extension examples/extensions/project_info.py --interactive
 ```
 
-`/reload` 会重新编译显式扩展的源文件，使用新的注册表，避免重复事件处理器和旧模块缓存。加载失败保留当前 Harness。当前支持单文件扩展和 SDK 工厂，不包含插件市场、包安装、Provider 扩展或自定义 UI 组件协议。
+`/reload` 会重新编译显式扩展的源文件，使用新的注册表，避免重复事件处理器和旧模块缓存。加载失败保留当前 AgentSession。当前支持单文件扩展和 SDK 工厂，不包含插件市场、包安装、Provider 扩展或自定义 UI 组件协议。
 
 <a id="ch07"></a>
 
@@ -540,7 +466,7 @@ uv run fox --extension examples/extensions/project_info.py --interactive
 
 
 ```powershell
-uv run fox --interactive
+uv run fox --trust-project --interactive
 uv run fox --resume --interactive
 uv run fox --resume --compact
 uv run fox --tools read,grep,find,ls -p "梳理项目结构"
@@ -548,7 +474,7 @@ uv run fox --skill release-audit -p "检查开发环境"
 uv run fox --template review -p "src/module.py"
 ```
 
-连续对话提供 `/new`、`/resume 文件`、`/cwd 目录`、`/reload`、`/compact`、`/tools`、`/model`、`/thinking`、`/skill 名称`、`/prompt 名称` 和扩展命令。`/tools none` 禁用工具；`/help` 显示可用命令；`/exit` 结束。当前每次任务等待完成后打印最终回复，Ctrl+C 结束 CLI；没有实现终端组件、复杂键盘交互或 TUI。
+连续对话提供 `/new`、`/resume 文件`、`/cwd 目录`、`/reload`、`/trust`、`/untrust`、`/compact`、`/usage`、`/export`、`/tools`、`/model`、`/thinking`、`/skill 名称`、`/prompt 名称` 和扩展命令。`/tools none` 禁用工具；`/help` 显示可用命令；`/exit` 结束。当前每次任务等待完成后打印最终回复，Ctrl+C 结束 CLI；没有实现终端组件、复杂键盘交互或 TUI。
 
 非交互 JSON 模式继续保留稳定的逐行事件输出，扩展命令返回 `command_result`。普通扩展 print 被导向 stderr；扩展若直接写文件描述符或启动自己的后台任务，需自行遵守宿主输出和资源清理约定。
 
@@ -560,20 +486,21 @@ uv run fox --template review -p "src/module.py"
 
 ### 8.1 一次任务怎样贯穿宿主
 
-CLI 解析参数，Runtime 选定 cwd 与 Session，再由 Settings 和 Resources 决定模型、工具、项目指令与扩展。Harness 用 Session 重建 Agent 上下文，每次请求前检查压缩预算，完成消息到达后保存。工具结果推动下一轮模型请求；CLI 订阅事件或等待最终回复。
+CLI 解析参数，Runtime 选定 cwd 与 Session，再由 Settings 和 Resources 决定模型、工具、项目指令与扩展。AgentSession 用 SessionManager 重建 Agent 上下文，每次请求前检查压缩预算，完成消息到达后保存。工具结果推动下一轮模型请求；CLI 订阅事件或等待最终回复。
 
-`Runtime` 管理“当前是哪一个宿主”，`Harness` 管理“这个宿主如何运行与保存”。切换项目需要重建 cwd 绑定的工具，不能只修改字符串；恢复 Session 恢复的是历史状态，无法恢复进程退出前的协程。加载失败保留旧 Harness，但已取消的旧任务不会自行重启。
+`Runtime` 管理“当前是哪一个 AgentSession”，`AgentSession` 管理“这个会话如何运行与保存”。切换项目需要重建 cwd 绑定的工具，不能只修改字符串；恢复 Session 恢复的是历史状态，无法恢复进程退出前的协程。加载失败保留旧 AgentSession，但已取消的旧任务不会自行重启。
 
 ### 8.2 源码地图
 
 | 文件 | 要理解的职责 |
 | --- | --- |
 | [runtime.py](src/core/runtime.py) | 会话/cwd 切换、重载、扩展生命周期 |
-| [harness.py](src/core/harness.py) | Agent、持久化和请求前压缩的组装 |
-| [session.py](src/core/session.py) | 历史树、JSONL 和上下文重建 |
-| [compaction.py](src/core/compaction.py) | 估算、切割和摘要生成 |
+| [agent_session.py](src/core/agent_session.py) | Agent、持久化、压缩与安全恢复的组装 |
+| [session_manager.py](src/core/session_manager.py) | 历史树、JSONL、统计、导出和上下文重建 |
+| [compaction.py](../fox_agent_core/src/harness/compaction.py) | 通用估算、切割和摘要生成 |
 | [settings.py](src/core/settings.py) | 配置优先级与原子写入 |
-| [auth.py](src/core/auth.py) | 用户级模型目录、别名解析与按服务地址匹配的凭据 |
+| [model_config.py](src/core/model_config.py) / [model_registry.py](src/core/model_registry.py) | 模型目录、归一化和选择 |
+| [credentials.py](src/core/credentials.py) / [model_runtime.py](src/core/model_runtime.py) | 凭据持久化与请求时认证 |
 | [resources.py](src/core/resources.py) / [skills.py](src/core/skills.py) | 项目知识的发现与组织 |
 | [tools.py](src/core/tools.py) / [system_prompt.py](src/core/system_prompt.py) | 执行能力与提示词的一致性 |
 | [extensions.py](src/core/extensions.py) | 注册工具、命令和钩子 |
@@ -584,3 +511,70 @@ CLI 解析参数，Runtime 选定 cwd 与 Session，再由 Settings 和 Resource
 “我参考 pi 的分层，把项目策略放在 coding-agent，而不写进通用 loop。工具提供执行能力，Skill 提供方法，system prompt 组织上下文，Hook 执行宿主限制。Session 保存历史树，压缩生成模型可消费的工作视图，Runtime 保证切换会话时 cwd、工具和资源同步变化。”
 
 当前是单进程、单写入者的 mini 实现，没有完整 TUI、插件市场、OS 沙箱或 exactly-once 保证。JSONL 使用全文件原子替换；压缩使用估算预算，摘要成功后才提交，无法保证任何长度的输入都能缩到窗口内。未来 UI 复用 Runtime 的调用与订阅接口，无需重新实现循环。
+
+
+<a id="ch09"></a>
+
+## 第九章：Memory、MCP 与自进化 Skill 应该怎样加入
+
+### 9.1 先判断它是机制、宿主能力还是扩展
+
+遵循 pi 的核心思想：稳定、通用的执行机制放底层，具有产品策略和外部副作用的能力放 coding-agent 扩展。
+
+| 能力 | 推荐位置 | 不放入 agent loop 的原因 |
+| --- | --- | --- |
+| Memory 的存储、检索、写入策略 | `fox_coding_agent/src/extensions/memory/` | 记什么、存多久和作用域都是产品策略 |
+| MCP server 生命周期与工具代理 | `fox_coding_agent/src/extensions/mcp/` | 涉及进程、网络、凭据、信任和动态资源 |
+| Skill 候选生成、评估与发布 | `fox_coding_agent/src/extensions/skill_evolution/` | 会写文件并改变以后行为，需要审核与版本管理 |
+| 通用服务注册、请求上下文变换、事件 | `core/extensions.py` | 这是多个扩展共享的稳定协议 |
+| ToolCall 调度、取消、消息事件 | `fox_agent_core` | 是所有 Agent 都需要的执行机制 |
+
+建议新增目录：
+
+```text
+fox_coding_agent/src/
+├─ core/extensions.py              # Extension API 与 Runner
+└─ extensions/
+   ├─ memory/                      # MemoryStore、retriever、extension setup
+   ├─ mcp/                         # MCPManager、server config、tool proxy
+   └─ skill_evolution/             # candidate/evaluator/publisher
+```
+
+这些模块通过 `setup(api)` 注册，不让 `fox_agent_core` 反向依赖它们。
+
+### 9.2 Memory：服务与上下文投影分开
+
+Memory 扩展注册 `memory.store` 服务，负责 CRUD、索引和作用域；再注册 context transform，在每次模型请求前检索少量相关记忆并加入请求副本。请求副本不会写回 Session，因此 Session 仍记录真实对话，Memory 只是本轮上下文投影。
+
+```python
+def setup(api):
+    store = MemoryStore(...)
+    api.register_service("memory.store", store)
+    api.register_context_transform("memory.recall", recall_into_context)
+    api.on("message_end", extract_candidate_memories)
+```
+
+长期事实与对话历史要分开保存。用户级记忆可放 `~/.foxcode/memory/`；项目记忆放 `<project>/.foxcode/memory/`，只有项目 trusted 后才读写。写入应保存来源、时间、作用域和置信度，支持删除，不要把模型生成的每一句总结直接当事实。
+
+### 9.3 MCP：连接管理器不是一个巨型工具
+
+MCP 扩展注册 `mcp.manager` 服务。每个远端 tool 映射成普通 `AgentTool` proxy，内核继续使用现有参数校验、事件和取消逻辑。Manager 负责连接、能力发现、超时与关闭；proxy 只把一次 `execute()` 转给目标 server。
+
+配置建议分两层：`~/.foxcode/mcp.json` 保存用户 server，项目 `.foxcode/mcp.json` 保存项目 server。项目配置必须经过 trust；凭据引用 CredentialStore 或环境变量，不直接写进 Session。mini 版本可以先采用 lazy connect：扩展 setup 同步注册已配置的 proxy，首次执行时连接；以后再给 ExtensionRunner 增加正式的 async start/stop 生命周期。
+
+### 9.4 自进化 Skill：生成候选，不自动覆盖生效 Skill
+
+自进化流程应拆成四步：观察运行事件 → 生成候选 → 离线评估/人工审核 → 发布。扩展监听 Session 与工具结果，从成功或失败模式生成候选文件：
+
+```text
+~/.foxcode/skill-candidates/<candidate-id>/SKILL.md
+<project>/.foxcode/skill-candidates/<candidate-id>/SKILL.md
+```
+
+通过测试和审核后，再由 publisher 原子复制到 `skills/<name>/SKILL.md`，写入版本、来源 Session 和评估结果，然后触发 `/reload`。项目级发布受 trust 控制。不要让当前运行中的模型直接覆盖正在使用的 Skill，否则一次提示注入或错误总结会永久改变 Agent 行为，也难以回滚。
+
+### 9.5 扩展之间怎样协作
+
+`ExtensionAPI.register_service()` 发布进程内能力，`ExtensionContext.service()` 供其他扩展查找；`register_context_transform()` 只改变发给模型的请求副本；Tool 用于模型可主动调用的动作；event hook 用于观察生命周期。
+
+这四种接口分别解决依赖注入、上下文增强、可执行能力和事件观察。Memory、MCP、自进化 Skill 可以独立安装，也可以通过服务注册表协作，而 agent loop 始终只看到标准消息与标准工具。

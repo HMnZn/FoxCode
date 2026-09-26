@@ -1,29 +1,24 @@
 [project]
-name = "foxcode"
+name = "foxcode-workspace"
 version = "0.1.0"
-description = "Minimal coding agent runtime and CLI"
+description = "FoxCode development workspace"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
-    "anthropic>=1.8.0",
-    "httpx>=0.28.1",
+    "fox-ai",
+    "fox-agent-core",
+    "fox-coding-agent",
     "ipykernel>=7.3.0",
-    "json-repair>=0.63.5",
-    "jsonschema>=4.26.0",
-    "openai>=3.19.0",
-    "pydantic>=2.13.5",
-    "pyyaml>=6.0.2",
-    "pathspec>=0.12.1",
 ]
 
-[build-system]
-requires = ["setuptools>=75"]
-build-backend = "setuptools.build_meta"
+[tool.uv.workspace]
+members = [
+    "packages/fox_ai",
+    "packages/fox_agent_core",
+    "packages/fox_coding_agent",
+]
 
-[project.scripts]
-fox = "fox_coding_agent.src.cli:main"
-
-[tool.setuptools.packages.find]
-where = ["packages"]
-include = ["fox_agent_core*", "fox_ai*", "fox_coding_agent*"]
-namespaces = true
+[tool.uv.sources]
+fox-ai = { workspace = true }
+fox-agent-core = { workspace = true }
+fox-coding-agent = { workspace = true }

@@ -13,7 +13,7 @@ from fox_agent_core.src import (
     Agent, AgentOptions, AgentState
 )
 from fox_coding_agent.src import (
-    AgentHarness, AgentHarnessOptions, Session, CompactionSettings, ReadTool, WriteTool, EditTool, BashTool, LoadSkillsOptions, load_skills, generate_summary
+    AgentSession, AgentSessionConfig, SessionManager, CompactionSettings, ReadTool, WriteTool, EditTool, BashTool, LoadSkillsOptions, load_skills, generate_summary
 )
 
 
@@ -69,7 +69,7 @@ class ToolTests(unittest.IsolatedAsyncioTestCase):
         skill_dir = self.path / ".foxcode/skills/example"
         skill_dir.mkdir(parents=True)
         (skill_dir / "SKILL.md").write_text("---\nname: example\ndescription: test skill\ndisable-model-invocation: true\n---\nFollow these steps.")
-        options = LoadSkillsOptions(cwd=str(self.path), agent_dir=str(self.path / "user"))
+        options = LoadSkillsOptions(cwd=str(self.path), user_dir=str(self.path / "user"))
         skills = load_skills(options)
         self.assertEqual(len(skills.skills), 1)
         contexts = []
@@ -80,7 +80,7 @@ class ToolTests(unittest.IsolatedAsyncioTestCase):
             es.end(AssistantMessage(content=[TextContent(text="ok")], stop_reason="stop"))
             return es
 
-        harness = AgentHarness(AgentHarnessOptions(model=FAUX_MODEL, tools=[], cwd=self.path, skill_options=options, stream_fn=stream))
+        harness = AgentSession(AgentSessionConfig(model=FAUX_MODEL, tools=[], cwd=self.path, skill_options=options, stream_fn=stream))
         self.assertNotIn("<name>example</name>", harness.state.system_prompt)
         await harness.invoke_skill("example", "Do this task")
         prompt = contexts[0].messages[0].content[0].text
@@ -115,10 +115,10 @@ class ToolTests(unittest.IsolatedAsyncioTestCase):
             entered.set()
             await asyncio.Event().wait()
 
-        session = Session()
+        session = SessionManager()
         session.append_message(UserMessage(content="old " * 100))
         session.append_message(UserMessage(content="recent"))
-        harness = AgentHarness(AgentHarnessOptions(model=FAUX_MODEL, session=session, tools=[], skills=[],
+        harness = AgentSession(AgentSessionConfig(model=FAUX_MODEL, session=session, tools=[], skills=[],
                                summary_fn=summary, compaction=CompactionSettings(keep_recent_tokens=10)))
         previous = session.leaf_id
         task = asyncio.create_task(harness.compact())
@@ -139,7 +139,7 @@ class ToolTests(unittest.IsolatedAsyncioTestCase):
         x, y = AgentState(), AgentState()
         x.model.id = "changed"
         self.assertNotEqual(x.model.id, y.model.id)
-        session = Session()
+        session = SessionManager()
         self.assertNotEqual(session.storage.get_metadata()["id"], session.fork().storage.get_metadata()["id"])
 
 

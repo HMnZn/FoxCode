@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "packages"))
 
 from fox_ai.src import ToolCall
 from fox_ai.src.providers.faux import FAUX_MODEL, FauxScript, clear_scripts, push_script
-from fox_coding_agent.src import AgentHarness, AgentHarnessOptions, JsonlSessionStorage, Session
+from fox_coding_agent.src import AgentSession, AgentSessionConfig, JsonlSessionStorage, SessionManager
 
 
 async def main():
@@ -26,8 +26,9 @@ async def main():
 
     with tempfile.TemporaryDirectory(prefix="fox-agent-demo-") as directory:
         session_file = Path(directory) / "session.jsonl"
-        harness = AgentHarness(AgentHarnessOptions(
-            model=FAUX_MODEL, cwd=directory, session=Session(JsonlSessionStorage(session_file)), skills=[],
+        agent_session = AgentSession(AgentSessionConfig(
+            model=FAUX_MODEL, cwd=directory,
+            session=SessionManager(JsonlSessionStorage(session_file)), skills=[],
         ))
 
         def show(event, cancel_event):
@@ -38,12 +39,12 @@ async def main():
                 if delta.type == "text_delta":
                     print(delta.delta, end="", flush=True)
 
-        harness.subscribe(show)
-        await harness.prompt("创建 hello.txt，写入问候语，然后读取确认。")
-        print(f"\n本次会话共有 {len(harness.state.messages)} 条消息。")
+        agent_session.subscribe(show)
+        await agent_session.prompt("创建 hello.txt，写入问候语，然后读取确认。")
+        print(f"\n本次会话共有 {len(agent_session.state.messages)} 条消息。")
 
-        restored = AgentHarness(AgentHarnessOptions(
-            cwd=directory, session=Session(JsonlSessionStorage(session_file)), skills=[],
+        restored = AgentSession(AgentSessionConfig(
+            cwd=directory, session=SessionManager(JsonlSessionStorage(session_file)), skills=[],
         ))
         print(f"从 JSONL 恢复了 {len(restored.state.messages)} 条消息，模型：{restored.state.model.id}。")
 

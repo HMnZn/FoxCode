@@ -109,6 +109,13 @@ from .types import (
 
 # ---- User-Agent ----
 from .user_agent import get_pi_user_agent
+from .credentials import (
+    ApiKeyCredential,
+    OAuthCredential,
+    Credential,
+    CredentialStore,
+    InMemoryCredentialStore,
+)
 
 # 注册内置 provider（副作用，幂等）
 register_builtins()
@@ -166,6 +173,11 @@ __all__ = [
     "ToolCallStartEvent",
     # 事件流
     "EventStream",
+    "ApiKeyCredential",
+    "OAuthCredential",
+    "Credential",
+    "CredentialStore",
+    "InMemoryCredentialStore",
     # 异常
     "LLMAuthenticationError",
     "LLMConnectionError",

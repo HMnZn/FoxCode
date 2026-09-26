@@ -10,7 +10,7 @@
    深层目录仅通过 ``SKILL.md`` 贡献。
 
 加载位置：
-- 用户级：``~/.foxcode/agent/skills/``
+- 用户级：``~/.foxcode/skills/``
 - 项目级：``<cwd>/.foxcode/skills/``
 - 显式路径
 
@@ -259,7 +259,7 @@ class LoadSkillsOptions:
     """load_skills 的配置。"""
 
     cwd: str = ""
-    agent_dir: str = ""
+    user_dir: str = ""
     skill_paths: list[str] = field(default_factory=list)
     include_defaults: bool = True
 
@@ -268,12 +268,12 @@ def load_skills(options: LoadSkillsOptions) -> SkillLoadResult:
     """从多个位置加载技能。
 
     加载顺序（先加载的优先，重名产生冲突诊断）：
-    1. 用户级：``<agent_dir>/skills``（默认 ``~/.foxcode/agent/skills``）
+    1. 用户级：``<user_dir>/skills``（默认 ``~/.foxcode/skills``）
     2. 项目级：``<cwd>/.foxcode/skills``
     3. 显式路径
     """
     cwd = options.cwd or os.getcwd()
-    agent_dir = options.agent_dir or _default_agent_dir()
+    user_dir = options.user_dir or _default_user_dir()
     result = SkillLoadResult()
     seen_names: dict[str, str] = {}  # name -> file_path
     seen_paths: set[str] = set()
@@ -300,7 +300,7 @@ def load_skills(options: LoadSkillsOptions) -> SkillLoadResult:
 
     if options.include_defaults:
         # 用户级
-        user_skills_dir = os.path.join(agent_dir, "skills")
+        user_skills_dir = os.path.join(user_dir, "skills")
         _add(load_skills_from_dir(user_skills_dir), "user")
         # 项目级
         project_skills_dir = os.path.join(cwd, CONFIG_DIR_NAME, "skills")
@@ -319,12 +319,9 @@ def load_skills(options: LoadSkillsOptions) -> SkillLoadResult:
     return result
 
 
-def _default_agent_dir() -> str:
-    """默认目录：``$FOX_AGENT_DIR`` 或 ``~/.foxcode/agent``；兼容旧环境变量。"""
-    env_dir = os.environ.get("FOX_AGENT_DIR") or os.environ.get("PI_CODING_AGENT_DIR")
-    if env_dir:
-        return os.path.expanduser(env_dir)
-    return os.path.join(os.path.expanduser("~"), CONFIG_DIR_NAME, "agent")
+def _default_user_dir() -> str:
+    """Return the canonical user resource directory."""
+    return os.path.join(os.path.expanduser("~"), CONFIG_DIR_NAME)
 
 
 # ============================================================

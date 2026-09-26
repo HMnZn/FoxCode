@@ -1,0 +1,18 @@
+[project]
+name = "fox-agent-core"
+version = "0.1.0"
+description = "Provider-neutral agent loop, state and generic harness for FoxCode"
+readme = "ARCHITECTURE_GUIDE.md"
+requires-python = ">=3.14"
+dependencies = [
+    "fox-ai==0.1.0",
+    "jsonschema>=4.26.0",
+]
+
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["fox_agent_core.src", "fox_agent_core.src.harness"]
+package-dir = {"fox_agent_core.src" = "src", "fox_agent_core.src.harness" = "src/harness"}

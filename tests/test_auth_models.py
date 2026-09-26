@@ -11,28 +11,43 @@ import httpx
 from fox_ai.src import Context, SimpleStreamOptions, UserMessage
 from fox_ai.src.providers.faux import FauxScript
 from fox_ai.src.providers.openai_provider import openai_api_provider
-from fox_coding_agent.src import AgentSessionRuntime, AuthStore
+from fox_coding_agent.src import (
+    AgentSessionRuntime,
+    CredentialStore,
+    ModelConfig,
+    ModelRegistry,
+    ModelRuntime,
+)
 from fox_coding_agent.src.cli import build_parser, run
 from test_agent_core import scripted
 from test_runtime import Workspace, write
 
 
-def auth_data():
+def model_data():
     model = {"id": "flash", "name": "Flash", "contextWindow": 32768,
              "maxTokens": 4096, "input": ["text"], "reasoning": True,
-             "compat": {"thinkingFormat": "deepseek", "reasoningEffortMap": {
-                 "minimal": "high", "low": "high", "medium": "high", "high": "high", "xhigh": "max"}}}
+             "compat": {"thinkingFormat": "deepseek"},
+             "thinkingLevelMap": {
+                 "minimal": "high", "low": "high", "medium": "high", "high": "high", "xhigh": "max"}}
     return {"providers": {
         "first": {"api": "openai-completions", "baseUrl": "https://first.invalid/v1",
-                  "apiKey": "first-secret", "models": [model]},
+                  "models": [model]},
         "second": {"api": "openai-completions", "baseUrl": "https://second.invalid/v1",
-                   "apiKey": "second-secret", "models": [{**model, "id": "pro", "name": "Pro"}]},
+                   "models": [{**model, "id": "pro", "name": "Pro"}]},
     }}
 
 
+def credential_data(first="first-secret", second="second-secret"):
+    return {
+        "first": {"type": "api_key", "key": first},
+        "second": {"type": "api_key", "key": second},
+    }
+
+
 class AuthModelTests(Workspace, unittest.IsolatedAsyncioTestCase):
-    def configure(self, data=None):
-        write(self.user / "auth.json", json.dumps(data or auth_data()))
+    def configure(self, models=None, credentials=None):
+        write(self.user / "models.json", json.dumps(models or model_data()))
+        write(self.user / "auth.json", json.dumps(credentials or credential_data()))
 
     def runtime(self, **kwargs):
         runtime = AgentSessionRuntime(self.project, user_dir=self.user, **kwargs)
@@ -51,7 +66,7 @@ class AuthModelTests(Workspace, unittest.IsolatedAsyncioTestCase):
         await runtime.prompt("second")
         self.assertEqual([o.api_key for o in stream.options], ["first-secret", "second-secret"])
         self.assertEqual(stream.options[-1].reasoning, "xhigh")
-        runtime.harness.move_to(first_leaf)
+        runtime.agent_session.move_to(first_leaf)
         await runtime.prompt("first branch again")
         self.assertEqual(stream.options[-1].api_key, "first-secret")
         runtime.select_model("second/pro")
@@ -81,14 +96,13 @@ class AuthModelTests(Workspace, unittest.IsolatedAsyncioTestCase):
         self.configure()
         stream = scripted(FauxScript(text="new"), FauxScript(text="still new"))
         runtime = self.runtime(stream_fn=stream)
-        changed = auth_data()
-        changed["providers"]["first"]["apiKey"] = "rotated-secret"
-        self.configure(changed)
+        self.configure(credentials=credential_data(first="rotated-secret"))
         await runtime.reload()
         await runtime.prompt("new key")
         self.assertEqual(stream.options[-1].api_key, "rotated-secret")
+        changed = model_data()
         changed["providers"]["first"]["models"][0]["maxTokens"] = "invalid"
-        self.configure(changed)
+        self.configure(models=changed, credentials=credential_data(first="rotated-secret"))
         with self.assertRaisesRegex(ValueError, "model metadata"):
             await runtime.reload()
         await runtime.prompt("after failed reload")
@@ -96,30 +110,35 @@ class AuthModelTests(Workspace, unittest.IsolatedAsyncioTestCase):
 
     async def test_catalog_validation_hides_keys_and_rejects_duplicates(self):
         self.configure()
-        store = AuthStore(self.user)
-        self.assertNotIn("secret", repr(store.models))
-        original = store.models
-        data = auth_data()
+        config = ModelConfig(self.user)
+        registry = ModelRegistry(config)
+        self.assertNotIn("secret", repr(registry.models))
+        normalized = registry.default().model
+        self.assertEqual(normalized.thinking_level_map["xhigh"], "max")
+        self.assertNotIn("reasoningEffortMap", normalized.compat)
+        original = registry.models
+        data = model_data()
         data["providers"]["first"]["models"] *= 2
-        self.configure(data)
+        self.configure(models=data)
         with self.assertRaisesRegex(ValueError, "Duplicate"):
-            store.reload()
-        self.assertEqual(store.models, original)
-        data = auth_data()
+            config.reload()
+        self.assertEqual(registry.models, original)
+        data = model_data()
         data["providers"]["first"]["models"] = "invalid"
-        self.configure(data)
+        self.configure(models=data)
         with self.assertRaises(ValueError) as caught:
-            store.reload()
+            config.reload()
         self.assertNotIn("first-secret", str(caught.exception))
         with self.assertRaises(ValueError):
-            store.resolve("missing")
+            registry.resolve("missing")
+        self.assertEqual(CredentialStore(self.user).list(), ("first", "second"))
 
     async def test_credentials_are_scoped_to_endpoint_and_project_auth_is_not_loaded(self):
         self.configure()
-        store = AuthStore(self.user)
-        model = store.default().model
-        self.assertIsNone(store.key_for_model(model.model_copy(update={"base_url": "https://other.invalid"})))
-        self.assertIsNone(store.key_for_model(model.model_copy(update={"api": "anthropic-messages"})))
+        runtime = ModelRuntime(self.user)
+        model = runtime.registry.default().model
+        self.assertIsNone(runtime.api_key_for(model.model_copy(update={"base_url": "https://other.invalid"})))
+        self.assertIsNone(runtime.api_key_for(model.model_copy(update={"api": "anthropic-messages"})))
         write(self.project / ".foxcode/auth.json", json.dumps({"providers": {}}))
         self.assertEqual(self.runtime().state.model.id, "flash")
 
@@ -151,7 +170,7 @@ class AuthModelTests(Workspace, unittest.IsolatedAsyncioTestCase):
 
     async def test_real_openai_sdk_serializes_deepseek_thinking_on_and_off(self):
         self.configure()
-        model = AuthStore(self.user).default().model
+        model = ModelRegistry(ModelConfig(self.user)).default().model
         bodies = []
 
         async def handle(request):

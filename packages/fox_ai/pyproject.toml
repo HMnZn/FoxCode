@@ -1,0 +1,21 @@
+[project]
+name = "fox-ai"
+version = "0.1.0"
+description = "Provider-neutral streaming LLM API for FoxCode"
+readme = "ARCHITECTURE_STUDY.md"
+requires-python = ">=3.14"
+dependencies = [
+    "anthropic>=1.8.0",
+    "httpx>=0.28.1",
+    "json-repair>=0.63.5",
+    "openai>=3.19.0",
+    "pydantic>=2.13.5",
+]
+
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["fox_ai.src", "fox_ai.src.providers"]
+package-dir = {"fox_ai.src" = "src", "fox_ai.src.providers" = "src/providers"}

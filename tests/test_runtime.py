@@ -15,7 +15,7 @@ from unittest.mock import patch
 from fox_ai.src import ToolCall, UserMessage
 from fox_ai.src.providers.faux import FAUX_MODEL, FauxScript, clear_scripts
 from fox_coding_agent.src import (
-    AgentSessionRuntime, JsonlSessionStorage, ResourceLoader, Resources, Session, SettingsManager
+    AgentSessionRuntime, JsonlSessionStorage, ResourceLoader, Resources, SessionManager, SettingsManager
 )
 from fox_coding_agent.src.cli import build_parser, run
 from test_agent_core import scripted, tool_fixture
@@ -40,12 +40,11 @@ class Workspace:
 
 
 class SettingsTests(Workspace, unittest.TestCase):
-    def test_project_can_override_one_model_field(self):
-        write(self.user / "settings.json", json.dumps({"model": FAUX_MODEL.model_dump(mode="json")}))
-        write(self.project / ".foxcode/settings.json", json.dumps({"model": {"max_tokens": 120}}))
+    def test_project_can_override_model_reference(self):
+        write(self.user / "settings.json", json.dumps({"model": "demo/flash"}))
+        write(self.project / ".foxcode/settings.json", json.dumps({"model": "demo/pro"}))
         settings = SettingsManager(self.project, user_dir=self.user).settings
-        self.assertEqual(settings.model.id, "faux")
-        self.assertEqual(settings.model.max_tokens, 120)
+        self.assertEqual(settings.model, "demo/pro")
 
     def test_api_key_belongs_to_auth_not_settings(self):
         manager = SettingsManager(self.project, user_dir=self.user)
@@ -133,11 +132,11 @@ class RuntimeTests(Workspace, unittest.IsolatedAsyncioTestCase):
 
     async def test_persistence_failure_keeps_original_session(self):
         runtime = self.make_runtime()
-        original = runtime.harness
-        with patch("fox_coding_agent.src.core.session.os.replace", side_effect=OSError("disk full")):
+        original = runtime.agent_session
+        with patch("fox_coding_agent.src.core.session_manager.os.replace", side_effect=OSError("disk full")):
             with self.assertRaises(OSError):
                 await runtime.change_cwd(self.other)
-        self.assertIs(runtime.harness, original)
+        self.assertIs(runtime.agent_session, original)
         self.assertFalse(list((self.other / ".foxcode/sessions").glob("*.jsonl")))
 
     async def test_switch_cwd_rebinds_tools_and_restores_saved_session(self):
@@ -196,7 +195,7 @@ class RuntimeTests(Workspace, unittest.IsolatedAsyncioTestCase):
         runtime = self.make_runtime(stream_fn=stream)
         await runtime.prompt("hello")
         original_file = runtime.session_file
-        runtime.harness.follow_up("queued task")
+        runtime.agent_session.follow_up("queued task")
         write(self.project / "AGENTS.md", "after reload")
         runtime.settings_manager.update({"stream_options": {"max_tokens": 80}, "tools": ["read"]})
         await runtime.reload()
@@ -212,11 +211,11 @@ class RuntimeTests(Workspace, unittest.IsolatedAsyncioTestCase):
 
     async def test_failed_reload_or_switch_keeps_old_runtime(self):
         runtime = self.make_runtime(stream_fn=scripted(FauxScript(text="still works")))
-        old = runtime.harness
+        old = runtime.agent_session
         write(self.project / ".foxcode/settings.json", "{ invalid")
         with self.assertRaises(ValueError):
             await runtime.reload()
-        self.assertIs(runtime.harness, old)
+        self.assertIs(runtime.agent_session, old)
         with self.assertRaises(FileNotFoundError):
             await runtime.switch_session(self.root / "missing.jsonl")
         self.assertFalse((self.root / "missing.jsonl").exists())
@@ -240,7 +239,7 @@ class RuntimeTests(Workspace, unittest.IsolatedAsyncioTestCase):
         await asyncio.wait_for(entered.wait(), 2)
         await asyncio.wait_for(runtime.change_cwd(self.other), 2)
         await asyncio.wait_for(running, 2)
-        messages = Session(JsonlSessionStorage(original_file)).build_context()
+        messages = SessionManager(JsonlSessionStorage(original_file)).build_context()
         results = [m for m in messages if m.role == "toolResult"]
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0].tool_call_id, "pending")
@@ -281,7 +280,7 @@ class CliTests(Workspace, unittest.IsolatedAsyncioTestCase):
             self.assertEqual(await run(resumed, stream_fn=stream), 0)
         self.assertEqual(stdout.getvalue().strip(), "restored")
         self.assertEqual(len(stream.contexts[0].messages), 3)
-        self.assertEqual(len(Session(JsonlSessionStorage(path)).build_context()), 4)
+        self.assertEqual(len(SessionManager(JsonlSessionStorage(path)).build_context()), 4)
 
     async def test_resume_unfinished_user_message(self):
         runtime = AgentSessionRuntime(self.project, user_dir=self.user, model=FAUX_MODEL)
@@ -317,8 +316,7 @@ class CliProcessTests(Workspace, unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertEqual(json.loads(result.stdout)["type"], "error")
         self.assertFalse((self.root / "missing.jsonl").exists())
-        write(self.project / ".foxcode/settings.json", json.dumps({
-            "model": FAUX_MODEL.model_dump(mode="json"), "max_turns": 1}))
+        write(self.project / ".foxcode/settings.json", json.dumps({"max_turns": 1}))
         result = self.command("--model", "unknown", "--json", "-p", "test")
         self.assertEqual(result.returncode, 1)
         self.assertIn("--base-url", json.loads(result.stdout)["error"])

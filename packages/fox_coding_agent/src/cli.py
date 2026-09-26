@@ -12,7 +12,9 @@ from pathlib import Path
 from pydantic import BaseModel
 from fox_ai.src import AssistantMessage, Model, TextContent, get_model
 from fox_coding_agent.src import AgentSessionRuntime, SettingsManager
-from fox_coding_agent.src.core.auth import AuthStore
+from fox_coding_agent.src.core.model_config import ModelConfig
+from fox_coding_agent.src.core.model_registry import ModelRegistry
+from fox_coding_agent.src.core.trust import ProjectTrustManager
 
 THINKING_LEVELS = ("off", "minimal", "low", "medium", "high", "xhigh", "max")
 
@@ -26,16 +28,22 @@ def build_parser():
     parser.add_argument("--cwd", type=Path, default=None, help="项目目录，默认当前目录")
     parser.add_argument("--user-dir", type=Path, help="用户配置目录，默认 ~/.foxcode")
     parser.add_argument("--provider", help="模型 provider，例如 deepseek")
-    parser.add_argument("--model", help="模型 ID 或 provider/model；优先匹配用户 auth.json")
+    parser.add_argument("--model", help="模型 ID 或 provider/model；优先匹配用户 models.json")
     parser.add_argument("--base-url", help="自定义服务地址；须与 --model 一起使用")
     parser.add_argument("--api", choices=["openai-completions", "anthropic-messages"],
                         help="自定义模型协议；默认 openai-completions")
     parser.add_argument("--api-key-env", help="存放 API key 的环境变量名")
     parser.add_argument("--max-tokens", type=int, help="单次输出 token 上限")
     parser.add_argument("--thinking", choices=THINKING_LEVELS, help="本次会话的思考强度")
-    parser.add_argument("--list-models", action="store_true", help="列出用户 auth.json 中可切换的模型后退出")
+    parser.add_argument("--list-models", action="store_true", help="列出用户 models.json 中可切换的模型后退出")
     parser.add_argument("--tools", help="启用的工具名，以逗号分隔；空字符串禁用工具")
     parser.add_argument("--extension", action="append", default=[], type=Path, help="加载 Python 扩展，可重复")
+    trust = parser.add_mutually_exclusive_group()
+    trust.add_argument("--trust-project", dest="project_trust", action="store_true",
+                       help="信任并记录当前项目，允许加载项目资源和执行工具")
+    trust.add_argument("--no-trust-project", dest="project_trust", action="store_false",
+                       help="记录当前项目为不信任")
+    parser.set_defaults(project_trust=None)
     parser.add_argument("--compact", action="store_true", help="执行前手动压缩当前会话")
     parser.add_argument("--interactive", action="store_true", help="进入纯文本连续对话")
     action = parser.add_mutually_exclusive_group()
@@ -63,18 +71,18 @@ def _emit(value):
     print(json.dumps(_json_value(value), ensure_ascii=False), flush=True)
 
 
-def _select_model(args, auth_store=None):
+def _select_model(args, registry=None):
     if not args.model:
         if args.provider or args.base_url or args.api:
             raise ValueError("--provider, --base-url and --api require --model")
         return None
     provider = args.provider or "openai"
-    if auth_store is not None and not args.base_url and not args.api:
+    if registry is not None and not args.base_url and not args.api:
         reference = f"{provider}/{args.model}" if args.provider else args.model
-        matches = [entry for entry in auth_store.models if reference.lower() in
+        matches = [entry for entry in registry.models if reference.lower() in
                    {entry.reference.lower(), entry.model.id.lower(), entry.model.name.lower()}]
         if matches:
-            return auth_store.resolve(reference).model
+            return registry.resolve(reference).model
     registered = get_model(provider, args.model)
     if registered is not None and not args.base_url and not args.api:
         return registered
@@ -99,7 +107,7 @@ def _print_models(runtime):
     active = f"{runtime.state.model.provider}/{runtime.state.model.id}"
     print(f"当前模型: {active}")
     if not runtime.available_models:
-        print("auth.json 中没有模型")
+        print("models.json 中没有模型")
         return
     for entry in runtime.available_models:
         marker = "*" if entry.reference == active else " "
@@ -125,27 +133,45 @@ async def _interactive(runtime):
             if command in ("exit", "quit"):
                 return
             if command == "help":
-                print("/new /resume FILE /cwd DIR /reload /compact /tools [names] /model [provider/id] /thinking [off|minimal|low|medium|high|xhigh|max] /skill NAME [args] /prompt NAME [args] /exit")
-                for name, (_, description) in runtime.harness.extensions.api.commands.items():
+                print("/new /resume FILE /cwd DIR /reload /trust /untrust /compact /usage /export FILE /tools [names] /model [provider/id] /thinking [off|minimal|low|medium|high|xhigh|max] /skill NAME [args] /prompt NAME [args] /exit")
+                for name, (_, description) in runtime.agent_session.extensions.api.commands.items():
                     print(f"/{name}: {description}")
             elif command == "new":
                 await runtime.new_session()
             elif command == "resume":
-                await runtime.switch_session(arguments or runtime.latest_session(runtime.cwd, user_dir=runtime.user_dir))
+                await runtime.switch_session(arguments or runtime.latest_session(
+                    runtime.cwd, user_dir=runtime.user_dir,
+                    project_trusted=runtime.project_trusted,
+                ))
             elif command == "cwd":
                 if arguments:
                     target = Path(arguments).expanduser()
-                    await runtime.change_cwd(target if target.is_absolute() else runtime.cwd / target)
+                    target = target if target.is_absolute() else runtime.cwd / target
+                    trust_manager = ProjectTrustManager(runtime.user_dir)
+                    await runtime.change_cwd(
+                        target, project_trusted=trust_manager.decision(target) is True
+                    )
                 print(runtime.cwd)
+            elif command in ("trust", "untrust"):
+                trusted = command == "trust"
+                ProjectTrustManager(runtime.user_dir).set(runtime.cwd, trusted)
+                await runtime.set_project_trust(trusted)
+                print("项目已信任" if trusted else "项目已设为不信任")
             elif command == "reload":
                 await runtime.reload()
                 print("配置、资源和扩展已重载")
             elif command == "compact":
                 result = await runtime.compact()
                 print(f"压缩了 {result.removed_count} 条消息\n{result.summary}")
+            elif command == "usage":
+                print(json.dumps(runtime.usage_totals, ensure_ascii=False))
+            elif command == "export":
+                if not arguments:
+                    raise ValueError("/export requires a .json or .md path")
+                print(runtime.export_session(arguments))
             elif command == "tools":
                 if arguments:
-                    runtime.harness.set_active_tools([] if arguments == "none" else arguments.replace(",", " ").split())
+                    runtime.agent_session.set_active_tools([] if arguments == "none" else arguments.replace(",", " ").split())
                 print(", ".join(t.name for t in runtime.state.tools) or "(none)")
             elif command == "model":
                 if arguments:
@@ -177,22 +203,28 @@ async def _interactive(runtime):
 async def run(args, *, stream_fn=None):
     """stream_fn is an SDK/test injection point; CLI never silently falls back to a fake model."""
     cwd = (args.cwd or Path.cwd()).expanduser().resolve()
-    auth_store = AuthStore(args.user_dir or Path.home() / ".foxcode")
+    user_dir = args.user_dir or Path.home() / ".foxcode"
+    model_config = ModelConfig(user_dir)
+    registry = ModelRegistry(model_config)
     if args.list_models:
         models = [{"reference": entry.reference, "name": entry.model.name, "reasoning": entry.model.reasoning}
-                  for entry in auth_store.models]
+                  for entry in registry.models]
         if args.json:
             _emit({"type": "models", "models": models})
         else:
             for item in models:
                 print(f"{item['reference']}  {item['name']}")
             if not models:
-                print(f"No models configured in {auth_store.path}")
+                print(f"No models configured in {model_config.path}")
         return 0
-    model = _select_model(args, auth_store)
+    model = _select_model(args, registry)
+    trust_manager = ProjectTrustManager(user_dir)
+    initial_trusted = (args.project_trust if args.project_trust is not None
+                       else trust_manager.decision(cwd) is True)
     session_file = None
     if args.resume:
-        session_file = (AgentSessionRuntime.latest_session(cwd, user_dir=args.user_dir)
+        session_file = (AgentSessionRuntime.latest_session(
+                            cwd, user_dir=args.user_dir, project_trusted=initial_trusted)
                         if args.resume == "latest" else Path(args.resume).expanduser().resolve())
     if args.max_tokens is not None and args.max_tokens <= 0:
         raise ValueError("--max-tokens must be positive")
@@ -204,15 +236,26 @@ async def run(args, *, stream_fn=None):
     if args.tools is not None:
         overrides["tools"] = [name.strip() for name in args.tools.split(",") if name.strip()]
     # Require explicit model selection or settings for new sessions; no arbitrary paid default.
+    project_trusted = initial_trusted
     if model is None and session_file is None:
-        model = SettingsManager(cwd, user_dir=args.user_dir).settings.model
+        model = SettingsManager(cwd, user_dir=args.user_dir,
+                                project_trusted=project_trusted).settings.model
     runtime = AgentSessionRuntime(cwd, model=model, session_file=session_file,
                                   user_dir=args.user_dir, settings_overrides=overrides, stream_fn=stream_fn,
-                                  extension_paths=args.extension)
+                                  extension_paths=args.extension,
+                                  project_trusted=(args.project_trust if args.project_trust is not None else None),
+                                  trust_resolver=lambda path: trust_manager.decision(path) is True)
     try:
+        if args.project_trust is not None:
+            # For --resume the session metadata may select a different cwd
+            # than the shell's current directory; record the actual project.
+            trust_manager.set(runtime.cwd, args.project_trust)
         if args.cwd is not None and runtime.cwd != cwd:
             raise ValueError(f"Session belongs to {runtime.cwd}; omit --cwd to restore it, or create a new session")
         print(f"Session: {runtime.session_file}", file=sys.stderr)
+        if not runtime.project_trusted:
+            print("Project is untrusted: project resources and tools are disabled; use --trust-project or /trust",
+                  file=sys.stderr)
         if args.thinking:
             runtime.set_thinking_level(args.thinking)
         for diagnostic in runtime.resources.diagnostics:

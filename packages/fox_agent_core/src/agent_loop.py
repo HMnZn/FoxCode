@@ -117,7 +117,7 @@ async def _run_loop(current, new_messages, config, cancel_event, emit, stream_fn
             if last_turn is not None:
                 await _safe_emit(emit, TurnStartEvent())
             try:
-                # 兼容旧版 pi 的轮次准备钩子：只在确实要继续时执行。
+                # Prepare only when another turn will actually run.
                 stopped = cancel_event is not None and cancel_event.is_set()
                 limited = config.max_turns is not None and turn_index >= config.max_turns
                 if last_turn is not None and config.prepare_next_turn and not stopped and not limited:

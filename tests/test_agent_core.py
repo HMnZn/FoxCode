@@ -14,7 +14,7 @@ from fox_agent_core.src import (
     Agent, AgentOptions, AgentContext, AgentLoopConfig, AgentState, AgentToolResult, agent_loop, agent_loop_continue
 )
 from fox_coding_agent.src import (
-    AgentHarness, AgentHarnessOptions, CompactionSettings, Session, JsonlSessionStorage, compact, find_cut_point
+    AgentSession, AgentSessionConfig, CompactionSettings, SessionManager, JsonlSessionStorage, compact, find_cut_point
 )
 
 
@@ -296,11 +296,11 @@ class SessionAndHarnessTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_jsonl_branch_compaction_reload_and_write_failure(self):
         file = self.path / "session.jsonl"
-        session = Session(JsonlSessionStorage(file))
+        session = SessionManager(JsonlSessionStorage(file))
         first = session.append_message(UserMessage(content="first"))
         session.append_message(AssistantMessage(content=[TextContent(text="answer")], stop_reason="stop"))
         session.append_compaction("summary", [UserMessage(content="tail")])
-        restored = Session(JsonlSessionStorage(file))
+        restored = SessionManager(JsonlSessionStorage(file))
         self.assertEqual(len(restored.build_context()), 2)
         self.assertIn("summary", restored.build_context()[0].content)
         restored.move_to(first.id)
@@ -308,7 +308,7 @@ class SessionAndHarnessTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(restored.build_context()), 2)
         before = file.read_bytes()
         count = len(restored.get_entries())
-        with patch("fox_coding_agent.src.core.session.os.replace", side_effect=OSError("disk full")):
+        with patch("fox_coding_agent.src.core.session_manager.os.replace", side_effect=OSError("disk full")):
             with self.assertRaises(OSError):
                 restored.append_message(UserMessage(content="lost"))
         self.assertEqual(file.read_bytes(), before)
@@ -319,13 +319,13 @@ class SessionAndHarnessTests(unittest.IsolatedAsyncioTestCase):
     async def test_harness_persists_tools_and_restores_configuration(self):
         file = self.path / "session.jsonl"
         stream = scripted(FauxScript(tool_calls=[ToolCall(id="w", name="write", arguments={"path": "demo.txt", "content": "hello"})]), FauxScript(text="done"))
-        harness = AgentHarness(AgentHarnessOptions(model=FAUX_MODEL, session=Session(JsonlSessionStorage(file)),
+        harness = AgentSession(AgentSessionConfig(model=FAUX_MODEL, session=SessionManager(JsonlSessionStorage(file)),
                                cwd=self.path, skills=[], stream_fn=stream))
         harness.set_thinking_level("high")
         harness.set_active_tools(["read", "write"])
         await harness.prompt("write file")
         self.assertEqual((self.path / "demo.txt").read_text(), "hello")
-        restored = AgentHarness(AgentHarnessOptions(session=Session(JsonlSessionStorage(file)), cwd=self.path,
+        restored = AgentSession(AgentSessionConfig(session=SessionManager(JsonlSessionStorage(file)), cwd=self.path,
                                 skills=[], stream_fn=scripted(FauxScript(text="welcome back"))))
         self.assertEqual(restored.state.thinking_level, "high")
         self.assertEqual([t.name for t in restored.state.tools], ["read", "write"])
@@ -337,17 +337,17 @@ class SessionAndHarnessTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(restored.state.messages[0].content[0].text, "changed")
 
     async def test_interrupted_tool_is_not_replayed(self):
-        session = Session()
+        session = SessionManager()
         session.append_message(UserMessage(content="write"))
         session.append_message(AssistantMessage(content=[call()], stop_reason="toolUse"))
-        harness = AgentHarness(AgentHarnessOptions(model=FAUX_MODEL, session=session, tools=[echo_tool()], skills=[],
+        harness = AgentSession(AgentSessionConfig(model=FAUX_MODEL, session=session, tools=[echo_tool()], skills=[],
                                stream_fn=scripted(FauxScript(text="inspect before retry"))))
         self.assertTrue(harness.state.messages[-1].is_error)
         await harness.continue_()
         self.assertEqual(harness.state.messages[-1].content[0].text, "inspect before retry")
 
     async def test_auto_compaction_before_first_request(self):
-        session = Session()
+        session = SessionManager()
         for _ in range(4):
             session.append_message(UserMessage(content="x" * 1200))
             session.append_message(AssistantMessage(content=[TextContent(text="old answer")], stop_reason="stop"))
@@ -358,7 +358,7 @@ class SessionAndHarnessTests(unittest.IsolatedAsyncioTestCase):
             return "Previous work and next steps"
 
         stream = scripted(FauxScript(text="done"))
-        harness = AgentHarness(AgentHarnessOptions(model=FAUX_MODEL.model_copy(update={"context_window": 1000, "max_tokens": 50}),
+        harness = AgentSession(AgentSessionConfig(model=FAUX_MODEL.model_copy(update={"context_window": 1000, "max_tokens": 50}),
                                session=session, tools=[], skills=[], stream_fn=stream, summary_fn=summary,
                                compaction=CompactionSettings(reserve_tokens=200, keep_recent_tokens=80)))
         events = []
@@ -374,10 +374,10 @@ class SessionAndHarnessTests(unittest.IsolatedAsyncioTestCase):
         async def summary(model, messages, **options):
             return ""
 
-        session = Session()
+        session = SessionManager()
         session.append_message(UserMessage(content="old " * 100))
         session.append_message(UserMessage(content="recent"))
-        harness = AgentHarness(AgentHarnessOptions(model=FAUX_MODEL, session=session, tools=[], skills=[], summary_fn=summary,
+        harness = AgentSession(AgentSessionConfig(model=FAUX_MODEL, session=session, tools=[], skills=[], summary_fn=summary,
                                compaction=CompactionSettings(keep_recent_tokens=10)))
         before = session.leaf_id
         with self.assertRaisesRegex(ValueError, "empty"):
@@ -391,7 +391,7 @@ class SessionAndHarnessTests(unittest.IsolatedAsyncioTestCase):
         async def summary(model, messages, **options):
             return "Earlier work"
 
-        harness = AgentHarness(AgentHarnessOptions(model=FAUX_MODEL.model_copy(update={"context_window": 600, "max_tokens": 50}),
+        harness = AgentSession(AgentSessionConfig(model=FAUX_MODEL.model_copy(update={"context_window": 600, "max_tokens": 50}),
                                tools=[], skills=[], stream_fn=stream, summary_fn=summary,
                                compaction=CompactionSettings(reserve_tokens=200, keep_recent_tokens=80)))
         harness.follow_up("q" * 1400)

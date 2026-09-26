@@ -1,6 +1,6 @@
 # fox_agent_core：通用内核架构与面试指南
 
-本篇只讲 `fox_agent_core/src` 的职责：Agent 状态、模型与工具循环、排队消息、事件、取消和工具协议。Session、压缩、Skill、项目配置及 CLI 属于 [coding-agent 指南](../fox_coding_agent/ARCHITECTURE_GUIDE.md)，在本篇中只作为边界背景出现。
+本篇只讲 `fox_agent_core/src` 的职责：Agent 状态、模型与工具循环、排队消息、事件、取消、工具协议，以及 `harness/` 中可复用的生命周期、SessionStorage 协议和压缩算法。JSONL、Skill、项目配置、编码工具及 CLI 属于 [coding-agent 指南](../fox_coding_agent/ARCHITECTURE_GUIDE.md)。
 
 配套 [AGENT_CORE_LAB.ipynb](AGENT_CORE_LAB.ipynb) 只导入 fox_ai 与 agent-core，独立进行真实回答、自定义工具、事件和 follow-up 实验，不需要先运行宿主实验。
 
@@ -121,16 +121,17 @@ assistant：依据结果决定下一步
 
 ```mermaid
 flowchart TB
-    UI[CLI / IDE / Web / 业务服务] --> H[AgentHarness：宿主策略与组装]
+    UI[CLI / IDE / Web / 业务服务] --> AS[coding AgentSession / 其他宿主]
+    AS --> H[AgentHarness：通用生命周期与 Hook]
     H --> A[Agent：状态与一次运行的生命周期]
     A --> L[agent_loop：推进模型与工具闭环]
     L --> AI[fox_ai：统一模型调用与流式协议]
     AI --> P[模型 Provider]
     L --> T[AgentTool 协议]
     T --> I[read / write / edit / bash / 自定义工具]
-    H --> S[Session：历史与分支]
-    H --> C[Compaction：摘要与保留策略]
-    H --> K[Skills：发现与提示词组织]
+    H -.持久化 Hook.-> S[SessionStorage 协议]
+    AS --> C[Compaction：摘要与保留策略]
+    AS --> K[Skills：coding-agent 资源]
     C --> AI
 ```
 
@@ -169,17 +170,16 @@ flowchart TB
 
 Agent 将状态快照交给循环，再通过循环发出的事件更新自身状态。它提供日常使用所需的对象接口，但不直接承担文件会话和技能发现的产品策略。
 
-### 3.5 Harness：把通用能力组装成可用产品
+### 3.5 Harness：给不同宿主提供同一套生命周期骨架
 
-Harness 可以理解为“运行宿主”或“组装与策略层”。当前 `AgentHarness` 组合 Agent、Session、Compaction、Skills 和工具集合，负责：
+`harness/` 保存不依赖 coding 项目的通用机制：
 
-- 启动时从 Session 恢复上下文与配置。
-- 监听完成消息并持久化。
-- 每次请求前评估是否压缩。
-- 组织 system prompt、工作目录和技能目录。
-- 提供切换模型、切换分支、手动压缩等操作。
+- `AgentHarness` 保证同一对象一次只运行一个操作，并转发事件；
+- `HarnessHooks` 把完成消息持久化及 run 前后动作交给宿主注入；
+- `SessionStorage`、`SessionEntry` 和内存实现定义通用历史后端契约；
+- Compaction 提供 token 估算、切割和摘要算法。
 
-同一个底层循环可以由不同 Harness 承载。例如编码宿主提供文件工具，客服宿主提供订单查询工具，数据分析宿主提供数据库工具。这里后两者是可扩展方向，并非本项目已经提供的功能。
+它不扫描 Skill、不读取 cwd，也不认识 JSONL。coding-agent 的 `AgentSession` 在这个骨架上加入项目工具、树形 `SessionManager`、自动压缩与恢复策略。其他产品可以注入自己的持久化 Hook，而不依赖 coding-agent。
 
 ### 3.6 设计理由：分开稳定机制与可变策略
 
@@ -537,11 +537,11 @@ Harness 另外提供压缩相关事件，用于展示正在整理历史等宿主
 
 ### 8.5 持久化为什么监听 message_end
 
-当前 Harness 的关键连接点很短：
+通用 Harness 的关键连接点很短：
 
 ```python
 if isinstance(event, MessageEndEvent):
-    self.session.append_message(event.message)
+    await maybe_await(self.hooks.persist_message(event.message))
 ```
 
 这段代码表达的是一个架构选择：保存定稿消息，让运行时保持流式表达能力，也让会话历史保持可读。
@@ -656,7 +656,7 @@ Agent 使用 `shield` 保护内部运行的等待关系；检测到调用者取�
 | `after_tool_call` | 适用的结果处理阶段 | 修改内容、详情、错误标记或终止提示 |
 | `should_stop_after_turn` | 当前轮次完成后 | 宿主要求提前停止 |
 
-这张表描述内核与 Agent 的扩展面。当前 `AgentHarnessOptions` 只直接暴露其中一部分，其余能力可以使用较低层的 Agent 接口或扩展 Harness，不能假设每个选项都能原样传给所有层。
+这张表描述内核与 Agent 的扩展面。当前 `AgentHarnessConfig` 只直接暴露其中一部分，其余能力可以使用较低层的 Agent 接口或扩展 Harness，不能假设每个选项都能原样传给所有层。
 
 `after_tool_call` 也不是无论发生什么都执行的 finally 钩子，例如取消或参数校验未完成时，不一定进入它。资源释放仍应放在工具自身的清理路径中。
 

@@ -53,14 +53,18 @@ class ResourceLoader:
     """
 
     def __init__(self, cwd: str | Path = ".", *, user_dir: str | Path | None = None,
-                 providers: tuple[ResourceProvider, ...] = ()):
+                 providers: tuple[ResourceProvider, ...] = (), project_trusted: bool = True):
         self.cwd = Path(cwd).expanduser().resolve()
         self.user_dir = Path(user_dir).expanduser().resolve() if user_dir else Path.home() / ".foxcode"
         self.providers = tuple(providers)
+        self.project_trusted = project_trusted
 
     def load(self) -> Resources:
         result = Resources()
-        for root in dict.fromkeys([self.user_dir, self.cwd / ".foxcode"]):
+        roots_with_project = [self.user_dir]
+        if self.project_trusted:
+            roots_with_project.append(self.cwd / ".foxcode")
+        for root in dict.fromkeys(roots_with_project):
             system = root / "SYSTEM.md"
             append = root / "APPEND_SYSTEM.md"
             if system.is_file():
@@ -69,15 +73,18 @@ class ResourceLoader:
                 result.append_system_prompts.append(append.read_text(encoding="utf-8-sig"))
         seen: set[Path] = set()
         paths = [self.user_dir / "AGENTS.md"]
-        paths.extend(p / "AGENTS.md" for p in [*reversed(self.cwd.parents), self.cwd])
+        if self.project_trusted:
+            paths.extend(p / "AGENTS.md" for p in [*reversed(self.cwd.parents), self.cwd])
         for path in paths:
             if path.is_file() and path.resolve() not in seen:
                 seen.add(path.resolve())
                 result.context_files.append(ContextFile(path.resolve(), path.read_text(encoding="utf-8-sig")))
 
         skills: dict[str, Skill] = {}
-        # Include the existing mini-core's legacy user Skill directory at lowest priority.
-        roots = [self.user_dir / "agent", self.user_dir, self.cwd / ".foxcode"]
+        # User Skills have the lowest priority; project Skills may override them.
+        roots = [self.user_dir]
+        if self.project_trusted:
+            roots.append(self.cwd / ".foxcode")
         for root in dict.fromkeys(roots):
             loaded = load_skills_from_dir(root / "skills")
             result.diagnostics.extend(f"{d.path}: {d.message}" for d in loaded.diagnostics)
@@ -87,7 +94,12 @@ class ResourceLoader:
                 skills[skill.name] = skill
         result.skills = list(skills.values())
 
-        for root in dict.fromkeys([self.user_dir / "prompts", self.cwd / ".foxcode" / "prompts"]):
+        # Prompt templates are inert text and are only used after an explicit
+        # --template or /prompt invocation. Keep them available in untrusted
+        # projects; the trust boundary applies to automatic instructions,
+        # executable extensions, skills and tool execution.
+        prompt_roots = [self.user_dir / "prompts", self.cwd / ".foxcode" / "prompts"]
+        for root in dict.fromkeys(prompt_roots):
             if not root.is_dir():
                 continue
             for path in sorted(root.rglob("*.md")):

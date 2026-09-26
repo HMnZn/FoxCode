@@ -17,17 +17,23 @@ from uuid import uuid4
 
 from fox_agent_core.src._async import maybe_await
 
-RESERVED_COMMANDS = {"help", "exit", "quit", "new", "resume", "cwd", "reload", "compact", "tools", "model", "thinking", "skill", "prompt"}
+RESERVED_COMMANDS = {"help", "exit", "quit", "new", "resume", "cwd", "reload", "compact", "tools", "model", "thinking", "skill", "prompt", "trust", "untrust", "export", "usage"}
 
 
 @dataclass(frozen=True)
 class ExtensionContext:
     cwd: Path
-    harness: object
+    agent_session: object
+    services: dict[str, object] = field(default_factory=dict)
 
     @property
     def session(self):
-        return self.harness.session
+        return self.agent_session.session
+
+    def service(self, name: str):
+        if name not in self.services:
+            raise KeyError(f"Extension service is not registered: {name}")
+        return self.services[name]
 
 
 @dataclass
@@ -36,6 +42,8 @@ class ExtensionAPI:
     commands: dict = field(default_factory=dict)
     handlers: dict = field(default_factory=dict)
     guidelines: list[str] = field(default_factory=list)
+    services: dict[str, object] = field(default_factory=dict)
+    context_transforms: list[tuple[str, object]] = field(default_factory=list)
 
     def register_tool(self, tool):
         if not callable(getattr(tool, "execute", None)) or not getattr(tool, "name", None):
@@ -60,6 +68,29 @@ class ExtensionAPI:
         if not isinstance(text, str) or not text.strip():
             raise ValueError("Prompt guideline must be a nonempty string")
         self.guidelines.append(text)
+
+    def register_service(self, name: str, service: object):
+        """Publish a process-local capability for cooperating extensions.
+
+        Services are application objects, not LLM tools. An MCP connection
+        manager, memory index or skill-candidate store can live here while
+        exposing only selected operations as tools and event hooks.
+        """
+        if not re.fullmatch(r"[a-z][a-z0-9_.-]*", name) or name in self.services:
+            raise ValueError(f"Invalid or duplicate extension service: {name}")
+        self.services[name] = service
+
+    def get_service(self, name: str, default=None):
+        return self.services.get(name, default)
+
+    def register_context_transform(self, name: str, transform):
+        """Register a per-request, non-persistent LLM context transform."""
+        if (not re.fullmatch(r"[a-z][a-z0-9_.-]*", name)
+                or any(existing == name for existing, _ in self.context_transforms)):
+            raise ValueError(f"Invalid or duplicate context transform: {name}")
+        if not callable(transform):
+            raise TypeError("Context transform must be callable")
+        self.context_transforms.append((name, transform))
 
 
 class ExtensionRunner:
@@ -125,6 +156,18 @@ class ExtensionRunner:
             raise ValueError(f"Unknown extension command: {name}")
         with contextlib.redirect_stdout(sys.stderr):
             return await maybe_await(self.api.commands[name][0](arguments, context))
+
+    async def transform_context(self, messages, context):
+        """Apply transforms to a request copy; Session history is untouched."""
+        current = list(messages)
+        for name, transform in self.api.context_transforms:
+            with contextlib.redirect_stdout(sys.stderr):
+                updated = await maybe_await(transform(list(current), context))
+            if updated is not None:
+                if not isinstance(updated, list):
+                    raise TypeError(f"Context transform {name!r} must return a message list or None")
+                current = updated
+        return current
 
     def dispose(self):
         for name in self._modules:

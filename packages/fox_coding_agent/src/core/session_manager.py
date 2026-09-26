@@ -20,126 +20,21 @@ import copy
 import os
 import tempfile
 import uuid
-from dataclasses import dataclass
 from pathlib import Path
-from datetime import datetime, timezone
-from typing import Any, Literal, Protocol
+from typing import Any
 
-from fox_ai.src import AssistantMessage, Message, ToolResultMessage, UserMessage
+from fox_ai.src import (
+    AssistantMessage, Message, TextContent, ThinkingContent, ToolCall,
+    ToolResultMessage, UserMessage,
+)
 
-# ============================================================
-# 条目类型
-# ============================================================
-
-#: 条目类型。
-SessionEntryType = Literal[
-    "message",
-    "compaction",
-    "branch_summary",
-    "thinking_level_change",
-    "model_change",
-    "active_tools_change",
-    "label",
-    "session_info",
-]
-
-
-@dataclass
-class SessionEntry:
-    """会话树的一个条目。"""
-
-    id: str
-    parent_id: str | None
-    timestamp: str
-    type: SessionEntryType
-    data: Any = None
-    label: str | None = None
-
-
-def _create_entry_id() -> str:
-    return uuid.uuid4().hex[:16]
-
-
-def _create_timestamp() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
-
-
-def _validate_entry(entry: SessionEntry, entries: dict[str, SessionEntry]) -> None:
-    if entry.id in entries:
-        raise ValueError(f"Duplicate session entry: {entry.id}")
-    if entry.parent_id is not None and entry.parent_id not in entries:
-        raise ValueError(f"Missing parent entry: {entry.parent_id}")
-
-
-# ============================================================
-# 存储抽象
-# ============================================================
-
-
-class SessionStorage(Protocol):
-    """会话存储后端协议。"""
-
-    def create_entry_id(self) -> str: ...
-    def create_timestamp(self) -> str: ...
-    def get_metadata(self) -> dict[str, Any]: ...
-    def get_leaf_id(self) -> str | None: ...
-    def set_leaf_id(self, entry_id: str | None) -> None: ...
-    def get_entries(self) -> list[SessionEntry]: ...
-    def get_entry(self, entry_id: str) -> SessionEntry | None: ...
-    def append_entry(self, entry: SessionEntry) -> None: ...
-    def get_label(self) -> str | None: ...
-    def set_label(self, label: str | None) -> None: ...
-
-
-# ============================================================
-# 内存存储
-# ============================================================
-
-
-class InMemorySessionStorage:
-    """纯内存会话存储。"""
-
-    def __init__(self, metadata: dict[str, Any] | None = None) -> None:
-        self._metadata = {"id": uuid.uuid4().hex, **(metadata or {})}
-        self._entries: dict[str, SessionEntry] = {}
-        self._order: list[str] = []
-        self._leaf_id: str | None = None
-        self._label: str | None = None
-
-    def create_entry_id(self) -> str:
-        return _create_entry_id()
-
-    def create_timestamp(self) -> str:
-        return _create_timestamp()
-
-    def get_metadata(self) -> dict[str, Any]:
-        return dict(self._metadata)
-
-    def get_leaf_id(self) -> str | None:
-        return self._leaf_id
-
-    def set_leaf_id(self, entry_id: str | None) -> None:
-        if entry_id is not None and entry_id not in self._entries:
-            raise ValueError(f"Unknown session entry: {entry_id}")
-        self._leaf_id = entry_id
-
-    def get_entries(self) -> list[SessionEntry]:
-        return [self._entries[eid] for eid in self._order]
-
-    def get_entry(self, entry_id: str) -> SessionEntry | None:
-        return self._entries.get(entry_id)
-
-    def append_entry(self, entry: SessionEntry) -> None:
-        _validate_entry(entry, self._entries)
-        self._entries[entry.id] = entry
-        self._order.append(entry.id)
-        self._leaf_id = entry.id
-
-    def get_label(self) -> str | None:
-        return self._label
-
-    def set_label(self, label: str | None) -> None:
-        self._label = label
+# 通用 Entry、Storage 协议和内存实现位于 agent-core。
+from fox_agent_core.src.harness.session import (
+    SessionEntry, SessionEntryType, SessionStorage, InMemorySessionStorage,
+    create_entry_id as _create_entry_id,
+    create_timestamp as _create_timestamp,
+    validate_entry as _validate_entry,
+)
 
 
 # ============================================================
@@ -314,7 +209,7 @@ def _deserialize_message(data: Any) -> Any:
 # ============================================================
 
 
-class Session:
+class SessionManager:
     """一个会话：树结构条目 + 当前叶节点。
 
     核心操作：
@@ -479,11 +374,11 @@ class Session:
         """切换叶节点（分支切换）。"""
         self._storage.set_leaf_id(entry_id)
 
-    def fork(self, from_id: str | None = None) -> Session:
+    def fork(self, from_id: str | None = None) -> SessionManager:
         """从指定节点 fork 出一个新会话（共享到该点的历史）。"""
         branch = self.get_branch(from_id, include_ancestors=True)
         new_storage = InMemorySessionStorage(metadata={**self._storage.get_metadata(), "id": uuid.uuid4().hex})
-        new_session = Session(new_storage)
+        new_session = SessionManager(new_storage)
         for entry in branch:
             new_entry = SessionEntry(
                 id=new_storage.create_entry_id(),
@@ -497,6 +392,75 @@ class Session:
         new_storage.set_label(self.get_label())
         return new_session
 
+    def usage_totals(self) -> dict[str, float | int]:
+        """Sum request usage on the active branch, including compacted history."""
+        totals: dict[str, float | int] = {
+            "input": 0, "output": 0, "cache_read": 0, "cache_write": 0,
+            "reasoning": 0, "total_tokens": 0, "cost": 0.0,
+        }
+        for entry in self.get_branch(include_ancestors=True):
+            message = entry.data if entry.type == "message" else None
+            if not isinstance(message, (AssistantMessage, ToolResultMessage)):
+                continue
+            usage = message.usage
+            if usage is None:
+                continue
+            for name in ("input", "output", "cache_read", "cache_write", "reasoning", "total_tokens"):
+                totals[name] += getattr(usage, name, 0) or 0
+            totals["cost"] += getattr(getattr(usage, "cost", None), "total", 0) or 0
+        return totals
+
+    def export_json(self, path: str | Path) -> Path:
+        """Export the complete tree without exposing credentials."""
+        target = Path(path).expanduser().resolve()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "metadata": self.storage.get_metadata(),
+            "leaf_id": self.leaf_id,
+            "label": self.get_label(),
+            "usage": self.usage_totals(),
+            "entries": [
+                {
+                    "id": entry.id, "parent_id": entry.parent_id,
+                    "timestamp": entry.timestamp, "type": entry.type,
+                    "data": _serialize_message(entry.data), "label": entry.label,
+                }
+                for entry in self.get_entries()
+            ],
+        }
+        target.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        return target
+
+    @staticmethod
+    def _markdown_content(message: Message) -> str:
+        if isinstance(message, UserMessage):
+            return message.content if isinstance(message.content, str) else "\n".join(
+                getattr(block, "text", f"[{getattr(block, 'type', 'content')}]") for block in message.content
+            )
+        if isinstance(message, ToolResultMessage):
+            return "\n".join(getattr(block, "text", "[content]") for block in message.content)
+        parts: list[str] = []
+        for block in message.content:
+            if isinstance(block, TextContent):
+                parts.append(block.text)
+            elif isinstance(block, ThinkingContent):
+                parts.append(f"<details><summary>Thinking</summary>\n\n{block.thinking}\n\n</details>")
+            elif isinstance(block, ToolCall):
+                parts.append(f"```json\n{{\"tool\": {json.dumps(block.name)}, \"arguments\": "
+                             f"{json.dumps(block.arguments, ensure_ascii=False)}}}\n```")
+        return "\n\n".join(parts)
+
+    def export_markdown(self, path: str | Path) -> Path:
+        target = Path(path).expanduser().resolve()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        sections = ["# FoxCode Session", ""]
+        headings = {"user": "User", "assistant": "Assistant", "toolResult": "Tool Result"}
+        for message in self.build_context():
+            sections.extend([f"## {headings.get(message.role, message.role)}", "",
+                             self._markdown_content(message), ""])
+        target.write_text("\n".join(sections).rstrip() + "\n", encoding="utf-8")
+        return target
+
 
 __all__ = [
     "SessionEntry",
@@ -504,5 +468,5 @@ __all__ = [
     "SessionStorage",
     "InMemorySessionStorage",
     "JsonlSessionStorage",
-    "Session",
+    "SessionManager",
 ]

@@ -15,10 +15,20 @@ from typing import Any, Literal
 
 from fox_ai.src import AssistantMessage, Model, TextContent, ToolCall, ToolResultMessage
 from fox_agent_core.src._async import check_cancelled, maybe_await
-from fox_agent_core.src.agent import Agent, AgentOptions
-from fox_agent_core.src.types import AgentContext, AgentMessage, AgentState, MessageEndEvent, StreamFn
-from .compaction import CompactionResult, CompactionSettings, compact, estimate_context_tokens, estimate_tokens, should_compact
-from .session import Session
+from fox_agent_core.src.agent import AgentOptions
+from fox_agent_core.src.harness import (
+    AgentHarness as CoreAgentHarness,
+    AgentHarnessConfig as CoreAgentHarnessConfig,
+    CompactionResult,
+    CompactionSettings,
+    HarnessHooks,
+    compact,
+    estimate_context_tokens,
+    estimate_tokens,
+    should_compact,
+)
+from fox_agent_core.src.types import AgentContext, AgentMessage, StreamFn
+from .session_manager import SessionManager
 from .skills import LoadSkillsOptions, Skill, format_skill_invocation, format_skills_for_prompt, load_skills
 from .tools import create_coding_tools
 
@@ -32,9 +42,16 @@ class CompactionEvent:
 
 
 @dataclass
-class AgentHarnessOptions:
+class RecoveryEvent:
+    type: Literal["context_overflow_retry", "model_retry"]
+    attempt: int
+    error: str
+
+
+@dataclass
+class AgentSessionConfig:
     model: Model | None = None  # 恢复已有 session 时可使用已保存的模型。
-    session: Session | None = None
+    session: SessionManager | None = None
     cwd: str | Path = "."
     system_prompt: str = "You are a coding assistant. Inspect relevant files before editing."
     system_prompt_builder: Any = None
@@ -51,35 +68,35 @@ class AgentHarnessOptions:
     steering_mode: Literal["all", "one-at-a-time"] = "one-at-a-time"
     follow_up_mode: Literal["all", "one-at-a-time"] = "one-at-a-time"
     get_api_key: Any = None
+    transform_context: Any = None
+    convert_to_llm: Any = None
     before_tool_call: Any = None
     after_tool_call: Any = None
+    model_retry_attempts: int = 1
 
 
-class AgentHarness:
-    def __init__(self, options: AgentHarnessOptions) -> None:
-        self.options = options
-        self.cwd = Path(options.cwd).expanduser().resolve()
-        self.session = options.session if options.session is not None else Session()
-        self._busy = False
+class AgentSession(CoreAgentHarness):
+    def __init__(self, config: AgentSessionConfig) -> None:
+        self.session_config = config
+        self.cwd = Path(config.cwd).expanduser().resolve()
+        self.session = config.session if config.session is not None else SessionManager()
         self._manual_cancel: asyncio.Event | None = None
-        self._idle: asyncio.Future | None = None
-        self._listeners: list[Any] = []
-        tools = list(options.tools) if options.tools is not None else create_coding_tools(self.cwd)
+        tools = list(config.tools) if config.tools is not None else create_coding_tools(self.cwd)
         self._tools = {tool.name: tool for tool in tools}
         if len(self._tools) != len(tools):
             raise ValueError("Tool names must be unique")
         self._default_tool_names = list(self._tools)
-        loaded = load_skills(options.skill_options or LoadSkillsOptions(cwd=str(self.cwd))) if options.skills is None else None
-        self.skills = list(loaded.skills if loaded else options.skills or [])
+        loaded = load_skills(config.skill_options or LoadSkillsOptions(cwd=str(self.cwd))) if config.skills is None else None
+        self.skills = list(loaded.skills if loaded else config.skills or [])
         self.skill_diagnostics = loaded.diagnostics if loaded else []
         saved = self.session.build_settings()
-        model = options.model or (Model.model_validate(saved["model"]) if saved.get("model") else None)
+        model = config.model or (Model.model_validate(saved["model"]) if saved.get("model") else None)
         if model is None:
             raise ValueError("A model is required for a new session")
         self._default_model = model
         if "model" not in saved or Model.model_validate(saved["model"]) != model:
             self.session.append_model_change(model.model_dump(mode="json", by_alias=True))
-        level = saved.get("thinking_level", options.thinking_level)
+        level = saved.get("thinking_level", config.thinking_level)
         active_names = saved.get("active_tools", self._default_tool_names)
         self._validate_tool_names(active_names)
         if "thinking_level" not in saved:
@@ -87,91 +104,100 @@ class AgentHarness:
         if "active_tools" not in saved:
             self.session.append_active_tools_change(active_names)
         system = "\n\n".join(part for part in (
-            options.system_prompt, f"Working directory: {self.cwd}", format_skills_for_prompt(self.skills)
+            config.system_prompt, f"Working directory: {self.cwd}", format_skills_for_prompt(self.skills)
         ) if part)
-        if options.system_prompt_builder:
-            system = options.system_prompt_builder([self._tools[n] for n in active_names], self.skills, self.cwd)
-        stream_options = dict(options.stream_options)
+        if config.system_prompt_builder:
+            system = config.system_prompt_builder([self._tools[n] for n in active_names], self.skills, self.cwd)
+        stream_options = dict(config.stream_options)
         stream_options.setdefault("session_id", self.session.storage.get_metadata().get("id"))
-        self.agent = Agent(AgentOptions(
+        agent_options = AgentOptions(
             initial_state={"model": model, "system_prompt": system, "messages": self.session.build_context(),
                            "tools": [self._tools[n] for n in active_names], "thinking_level": level},
-            stream_fn=options.stream_fn, stream_options=stream_options,
-            get_api_key=options.get_api_key, before_tool_call=options.before_tool_call,
-            after_tool_call=options.after_tool_call, prepare_request=self._prepare_request,
-            max_turns=options.max_turns, tool_execution=options.tool_execution,
-            steering_mode=options.steering_mode, follow_up_mode=options.follow_up_mode,
+            stream_fn=config.stream_fn, stream_options=stream_options,
+            get_api_key=config.get_api_key, before_tool_call=config.before_tool_call,
+            after_tool_call=config.after_tool_call, prepare_request=self._prepare_request,
+            transform_context=config.transform_context, convert_to_llm=config.convert_to_llm,
+            max_turns=config.max_turns, tool_execution=config.tool_execution,
+            steering_mode=config.steering_mode, follow_up_mode=config.follow_up_mode,
+        )
+        super().__init__(CoreAgentHarnessConfig(
+            agent_options=agent_options,
+            hooks=HarnessHooks(
+                persist_message=self.session.append_message,
+                before_run=self._before_session_run,
+                after_run=self._after_session_run,
+            ),
         ))
         self._recover_interrupted_tools()
-        self.agent.subscribe(self._on_agent_event)
 
-    @property
-    def state(self) -> AgentState:
-        return self.agent.state
+    def _before_session_run(self):
+        self._recover_interrupted_tools()
 
-    @property
-    def is_running(self) -> bool:
-        return self._busy
-
-    def subscribe(self, listener):
-        """listener(event, cancel_event)，支持同步或异步；返回取消订阅函数。"""
-        self._listeners.append(listener)
-
-        def unsubscribe():
-            if listener in self._listeners:
-                self._listeners.remove(listener)
-
-        return unsubscribe
+    def _after_session_run(self):
+        # SessionManager is the durable source of truth. A persistence failure
+        # must not leave the in-memory Agent ahead of it.
+        self.state.messages = self.session.build_context()
+        self._manual_cancel = None
 
     async def _emit(self, event):
         for listener in list(self._listeners):
             await maybe_await(listener(event, self.agent.cancel_event or self._manual_cancel))
 
-    async def _on_agent_event(self, event, cancel_event):
-        if isinstance(event, MessageEndEvent):
-            self.session.append_message(event.message)
-        await self._emit(event)
-
-    def _ensure_idle(self):
-        if self._busy or self.agent.is_running:
-            raise RuntimeError("Harness is already processing. Use steer() or follow_up() to queue messages.")
-
-    async def _run(self, action):
-        self._ensure_idle()
-        self._busy = True
-        self._idle = asyncio.get_running_loop().create_future()
-        try:
-            self._recover_interrupted_tools()
-            return await action()
-        finally:
-            # Session 是持久历史来源；存储失败也不能使 Agent 保留未保存的消息。
-            try:
-                self.state.messages = self.session.build_context()
-            finally:
-                self._busy = False
-                self._manual_cancel = None
-                self._idle.set_result(None)
-
     async def prompt(self, message: str | AgentMessage | list[AgentMessage]) -> None:
-        await self._run(lambda: self.agent.prompt(message))
+        await self._run_with_recovery(lambda: self.agent.prompt(message))
 
     async def continue_(self) -> None:
-        await self._run(self.agent.continue_)
+        await self._run_with_recovery(self.agent.continue_)
 
-    def steer(self, message: str | AgentMessage) -> None:
-        self.agent.steer(message)
+    @staticmethod
+    def _failure_kind(message: AssistantMessage) -> str | None:
+        if message.stop_reason != "error" or message.content:
+            return None
+        error = (message.error_message or "").lower()
+        overflow_terms = (
+            "context length", "context window", "context limit", "maximum context",
+            "too many tokens", "request too large", "context still exceeds",
+        )
+        if any(term in error for term in overflow_terms):
+            return "overflow"
+        retry_terms = (
+            "timeout", "timed out", "rate limit", "429", "connection",
+            "temporar", "overloaded", "502", "503", "504",
+        )
+        return "retry" if any(term in error for term in retry_terms) else None
 
-    def follow_up(self, message: str | AgentMessage) -> None:
-        self.agent.follow_up(message)
+    async def _run_with_recovery(self, action) -> None:
+        await self.run(action)
+        for attempt in range(1, self.session_config.model_retry_attempts + 1):
+            entry = self.session.get_entry(self.session.leaf_id) if self.session.leaf_id else None
+            message = entry.data if entry is not None and entry.type == "message" else None
+            if not isinstance(message, AssistantMessage):
+                return
+            kind = self._failure_kind(message)
+            if kind is None:
+                return
+            failed_leaf = entry.id
+            self.session.move_to(entry.parent_id)
+            self.state.messages = self.session.build_context()
+            self.state.error_message = None
+            if kind == "overflow":
+                await self._emit(RecoveryEvent("context_overflow_retry", attempt,
+                                               message.error_message or "context overflow"))
+                result = await self.compact()
+                if not result.removed_count:
+                    self.session.move_to(failed_leaf)
+                    self.state.messages = self.session.build_context()
+                    self.state.error_message = message.error_message
+                    return
+            else:
+                await self._emit(RecoveryEvent("model_retry", attempt,
+                                               message.error_message or "model failure"))
+            await self.run(self.agent.continue_)
 
     def abort(self) -> None:
-        self.agent.abort()
+        super().abort()
         if self._manual_cancel is not None:
             self._manual_cancel.set()
-
-    async def wait_for_idle(self) -> None:
-        if self._idle is not None:
-            await asyncio.shield(self._idle)
 
     async def invoke_skill(self, name: str, instructions: str = "") -> None:
         skill = next((s for s in self.skills if s.name == name), None)
@@ -188,13 +214,13 @@ class AgentHarness:
             {"name": t.name, "description": t.description, "parameters": t.parameters}
             for t in context.tools or []], ensure_ascii=False)))
         count = estimate_context_tokens(context.messages) + overhead
-        if should_compact(count, request["model"].context_window, self.options.compaction):
+        if should_compact(count, request["model"].context_window, self.session_config.compaction):
             result = await self._compact_context(context, request["model"], request["cancel_event"], automatic=True)
             if result.removed_count:
                 context.messages = self.session.build_context()
             # 无法再切割（例如单个超长用户输入）时，明确结束，保留原始输入。
             remaining = estimate_context_tokens(context.messages) + overhead
-            output_budget = self.options.stream_options.get("max_tokens") or request["model"].max_tokens
+            output_budget = self.session_config.stream_options.get("max_tokens") or request["model"].max_tokens
             if remaining + output_budget >= request["model"].context_window:
                 raise RuntimeError("Context still exceeds the model budget after compaction; reduce the input or tool output")
         return {"context": context}
@@ -202,16 +228,16 @@ class AgentHarness:
     async def _compact_context(self, context, model, cancel_event, *, automatic):
         await self._emit(CompactionEvent("compaction_start", automatic))
         try:
-            summary_options = dict(self.options.stream_options)
+            summary_options = dict(self.session_config.stream_options)
             # 普通回复的输出预算与摘要预算独立。
             summary_options["max_tokens"] = min(2000, model.max_tokens or 2000)
-            if self.options.get_api_key:
-                key = await maybe_await(self.options.get_api_key(model.provider))
+            if self.session_config.get_api_key:
+                key = await maybe_await(self.session_config.get_api_key(model.provider))
                 if key:
                     summary_options["api_key"] = key
-            result = await compact(model, list(context.messages), self.options.compaction,
-                                   **{**summary_options, "stream_fn": self.options.stream_fn,
-                                      "summary_fn": self.options.summary_fn, "cancel_event": cancel_event})
+            result = await compact(model, list(context.messages), self.session_config.compaction,
+                                   **{**summary_options, "stream_fn": self.session_config.stream_fn,
+                                      "summary_fn": self.session_config.summary_fn, "cancel_event": cancel_event})
             check_cancelled(cancel_event)
             if result.removed_count:
                 self.session.append_compaction(result.summary, result.retained_tail)
@@ -230,15 +256,15 @@ class AgentHarness:
                 AgentContext(self.state.system_prompt, list(self.state.messages), self.state.tools),
                 self.state.model, self._manual_cancel, automatic=False)
 
-        return await self._run(action)
+        return await self.run(action)
 
     def set_model(self, model: Model) -> None:
-        self._ensure_idle()
+        self.ensure_idle()
         self.session.append_model_change(model.model_dump(mode="json", by_alias=True))
         self.state.model = model
 
     def set_thinking_level(self, level) -> None:
-        self._ensure_idle()
+        self.ensure_idle()
         if level not in (None, "off", "minimal", "low", "medium", "high", "xhigh", "max"):
             raise ValueError(f"Invalid thinking level: {level}")
         level = None if level == "off" else level
@@ -253,22 +279,22 @@ class AgentHarness:
             raise ValueError("Tool names must be unique")
 
     def set_active_tools(self, names: list[str]) -> None:
-        self._ensure_idle()
+        self.ensure_idle()
         self._validate_tool_names(names)
         self.session.append_active_tools_change(names)
         self.state.tools = [self._tools[name] for name in names]
         self._refresh_system_prompt()
 
     def _refresh_system_prompt(self):
-        if self.options.system_prompt_builder:
-            self.state.system_prompt = self.options.system_prompt_builder(self.state.tools, self.skills, self.cwd)
+        if self.session_config.system_prompt_builder:
+            self.state.system_prompt = self.session_config.system_prompt_builder(self.state.tools, self.skills, self.cwd)
 
     def move_to(self, entry_id: str | None) -> None:
-        self._ensure_idle()
+        self.ensure_idle()
         self.session.move_to(entry_id)
         saved = self.session.build_settings()
         self.state.model = Model.model_validate(saved["model"]) if saved.get("model") else self._default_model
-        self.state.thinking_level = saved.get("thinking_level", self.options.thinking_level)
+        self.state.thinking_level = saved.get("thinking_level", self.session_config.thinking_level)
         names = saved.get("active_tools", self._default_tool_names)
         self._validate_tool_names(names)
         self.state.tools = [self._tools[n] for n in names]
@@ -278,11 +304,11 @@ class AgentHarness:
         self.agent.clear_all_queues()
         self._recover_interrupted_tools()
 
-    def fork(self, from_id: str | None = None) -> AgentHarness:
-        self._ensure_idle()
+    def fork(self, from_id: str | None = None) -> AgentSession:
+        self.ensure_idle()
         forked = self.session.fork(from_id)
         model = None if forked.build_settings().get("model") else self._default_model
-        return AgentHarness(replace(self.options, session=forked, model=model,
+        return AgentSession(replace(self.session_config, session=forked, model=model,
                                     tools=list(self._tools.values()), skills=list(self.skills)))
 
     def _recover_interrupted_tools(self) -> None:
@@ -304,4 +330,4 @@ class AgentHarness:
                 messages.append(result)
 
 
-__all__ = ["AgentHarness", "AgentHarnessOptions", "CompactionEvent"]
+__all__ = ["AgentSession", "AgentSessionConfig", "CompactionEvent", "RecoveryEvent"]

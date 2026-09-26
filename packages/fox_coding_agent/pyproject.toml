@@ -1,0 +1,24 @@
+[project]
+name = "fox-coding-agent"
+version = "0.1.0"
+description = "Interactive FoxCode coding-agent runtime and CLI"
+readme = "ARCHITECTURE_GUIDE.md"
+requires-python = ">=3.14"
+dependencies = [
+    "fox-agent-core==0.1.0",
+    "fox-ai==0.1.0",
+    "pathspec>=0.12.1",
+    "pydantic>=2.13.5",
+    "pyyaml>=6.0.2",
+]
+
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project.scripts]
+fox = "fox_coding_agent.src.cli:main"
+
+[tool.setuptools]
+packages = ["fox_coding_agent.src", "fox_coding_agent.src.core"]
+package-dir = {"fox_coding_agent.src" = "src", "fox_coding_agent.src.core" = "src/core"}

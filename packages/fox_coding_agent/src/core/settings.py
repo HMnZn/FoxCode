@@ -10,8 +10,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
-from fox_ai.src import Model
-from .compaction import CompactionSettings
+from fox_agent_core.src.harness import CompactionSettings
 
 
 def merge_settings(base: dict, override: dict) -> dict:
@@ -27,7 +26,8 @@ def merge_settings(base: dict, override: dict) -> dict:
 class RuntimeSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    model: Model | None = None
+    # The model is a models.json reference such as "deepseek/deepseek-chat".
+    model: str | None = None
     system_prompt: str | None = None
     append_system_prompt: str = ""
     api_key_env: str | None = None
@@ -36,6 +36,7 @@ class RuntimeSettings(BaseModel):
     tools: list[str] | None = None
     extensions: list[str] = Field(default_factory=list)
     max_turns: int = Field(default=100, gt=0)
+    model_retry_attempts: int = Field(default=1, ge=0, le=5)
     tool_execution: Literal["parallel", "sequential"] = "parallel"
     session_scope: Literal["project", "user"] = "project"
 
@@ -44,16 +45,17 @@ class SettingsManager:
     """优先级：默认值 < ~/.foxcode/settings.json < cwd/.foxcode/settings.json < overrides。
 
     user_dir 指 .foxcode 本身。写入采用单写入者原子替换，不提供跨进程锁。
-    模型目录和密钥放在用户级 auth.json；这里保留可选的运行策略覆盖。
+    模型目录放在用户级 models.json，密钥放在 auth.json；这里保留可选的运行策略覆盖。
     """
 
     def __init__(self, cwd: str | Path = ".", *, user_dir: str | Path | None = None,
-                 overrides: dict | None = None):
+                 overrides: dict | None = None, project_trusted: bool = True):
         self.cwd = Path(cwd).expanduser().resolve()
         self.user_dir = Path(user_dir).expanduser().resolve() if user_dir else Path.home() / ".foxcode"
         self.user_path = self.user_dir / "settings.json"
         self.project_path = self.cwd / ".foxcode" / "settings.json"
         self.overrides = copy.deepcopy(overrides or {})
+        self.project_trusted = project_trusted
         self.reload()
 
     @staticmethod
@@ -74,7 +76,6 @@ class SettingsManager:
     def _validate(self, user: dict, project: dict) -> RuntimeSettings:
         if any("api_key" in layer or "apiKey" in layer for layer in (user, project, self.overrides)):
             raise ValueError(f"Store API keys in {self.user_dir / 'auth.json'}, not settings.json")
-        # Partial nested model settings are valid as long as the merged model is complete.
         for layer in (user, project, self.overrides):
             unknown = set(layer) - RuntimeSettings.model_fields.keys()
             if unknown:
@@ -82,7 +83,8 @@ class SettingsManager:
         return RuntimeSettings.model_validate(merge_settings(merge_settings(user, project), self.overrides))
 
     def reload(self) -> RuntimeSettings:
-        user, project = self._read(self.user_path), self._read(self.project_path)
+        user = self._read(self.user_path)
+        project = self._read(self.project_path) if self.project_trusted else {}
         settings = self._validate(user, project)
         self.settings = settings
         return settings
@@ -90,7 +92,10 @@ class SettingsManager:
     def update(self, values: dict, *, scope: Literal["user", "project"] = "project") -> RuntimeSettings:
         if scope not in ("user", "project"):
             raise ValueError("scope must be 'user' or 'project'")
-        user, project = self._read(self.user_path), self._read(self.project_path)
+        user = self._read(self.user_path)
+        project = self._read(self.project_path) if self.project_trusted else {}
+        if scope == "project" and not self.project_trusted:
+            raise PermissionError("Project settings cannot be changed before the project is trusted")
         target = self.user_path if scope == "user" else self.project_path
         updated = merge_settings(user if scope == "user" else project, values)
         candidate = self._validate(updated if scope == "user" else user,

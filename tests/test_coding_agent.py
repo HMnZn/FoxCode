@@ -16,7 +16,8 @@ from fox_ai.src import TextContent, ToolCall, UserMessage
 from fox_ai.src.providers.faux import FAUX_MODEL, FauxScript
 from fox_agent_core.src import AgentToolResult
 from fox_coding_agent.src import (
-    AgentSessionRuntime, AuthStore, ExtensionRunner, FindTool, GrepTool, LsTool, PowerShellTool,
+    AgentSessionRuntime, ExtensionRunner, FindTool, GrepTool, LsTool, ModelConfig,
+    ModelRegistry, PowerShellTool,
     ResourceLoader, SettingsManager, ReadTool, WriteTool, build_system_prompt,
 )
 from fox_coding_agent.src.cli import build_parser, run
@@ -104,22 +105,25 @@ class SystemPromptTests(Workspace, unittest.TestCase):
 
 class AuthTests(Workspace, unittest.IsolatedAsyncioTestCase):
     def write_auth(self):
-        write(self.user / "auth.json", json.dumps({"providers": {"demo": {
-            "baseUrl": "https://demo.invalid", "api": "openai-completions", "apiKey": "auth-secret",
+        write(self.user / "models.json", json.dumps({"providers": {"demo": {
+            "baseUrl": "https://demo.invalid", "api": "openai-completions",
             "models": [
                 {"id": "flash", "name": "Flash", "contextWindow": 32768, "maxTokens": 100,
                  "input": ["text"], "reasoning": True,
-                 "compat": {"thinkingFormat": "deepseek", "reasoningEffortMap": {"high": "max"}}},
+                 "compat": {"thinkingFormat": "deepseek"}, "thinkingLevelMap": {"high": "max"}},
                 {"id": "pro", "name": "Pro", "contextWindow": 65536, "maxTokens": 200,
                  "input": ["text"], "reasoning": True},
             ],
         }}}))
+        write(self.user / "auth.json", json.dumps({
+            "demo": {"type": "api_key", "key": "auth-secret"}
+        }))
 
     async def test_auth_models_are_default_switchable_and_never_persist_key(self):
         self.write_auth()
-        store = AuthStore(self.user)
-        self.assertEqual([entry.reference for entry in store.models], ["demo/flash", "demo/pro"])
-        self.assertEqual(store.resolve("flash").model.thinking_level_map["high"], "max")
+        registry = ModelRegistry(ModelConfig(self.user))
+        self.assertEqual([entry.reference for entry in registry.models], ["demo/flash", "demo/pro"])
+        self.assertEqual(registry.resolve("flash").model.thinking_level_map["high"], "max")
         stream = scripted(FauxScript(text="first"), FauxScript(text="second"))
         runtime = AgentSessionRuntime(self.project, user_dir=self.user, stream_fn=stream)
         self.addAsyncCleanup(runtime.close)
@@ -194,16 +198,16 @@ class ExtensionTests(Workspace, unittest.IsolatedAsyncioTestCase):
         SettingsManager(self.project, user_dir=self.user).update({"extensions": ["extensions/demo.py"]})
         runtime = self.runtime()
         self.assertEqual(await runtime.run_command("version"), "one")
-        old_modules = set(runtime.harness.extensions._modules)
+        old_modules = set(runtime.agent_session.extensions._modules)
         write(extension, 'def setup(api):\n    api.register_command("version", lambda args, ctx: "two")\n')
         await runtime.reload()
         self.assertEqual(await runtime.run_command("version"), "two")
         self.assertTrue(old_modules.isdisjoint(sys.modules))
-        previous = runtime.harness
+        previous = runtime.agent_session
         write(extension, 'def setup(api):\n    raise ValueError("bad plugin")\n')
         with self.assertRaisesRegex(ValueError, "bad plugin"):
             await runtime.reload()
-        self.assertIs(runtime.harness, previous)
+        self.assertIs(runtime.agent_session, previous)
         self.assertEqual(await runtime.run_command("version"), "two")
 
     async def test_collision_fails_without_new_session_file(self):
@@ -215,10 +219,10 @@ class ExtensionTests(Workspace, unittest.IsolatedAsyncioTestCase):
 
     async def test_enabled_tools_refresh_system_prompt(self):
         runtime = self.runtime()
-        runtime.harness.set_active_tools(["read"])
+        runtime.agent_session.set_active_tools(["read"])
         self.assertIn("- read:", runtime.state.system_prompt)
         self.assertNotIn("- write:", runtime.state.system_prompt)
-        runtime.harness.set_active_tools([])
+        runtime.agent_session.set_active_tools([])
         self.assertIn("<tools>\n(none)", runtime.state.system_prompt)
 
     async def test_compaction_through_runtime_is_persisted_and_observable(self):

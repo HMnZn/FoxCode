@@ -1,4 +1,4 @@
-"""AgentHarness 的宿主生命周期：切换 Session/cwd、重载资源、保持订阅。"""
+"""AgentSession 的宿主生命周期：切换 Session/cwd、重载资源、保持订阅。"""
 
 from __future__ import annotations
 
@@ -7,34 +7,35 @@ import os
 from pathlib import Path
 from uuid import uuid4
 
-from fox_ai.src import Model, SimpleStreamOptions, stream_simple
+from fox_ai.src import Model
 from fox_agent_core.src._async import maybe_await, cancellable
 import asyncio
-from .harness import AgentHarness, AgentHarnessOptions
+from .agent_session import AgentSession, AgentSessionConfig
 from .resources import ResourceLoader
-from .session import InMemorySessionStorage, JsonlSessionStorage, Session
+from .session_manager import InMemorySessionStorage, JsonlSessionStorage, SessionManager
 from .settings import SettingsManager
-from .auth import AuthStore
+from .model_runtime import ModelRuntime
 from .tools import create_all_tools
 from .system_prompt import build_system_prompt
 from .extensions import ExtensionRunner, ExtensionContext
 
 
 class AgentSessionRuntime:
-    """一个 runtime 拥有一个当前 Harness；订阅在切换后继续生效。
+    """一个 runtime 拥有一个当前 AgentSession；订阅在切换后继续生效。
 
     使用 prompt/continue_/invoke_* 启动任务。切换会取消并等待旧任务持久化；
     change_cwd 创建独立新会话，reload 保留当前会话和待处理消息。
-    构造或加载失败时保留旧 Harness。工具工厂接收新 cwd，避免复用旧路径。
+    构造或加载失败时保留旧 AgentSession。工具工厂接收新 cwd，避免复用旧路径。
     """
 
     def __init__(self, cwd: str | Path = ".", *, model: Model | None = None,
                  session_file: str | Path | None = None, user_dir: str | Path | None = None,
                  settings_overrides: dict | None = None, stream_fn=None, stream_options: dict | None = None,
                  resource_providers=(), tool_factory=None, before_tool_call=None, after_tool_call=None,
-                 extension_paths=(), extension_factories=(), summary_fn=None):
+                 extension_paths=(), extension_factories=(), summary_fn=None,
+                 project_trusted: bool | None = True, trust_resolver=None):
         self.user_dir = Path(user_dir).expanduser().resolve() if user_dir else Path.home() / ".foxcode"
-        self.auth_store = AuthStore(self.user_dir)
+        self.model_runtime = ModelRuntime(self.user_dir, stream_fn=stream_fn)
         self._overrides = settings_overrides or {}
         self._stream_fn, self._stream_options = stream_fn, dict(stream_options or {})
         self._providers = tuple(resource_providers)
@@ -48,25 +49,29 @@ class AgentSessionRuntime:
         self._listeners = []
         self._changing = False
         self._closed = False
+        self._trust_resolver = trust_resolver
         cwd = Path(cwd).expanduser().resolve()
         session = None
         if session_file is not None:
             path = self._existing_file(session_file)
-            session = Session(JsonlSessionStorage(path))
+            session = SessionManager(JsonlSessionStorage(path))
             cwd = Path(session.storage.get_metadata().get("cwd", str(cwd))).expanduser().resolve()
         else:
             path = None
-        settings, loader, resources = self._prepare(cwd)
+        if project_trusted is None:
+            project_trusted = bool(trust_resolver(cwd)) if trust_resolver else True
+        self.project_trusted = project_trusted
+        settings, loader, resources = self._prepare(cwd, project_trusted)
         selected = self._model(model, session, settings)
         if session is None:
             path, session = self._new_session(cwd, settings)
-        harness = self._build(cwd, session, selected, settings, resources)
+        agent_session = self._build(cwd, session, selected, settings, resources, project_trusted)
         try:
-            self._persist_new(harness, path)
+            self._persist_new(agent_session, path)
         except BaseException:
-            harness.extensions.dispose()
+            agent_session.extensions.dispose()
             raise
-        self._install(cwd, path, settings, loader, resources, harness)
+        self._install(cwd, path, settings, loader, resources, agent_session, project_trusted)
 
     @staticmethod
     def _existing_file(path) -> Path:
@@ -75,21 +80,26 @@ class AgentSessionRuntime:
             raise FileNotFoundError(f"Session file does not exist or is empty: {path}")
         return path
 
-    def _prepare(self, cwd):
+    def _prepare(self, cwd, project_trusted=None):
         if not cwd.is_dir():
             raise NotADirectoryError(f"Working directory does not exist: {cwd}")
-        settings = SettingsManager(cwd, user_dir=self.user_dir, overrides=self._overrides)
-        loader = ResourceLoader(cwd, user_dir=self.user_dir, providers=self._providers)
+        trusted = self.project_trusted if project_trusted is None else project_trusted
+        settings = SettingsManager(cwd, user_dir=self.user_dir, overrides=self._overrides,
+                                   project_trusted=trusted)
+        loader = ResourceLoader(cwd, user_dir=self.user_dir, providers=self._providers,
+                                project_trusted=trusted)
         return settings, loader, loader.load()
 
     def _model(self, explicit, session, manager):
         saved = session.build_settings().get("model") if session is not None else None
         selected = explicit or (Model.model_validate(saved) if saved else manager.settings.model)
+        if isinstance(selected, str):
+            selected = self.model_runtime.registry.resolve(selected).model
         if selected is None:
-            configured = self.auth_store.default()
+            configured = self.model_runtime.registry.default()
             selected = configured.model if configured else None
         if selected is None:
-            raise ValueError(f"A model is required: configure {self.user_dir / 'auth.json'} or pass --model.")
+            raise ValueError(f"A model is required: configure {self.user_dir / 'models.json'} or pass --model.")
         return selected
 
     @staticmethod
@@ -101,9 +111,10 @@ class AgentSessionRuntime:
         return cwd / ".foxcode" / "sessions"
 
     @classmethod
-    def latest_session(cls, cwd: str | Path = ".", *, user_dir=None) -> Path:
+    def latest_session(cls, cwd: str | Path = ".", *, user_dir=None,
+                       project_trusted: bool = True) -> Path:
         cwd = Path(cwd).expanduser().resolve()
-        manager = SettingsManager(cwd, user_dir=user_dir)
+        manager = SettingsManager(cwd, user_dir=user_dir, project_trusted=project_trusted)
         files = list(cls._session_dir(cwd, manager).glob("*.jsonl"))
         if not files:
             raise FileNotFoundError(f"No saved sessions for {cwd}")
@@ -111,37 +122,44 @@ class AgentSessionRuntime:
 
     def _new_session(self, cwd, settings):
         path = self._session_dir(cwd, settings) / f"{uuid4().hex}.jsonl"
-        return path, Session(InMemorySessionStorage(metadata={"cwd": str(cwd)}))
+        return path, SessionManager(InMemorySessionStorage(metadata={"cwd": str(cwd)}))
 
     @staticmethod
-    def _persist_new(harness, path):
-        """Validate the new Harness before publishing a file discoverable by --resume."""
-        if isinstance(harness.session.storage, JsonlSessionStorage):
+    def _persist_new(agent_session, path):
+        """Validate the new AgentSession before publishing a file discoverable by --resume."""
+        if isinstance(agent_session.session.storage, JsonlSessionStorage):
             return
         if path.exists():
             raise FileExistsError(f"Refusing to overwrite session: {path}")
         try:
-            storage = JsonlSessionStorage(path, metadata=harness.session.storage.get_metadata())
-            for entry in harness.session.get_entries():
+            storage = JsonlSessionStorage(path, metadata=agent_session.session.storage.get_metadata())
+            for entry in agent_session.session.get_entries():
                 storage.append_entry(entry)
         except BaseException:
             # This method owns this newly created UUID path; existing sessions never enter here.
             path.unlink(missing_ok=True)
             raise
-        harness.session = Session(storage)
-        harness.options.session = harness.session
+        agent_session.session = SessionManager(storage)
+        agent_session.session_config.session = agent_session.session
+        # AgentSession hooks captured the temporary in-memory session's bound
+        # method during construction. Rebind persistence after publishing the
+        # JSONL-backed session so new messages reach the durable transcript.
+        agent_session.hooks.persist_message = agent_session.session.append_message
 
-    def _build(self, cwd, session, model, manager, resources):
+    def _build(self, cwd, session, model, manager, resources, project_trusted):
         paths = [Path(p).expanduser() for p in manager.settings.extensions]
         paths = [p if p.is_absolute() else cwd / p for p in paths]
         extensions = ExtensionRunner.load([*paths, *self._extension_paths], self._extension_factories)
         try:
-            return self._build_with_extensions(cwd, session, model, manager, resources, extensions)
+            return self._build_with_extensions(
+                cwd, session, model, manager, resources, extensions, project_trusted
+            )
         except BaseException:
             extensions.dispose()
             raise
 
-    def _build_with_extensions(self, cwd, session, model, manager, resources, extensions):
+    def _build_with_extensions(self, cwd, session, model, manager, resources, extensions,
+                               project_trusted):
         settings = manager.settings
         had_tool_selection = "active_tools" in session.build_settings()
         tools = [*self._tool_factory(cwd), *extensions.api.tools]
@@ -152,71 +170,67 @@ class AgentSessionRuntime:
                                             or set(settings.tools) - available):
             raise ValueError("Configured tools must be unique and available in this runtime")
         stream_options = {**settings.stream_options, **self._stream_options}
-        stream = self._stream_fn or stream_simple
-
-        def authenticated_stream(request_model, context, options):
-            # Resolve on every request, including summaries and branch/model
-            # changes. Never reuse another provider's cached credential.
-            options = options or SimpleStreamOptions()
-            key = options.api_key
-            if not key and settings.api_key_env:
-                key = os.environ.get(settings.api_key_env)
-            if not key:
-                key = self.auth_store.key_for_model(request_model)
-            if key:
-                options = options.model_copy(update={"api_key": key})
-            return stream(request_model, context, options)
+        authenticated_stream = self.model_runtime.authenticated_stream(api_key_env=settings.api_key_env)
         async def before(data, cancel):
+            if not project_trusted:
+                return {"block": True, "reason": (
+                    "Project is not trusted; restart with --trust-project before executing tools"
+                )}
             if self._before:
                 outcome = await maybe_await(self._before(data, cancel))
                 if outcome and outcome.get("block"):
                     return outcome
-            return await extensions.before_tool(data, cancel, harness.extension_context)
+            return await extensions.before_tool(data, cancel, agent_session.extension_context)
 
         async def after(data, cancel):
-            outcome = await extensions.after_tool(data, cancel, harness.extension_context) or {}
+            outcome = await extensions.after_tool(data, cancel, agent_session.extension_context) or {}
             if self._after:
                 outcome.update(await maybe_await(self._after(data, cancel)) or {})
             return outcome or None
+
+        async def transform_context(messages, cancel):
+            return await extensions.transform_context(messages, agent_session.extension_context)
 
         def prompt_builder(active, skills, workdir):
             return build_system_prompt(cwd=workdir, tools=active, skills=skills, resources=resources,
                 custom_prompt=settings.system_prompt or resources.system_prompt_override,
                 append_prompt=settings.append_system_prompt, guidelines=extensions.api.guidelines)
 
-        harness = AgentHarness(AgentHarnessOptions(
+        agent_session = AgentSession(AgentSessionConfig(
             model=model, cwd=cwd, session=session, tools=tools, skills=resources.skills,
             system_prompt_builder=prompt_builder,
             compaction=settings.compaction, max_turns=settings.max_turns,
+            model_retry_attempts=settings.model_retry_attempts,
             tool_execution=settings.tool_execution, stream_fn=authenticated_stream,
             stream_options=stream_options, before_tool_call=before, after_tool_call=after,
-            summary_fn=self._summary_fn,
+            summary_fn=self._summary_fn, transform_context=transform_context,
         ))
-        harness.extensions = extensions
-        harness.extension_context = ExtensionContext(cwd, harness)
-        if settings.tools is not None and [t.name for t in harness.state.tools] != settings.tools:
-            harness.set_active_tools(settings.tools)
+        agent_session.extensions = extensions
+        agent_session.extension_context = ExtensionContext(cwd, agent_session, extensions.api.services)
+        if settings.tools is not None and [t.name for t in agent_session.state.tools] != settings.tools:
+            agent_session.set_active_tools(settings.tools)
         elif settings.tools is None and os.name != "nt" and "powershell" in available:
             # Keep saved choices; hide Windows-specific commands only for brand-new sessions.
             if not had_tool_selection:
-                harness.set_active_tools([t.name for t in harness.state.tools if t.name != "powershell"])
-        return harness
+                agent_session.set_active_tools([t.name for t in agent_session.state.tools if t.name != "powershell"])
+        return agent_session
 
-    def _install(self, cwd, path, settings, loader, resources, harness):
+    def _install(self, cwd, path, settings, loader, resources, agent_session, project_trusted):
         previous_unsubscribe = getattr(self, "_unsubscribe", None)
-        previous = getattr(self, "harness", None)
+        previous = getattr(self, "agent_session", None)
         self.cwd, self.session_file = cwd, path
+        self.project_trusted = project_trusted
         self.settings_manager, self.resource_loader, self.resources = settings, loader, resources
-        self.harness = harness
+        self.agent_session = agent_session
         self._extensions_started = False
-        self._unsubscribe = harness.subscribe(self._forward)
+        self._unsubscribe = agent_session.subscribe(self._forward)
         if previous_unsubscribe:
             previous_unsubscribe()
         if previous:
             previous.extensions.dispose()
 
     async def _forward(self, event, cancel_event):
-        await self.harness.extensions.emit(event.type, event, self.harness.extension_context)
+        await self.agent_session.extensions.emit(event.type, event, self.agent_session.extension_context)
         for listener in list(self._listeners):
             await maybe_await(listener(event, cancel_event))
 
@@ -230,33 +244,47 @@ class AgentSessionRuntime:
 
     @property
     def state(self):
-        return self.harness.state
+        return self.agent_session.state
 
     @property
     def session(self):
-        return self.harness.session
+        return self.agent_session.session
+
+    @property
+    def usage_totals(self):
+        return self.session.usage_totals()
+
+    def export_session(self, path: str | Path, *, format: str | None = None) -> Path:
+        """Export the current session tree as JSON or active transcript as Markdown."""
+        target = Path(path)
+        selected = (format or target.suffix.lstrip(".") or "json").lower()
+        if selected in {"md", "markdown"}:
+            return self.session.export_markdown(target)
+        if selected == "json":
+            return self.session.export_json(target)
+        raise ValueError("Session export format must be json or markdown")
 
     @property
     def available_models(self):
-        """Models from the user-level auth.json, without exposing credentials."""
-        return self.auth_store.models
+        """Models from the user-level models.json catalog."""
+        return self.model_runtime.registry.models
 
     def select_model(self, reference: str) -> Model:
-        """Switch the current Session to an auth.json model while idle."""
+        """Switch the current Session to a models.json model while idle."""
         self._ensure_available()
-        self.harness._ensure_idle()
-        selected = self.auth_store.resolve(reference)
-        self.harness.set_model(selected.model)
+        self.agent_session.ensure_idle()
+        selected = self.model_runtime.registry.resolve(reference)
+        self.agent_session.set_model(selected.model)
         if not selected.model.reasoning and self.state.thinking_level:
-            self.harness.set_thinking_level("off")
+            self.agent_session.set_thinking_level("off")
         return selected.model
 
     def set_thinking_level(self, level: str) -> None:
         self._ensure_available()
-        self.harness._ensure_idle()
+        self.agent_session.ensure_idle()
         if level != "off" and not self.state.model.reasoning:
             raise ValueError(f"Model {self.state.model.provider}/{self.state.model.id} does not support reasoning")
-        self.harness.set_thinking_level(level)
+        self.agent_session.set_thinking_level(level)
 
     def _ensure_available(self):
         if self._closed:
@@ -268,13 +296,13 @@ class AgentSessionRuntime:
 
     async def _start_extensions(self):
         if not self._extensions_started:
-            await self.harness.extensions.emit("session_start", {"type": "session_start", "cwd": self.cwd},
-                                               self.harness.extension_context)
+            await self.agent_session.extensions.emit("session_start", {"type": "session_start", "cwd": self.cwd},
+                                               self.agent_session.extension_context)
             self._extensions_started = True
 
     async def _prepare_start(self):
         self._ensure_available()
-        self.harness._ensure_idle()
+        self.agent_session.ensure_idle()
         self._preparing = True
         self._hook_cancel = asyncio.Event()
         try:
@@ -285,28 +313,28 @@ class AgentSessionRuntime:
 
     async def prompt(self, message):
         self._ensure_available()
-        self.harness._ensure_idle()
+        self.agent_session.ensure_idle()
         self._preparing = True
         self._hook_cancel = asyncio.Event()
         try:
             await cancellable(self._start_extensions(), self._hook_cancel)
-            outcomes = await cancellable(self.harness.extensions.emit("before_prompt", {"message": message},
-                self.harness.extension_context), self._hook_cancel)
+            outcomes = await cancellable(self.agent_session.extensions.emit("before_prompt", {"message": message},
+                self.agent_session.extension_context), self._hook_cancel)
             for outcome in outcomes:
                 if outcome and "message" in outcome:
                     message = outcome["message"]
         finally:
             self._preparing = False
             self._hook_cancel = None
-        await self.harness.prompt(message)
+        await self.agent_session.prompt(message)
 
     async def continue_(self):
         await self._prepare_start()
-        await self.harness.continue_()
+        await self.agent_session.continue_()
 
     async def invoke_skill(self, name, instructions=""):
         from .skills import format_skill_invocation
-        skill = next((s for s in self.harness.skills if s.name == name), None)
+        skill = next((s for s in self.agent_session.skills if s.name == name), None)
         if skill is None:
             raise ValueError(f"Unknown skill: {name}")
         await self.prompt(format_skill_invocation(skill, instructions))
@@ -318,28 +346,29 @@ class AgentSessionRuntime:
         await self.prompt(self.resources.prompts[name].render(arguments))
 
     def abort(self):
-        self.harness.abort()
+        self.agent_session.abort()
         if self._hook_cancel is not None:
             self._hook_cancel.set()
 
     async def compact(self):
         await self._prepare_start()
-        return await self.harness.compact()
+        return await self.agent_session.compact()
 
     async def run_command(self, name, arguments=""):
         self._ensure_available()
-        self.harness._ensure_idle()
+        self.agent_session.ensure_idle()
         self._preparing = True
         self._hook_cancel = asyncio.Event()
         try:
             await cancellable(self._start_extensions(), self._hook_cancel)
-            return await cancellable(self.harness.extensions.command(name, arguments, self.harness.extension_context),
+            return await cancellable(self.agent_session.extensions.command(name, arguments, self.agent_session.extension_context),
                                      self._hook_cancel)
         finally:
             self._preparing = False
             self._hook_cancel = None
 
-    async def _replace(self, *, cwd=None, session_file=None, reload=False, model=None):
+    async def _replace(self, *, cwd=None, session_file=None, reload=False, model=None,
+                       project_trusted=None):
         self._ensure_available()
         self._changing = True
         candidate = None
@@ -349,25 +378,35 @@ class AgentSessionRuntime:
             if session_file is not None:
                 path = self._existing_file(session_file)
                 # Read metadata before touching the old runtime. Reopen after it settles.
-                preview = Session(JsonlSessionStorage(path))
+                preview = SessionManager(JsonlSessionStorage(path))
                 target_cwd = Path(preview.storage.get_metadata().get("cwd", str(target_cwd))).expanduser().resolve()
+            if project_trusted is not None:
+                target_trusted = project_trusted
+            elif target_cwd == self.cwd:
+                target_trusted = self.project_trusted
+            elif self._trust_resolver:
+                target_trusted = bool(self._trust_resolver(target_cwd))
+            else:
+                target_trusted = self.project_trusted
             if reload:
                 path = self.session_file
-            settings, loader, resources = self._prepare(target_cwd)
-            old = self.harness
+            settings, loader, resources = self._prepare(target_cwd, target_trusted)
+            old = self.agent_session
             old.abort()
             await old.wait_for_idle()
             if reload:
                 session = old.session
             elif path is not None:
-                session = Session(JsonlSessionStorage(path))
+                session = SessionManager(JsonlSessionStorage(path))
             # New projects use their configured model, falling back to the current model.
             fallback = self.state.model if session is None and settings.settings.model is None else None
             selected = self._model(model or fallback, session, settings)
             is_new_session = session is None
             if session is None:
                 path, session = self._new_session(target_cwd, settings)
-            candidate = self._build(target_cwd, session, selected, settings, resources)
+            candidate = self._build(
+                target_cwd, session, selected, settings, resources, target_trusted
+            )
             if is_new_session and selected.reasoning and old.state.thinking_level:
                 candidate.set_thinking_level(old.state.thinking_level)
             if self._extensions_started:
@@ -377,9 +416,11 @@ class AgentSessionRuntime:
             if reload:
                 candidate.agent.steering_queue = old.agent.steering_queue
                 candidate.agent.follow_up_queue = old.agent.follow_up_queue
-            self._install(target_cwd, path, settings, loader, resources, candidate)
+            self._install(
+                target_cwd, path, settings, loader, resources, candidate, target_trusted
+            )
         except BaseException:
-            if candidate is not None and candidate is not self.harness:
+            if candidate is not None and candidate is not self.agent_session:
                 candidate.extensions.dispose()
             raise
         finally:
@@ -388,9 +429,10 @@ class AgentSessionRuntime:
     async def switch_session(self, session_file: str | Path):
         await self._replace(session_file=session_file)
 
-    async def change_cwd(self, cwd: str | Path, *, model: Model | None = None):
+    async def change_cwd(self, cwd: str | Path, *, model: Model | None = None,
+                         project_trusted: bool | None = None):
         """切换项目并新建会话；不把旧项目的消息自动带入新项目。"""
-        await self._replace(cwd=cwd, model=model)
+        await self._replace(cwd=cwd, model=model, project_trusted=project_trusted)
 
     async def new_session(self, *, model: Model | None = None):
         await self._replace(model=model or self.state.model)
@@ -398,13 +440,18 @@ class AgentSessionRuntime:
     async def reload(self):
         """重读设置/资源并重建 cwd 绑定工具；保留当前模型、历史、队列。"""
         self._ensure_available()
-        old_auth = self.auth_store
-        self.auth_store = AuthStore(self.user_dir)
+        old_runtime = self.model_runtime
+        candidate_runtime = ModelRuntime(self.user_dir, stream_fn=self._stream_fn)
+        self.model_runtime = candidate_runtime
         try:
             await self._replace(reload=True)
         except BaseException:
-            self.auth_store = old_auth
+            self.model_runtime = old_runtime
             raise
+
+    async def set_project_trust(self, trusted: bool):
+        """Rebuild cwd-bound services under a new trust decision."""
+        await self._replace(reload=True, project_trusted=trusted)
 
     async def close(self):
         if self._closed:
@@ -413,13 +460,13 @@ class AgentSessionRuntime:
         self._changing = True
         try:
             self.abort()
-            await self.harness.wait_for_idle()
+            await self.agent_session.wait_for_idle()
             try:
                 if self._extensions_started:
-                    await self.harness.extensions.emit("session_shutdown", {"type": "session_shutdown", "reason": "close"},
-                                                       self.harness.extension_context)
+                    await self.agent_session.extensions.emit("session_shutdown", {"type": "session_shutdown", "reason": "close"},
+                                                       self.agent_session.extension_context)
             finally:
-                self.harness.extensions.dispose()
+                self.agent_session.extensions.dispose()
                 self._unsubscribe()
                 self._closed = True
         finally:
