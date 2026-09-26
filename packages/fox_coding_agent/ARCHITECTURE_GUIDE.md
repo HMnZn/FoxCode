@@ -435,7 +435,7 @@ Skill 可以指导模型怎样组合工具，但技能文件本身不会因为�
 | `register_service(name, service)` | 注册供扩展协作的进程内服务 |
 | `register_context_transform(name, fn)` | 只转换本次模型请求的消息副本 |
 
-handler 支持同步或异步，签名为 `(data, context)`；`context.cwd` 是所属项目，`context.agent_session` 和 `context.session` 提供当前宿主与会话。Agent/Compaction 事件的 data 是事件对象；`before_prompt`、`tool_call`、`tool_result`、`session_start`、`session_shutdown` 的 data 是字典。
+handler 支持同步或异步，签名为 `(data, context)`；`context.cwd` 是所属项目，`context.user_dir` 是用户级 `.foxcode` 目录，`context.project_trusted` 表示项目信任状态，`context.agent_session` 和 `context.session` 提供当前宿主与会话。Agent/Compaction 事件的 data 是事件对象；`before_prompt`、`tool_call`、`tool_result`、`session_start`、`session_shutdown` 的 data 是字典。
 
 `before_prompt` 可返回 `{"message": "替换后的输入"}`；`tool_call` 可返回 `{"block": True, "reason": "原因"}`；`tool_result` 可补充或替换 content/details/is_error 等结果字段。普通事件只用于观察，返回值不改变核心循环。宿主传入的工具阻止策略先执行，扩展不会使已阻止的工具真正执行。
 
@@ -467,6 +467,7 @@ uv run fox --extension examples/extensions/project_info.py --interactive
 
 ```powershell
 uv run fox --trust-project --interactive
+uv run fox --trust-project --memory --interactive
 uv run fox --resume --interactive
 uv run fox --resume --compact
 uv run fox --tools read,grep,find,ls -p "梳理项目结构"
@@ -474,7 +475,7 @@ uv run fox --skill release-audit -p "检查开发环境"
 uv run fox --template review -p "src/module.py"
 ```
 
-连续对话提供 `/new`、`/resume 文件`、`/cwd 目录`、`/reload`、`/trust`、`/untrust`、`/compact`、`/usage`、`/export`、`/tools`、`/model`、`/thinking`、`/skill 名称`、`/prompt 名称` 和扩展命令。`/tools none` 禁用工具；`/help` 显示可用命令；`/exit` 结束。当前每次任务等待完成后打印最终回复，Ctrl+C 结束 CLI；没有实现终端组件、复杂键盘交互或 TUI。
+连续对话提供 `/new`、`/resume 文件`、`/cwd 目录`、`/reload`、`/trust`、`/untrust`、`/compact`、`/usage`、`/export`、`/tools`、`/model`、`/thinking`、`/skill 名称`、`/prompt 名称` 和扩展命令。使用 `--memory` 时还会注册 `/memory`。`/tools none` 禁用工具；`/help` 显示可用命令；`/exit` 结束。当前每次任务等待完成后打印最终回复，Ctrl+C 结束 CLI；没有实现终端组件、复杂键盘交互或 TUI。
 
 非交互 JSON 模式继续保留稳定的逐行事件输出，扩展命令返回 `command_result`。普通扩展 print 被导向 stderr；扩展若直接写文件描述符或启动自己的后台任务，需自行遵守宿主输出和资源清理约定。
 
@@ -504,6 +505,7 @@ CLI 解析参数，Runtime 选定 cwd 与 Session，再由 Settings 和 Resource
 | [resources.py](src/core/resources.py) / [skills.py](src/core/skills.py) | 项目知识的发现与组织 |
 | [tools.py](src/core/tools.py) / [system_prompt.py](src/core/system_prompt.py) | 执行能力与提示词的一致性 |
 | [extensions.py](src/core/extensions.py) | 注册工具、命令和钩子 |
+| [extensions/memory](src/extensions/memory) | 项目记忆存储、工具、召回与命令 |
 | [cli.py](src/cli.py) | 命令行参数、连续对话、JSON 和退出码 |
 
 ### 8.3 面试中避免夸大能力
@@ -529,7 +531,7 @@ CLI 解析参数，Runtime 选定 cwd 与 Session，再由 Settings 和 Resource
 | 通用服务注册、请求上下文变换、事件 | `core/extensions.py` | 这是多个扩展共享的稳定协议 |
 | ToolCall 调度、取消、消息事件 | `fox_agent_core` | 是所有 Agent 都需要的执行机制 |
 
-建议新增目录：
+扩展目录按能力组织：
 
 ```text
 fox_coding_agent/src/
@@ -542,19 +544,42 @@ fox_coding_agent/src/
 
 这些模块通过 `setup(api)` 注册，不让 `fox_agent_core` 反向依赖它们。
 
-### 9.2 Memory：服务与上下文投影分开
+### 9.2 Memory：已实现为可选扩展
 
-Memory 扩展注册 `memory.store` 服务，负责 CRUD、索引和作用域；再注册 context transform，在每次模型请求前检索少量相关记忆并加入请求副本。请求副本不会写回 Session，因此 Session 仍记录真实对话，Memory 只是本轮上下文投影。
+当前实现位于 `src/extensions/memory/`，CLI 使用 `--memory` 显式启用。它参考 BearCode 的四个核心选择：项目路径映射到独立目录、正文使用人可读 Markdown、`MEMORY.md` 作为派生索引、模型请求前按需召回。FoxCode 对边界做了进一步收紧：
 
-```python
-def setup(api):
-    store = MemoryStore(...)
-    api.register_service("memory.store", store)
-    api.register_context_transform("memory.recall", recall_into_context)
-    api.on("message_end", extract_candidate_memories)
+- 记忆统一保存在 `~/.foxcode/projects/<project-hash>/memory/`，不会向用户项目写入额外知识文件。
+- Markdown 条目是事实来源，`MEMORY.md` 随 CRUD 重建；文件名、类型、字段长度、条目数和路径都经过校验。
+- 模型只能通过五个专用工具 CRUD，不能让一个任意路径写工具充当记忆接口。
+- 召回采用确定性的关键词评分；`pinned` 记忆始终参与候选，不额外发起一次隐藏模型请求。
+- 只有 trusted 项目可以读写或召回。召回文本明确标记为历史观察，要求模型用当前文件验证项目事实。
+- context transform 深拷贝最后一条用户消息，只修改本次模型请求；召回正文不会写回 JSONL Session。
+
+```text
+session_start
+    └─ MemoryService.bind(user_dir, cwd, trust, session_id)
+
+用户输入 ── context transform ── MemoryStore.search ── 请求副本 ── 模型
+   │                                                        │
+   └──────────────── 原始消息写入 Session ──────────────────┘
+
+模型 ── memory_save/read/search/list/delete ── Markdown + MEMORY.md
 ```
 
-长期事实与对话历史要分开保存。用户级记忆可放 `~/.foxcode/memory/`；项目记忆放 `<project>/.foxcode/memory/`，只有项目 trusted 后才读写。写入应保存来源、时间、作用域和置信度，支持删除，不要把模型生成的每一句总结直接当事实。
+扩展注册 `memory.store` 服务供其他扩展协作，同时注册 `memory_save`、`memory_search`、`memory_list`、`memory_read`、`memory_delete` 工具和 `/memory` 命令。默认最多召回 3 条、注入 12000 字符，可以在 SDK 中传入配置：
+
+```python
+from fox_coding_agent.src import AgentSessionRuntime, MemoryExtensionConfig, create_memory_extension
+
+runtime = AgentSessionRuntime(
+    ".",
+    extension_factories=(create_memory_extension(
+        MemoryExtensionConfig(max_recall=5, max_injected_chars=16000)
+    ),),
+)
+```
+
+这里不自动从每轮对话提取并永久保存内容。写入必须是模型对 `memory_save` 的显式工具调用，且 system prompt 规定只保存用户未来会期待继续生效的偏好、纠正、项目决策或参考信息，禁止保存凭据和瞬时任务状态。这个选择使“模型认为值得记住”成为可观察的工具事件，也让用户能用 `/memory` 检查和删除。
 
 ### 9.3 MCP：连接管理器不是一个巨型工具
 

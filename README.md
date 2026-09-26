@@ -8,6 +8,7 @@
 
 ```powershell
 uv run fox --trust-project --interactive
+uv run fox --trust-project --memory --interactive
 uv run fox --list-models
 uv run fox --model deepseek/deepseek-v4-pro --thinking high -p "阅读 README.md，说明项目架构"
 uv run fox --resume -p "继续解释 Session"
@@ -46,6 +47,10 @@ fox CLI / Notebook
 连续对话中支持 `/help`、`/new`、`/resume 文件`、`/cwd 目录`、`/reload`、`/trust`、`/untrust`、`/compact`、`/usage`、`/export`、`/tools`、`/model`、`/thinking`、`/skill 名称`、`/prompt 名称` 和扩展命令。`fox` 在交互终端无任务参数时也会进入连续对话。
 
 扩展示例：[project_info.py](examples/extensions/project_info.py)。显式加载：`fox --extension examples/extensions/project_info.py --command project-info`（需先配置模型）。详细 API 与边界见[宿主指南·第六章](packages/fox_coding_agent/ARCHITECTURE_GUIDE.md#ch06)。
+
+长期记忆作为 `fox_coding_agent` 的可选扩展提供，而不是写进通用 agent loop。使用 `--memory` 启用；模型可调用 `memory_save`、`memory_search`、`memory_list`、`memory_read` 和 `memory_delete`，交互终端可用 `/memory list`、`/memory search 关键词`、`/memory read 文件名`、`/memory delete 文件名` 与 `/memory dir`。记忆保存在用户目录的 `~/.foxcode/projects/<项目路径哈希>/memory/`，以 Markdown 条目为事实来源，`MEMORY.md` 是可重建索引。只有已信任项目能够读写和自动召回记忆。
+
+自动召回只修改发给模型的本次请求副本，不写入 Session JSONL。这样长期知识与对话历史拥有独立生命周期，关闭 Memory 扩展或删除条目后，旧 Session 不会继续携带隐藏的记忆文本。
 
 ## 运行离线示例
 

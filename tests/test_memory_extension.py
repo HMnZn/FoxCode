@@ -1,0 +1,153 @@
+"""Long-term memory extension tests; all model calls use the offline Faux provider."""
+
+import tempfile
+import unittest
+from pathlib import Path
+
+from fox_ai.src import TextContent, ToolCall
+from fox_ai.src.providers.faux import FAUX_MODEL, FauxScript, clear_scripts
+from fox_coding_agent.src import AgentSessionRuntime
+from fox_coding_agent.src.cli import build_parser
+from fox_coding_agent.src.extensions.memory import (
+    MemoryStore,
+    create_memory_extension,
+    project_memory_id,
+)
+from test_agent_core import scripted
+
+
+class MemoryStoreTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve()
+        self.user = self.root / "user"
+        self.project = self.root / "project"
+        self.project.mkdir()
+        self.store = MemoryStore(self.user, self.project)
+
+    def test_markdown_is_source_of_truth_and_index_is_derived(self):
+        saved = self.store.save(
+            name="回复语言",
+            description="用户偏好的回复语言",
+            type="user",
+            content="请使用中文回答。",
+            pinned=True,
+            source_session="session-1",
+        )
+        self.assertEqual(saved.content, "请使用中文回答。")
+        self.assertTrue(saved.pinned)
+        self.assertEqual(saved.source_session, "session-1")
+        self.assertEqual(
+            self.store.directory,
+            self.user / "projects" / project_memory_id(self.project) / "memory",
+        )
+        self.assertIn(saved.filename, self.store.index_path.read_text(encoding="utf-8"))
+
+        updated = self.store.save(
+            name="回复语言",
+            description="稳定的语言偏好",
+            type="user",
+            content="默认使用简体中文回答。",
+            pinned=True,
+        )
+        self.assertEqual(updated.filename, saved.filename)
+        self.assertEqual(len(self.store.list()), 1)
+        self.assertIn(updated, self.store.search("语言"))
+        self.assertTrue(self.store.delete(updated.filename))
+        self.assertEqual(self.store.list(), [])
+
+    def test_paths_and_projects_are_isolated(self):
+        entry = self.store.save(
+            name="构建命令", description="项目构建方式", type="project", content="uv run pytest"
+        )
+        with self.assertRaisesRegex(ValueError, "filename"):
+            self.store.read("../auth.json")
+        other = self.root / "other"
+        other.mkdir()
+        other_store = MemoryStore(self.user, other)
+        self.assertNotEqual(other_store.directory, self.store.directory)
+        self.assertEqual(other_store.list(), [])
+        self.assertEqual(self.store.read(entry.filename).content, "uv run pytest")
+        self.assertEqual(self.store.search("pytest")[0].filename, entry.filename)
+
+
+class MemoryExtensionTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve()
+        self.user = self.root / "user"
+        self.project = self.root / "project"
+        self.project.mkdir()
+        clear_scripts()
+
+    def runtime(self, stream, *, trusted=True):
+        runtime = AgentSessionRuntime(
+            self.project,
+            user_dir=self.user,
+            model=FAUX_MODEL,
+            stream_fn=stream,
+            extension_factories=(create_memory_extension(),),
+            project_trusted=trusted,
+        )
+        self.addAsyncCleanup(runtime.close)
+        return runtime
+
+    async def test_model_tool_saves_and_next_session_recalls_without_persisting_recall(self):
+        body = "以后默认使用中文回答。"
+        first_stream = scripted(
+            FauxScript(tool_calls=[ToolCall(id="memory-1", name="memory_save", arguments={
+                "name": "回复语言",
+                "description": "用户希望使用中文",
+                "type": "user",
+                "content": body,
+                "pinned": True,
+            })]),
+            FauxScript(text="已记住"),
+        )
+        first = self.runtime(first_stream)
+        await first.prompt("记住我的回复语言")
+        store = MemoryStore(self.user, self.project)
+        self.assertEqual(len(store.list()), 1)
+        self.assertIn("memory_save", [tool.name for tool in first.state.tools])
+
+        second_stream = scripted(FauxScript(text="你好"))
+        second = self.runtime(second_stream)
+        await second.prompt("介绍一下这个项目")
+        sent_text = "\n".join(
+            block.text
+            for block in second_stream.contexts[0].messages[-1].content
+            if isinstance(block, TextContent)
+        )
+        self.assertIn("<memory_context>", sent_text)
+        self.assertIn(body, sent_text)
+        self.assertNotIn(body, second.session_file.read_text(encoding="utf-8"))
+
+        listed = await second.run_command("memory", "list")
+        self.assertEqual(listed[0]["name"], "回复语言")
+
+    async def test_untrusted_project_does_not_recall_memory(self):
+        MemoryStore(self.user, self.project).save(
+            name="private convention",
+            description="should stay outside an untrusted request",
+            type="project",
+            content="internal-value",
+            pinned=True,
+        )
+        stream = scripted(FauxScript(text="safe"))
+        runtime = self.runtime(stream, trusted=False)
+        await runtime.prompt("hello")
+        sent = str(stream.contexts[0].messages[-1].content)
+        self.assertNotIn("memory_context", sent)
+        self.assertNotIn("internal-value", sent)
+        with self.assertRaisesRegex(PermissionError, "trusted"):
+            await runtime.run_command("memory", "list")
+
+    def test_cli_flag_enables_packaged_extension(self):
+        args = build_parser().parse_args(["--memory", "--interactive"])
+        self.assertTrue(args.memory)
+
+
+if __name__ == "__main__":
+    unittest.main()

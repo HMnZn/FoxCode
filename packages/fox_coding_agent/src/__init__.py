@@ -16,6 +16,10 @@ from .core.tools import (ReadTool, WriteTool, EditTool, BashTool, PowerShellTool
                          GrepTool, FindTool, LsTool, create_coding_tools, create_all_tools)
 from .core.system_prompt import build_system_prompt
 from .core.extensions import ExtensionAPI, ExtensionRunner, ExtensionContext
+from .extensions.memory import (
+    MemoryEntry, MemoryExtensionConfig, MemoryService, MemoryStore,
+    create_memory_extension, project_memory_id,
+)
 from .core.session_manager import (
     SessionManager, SessionEntry, SessionStorage,
     InMemorySessionStorage, JsonlSessionStorage,

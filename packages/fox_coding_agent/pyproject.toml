@@ -20,5 +20,15 @@ build-backend = "setuptools.build_meta"
 fox = "fox_coding_agent.src.cli:main"
 
 [tool.setuptools]
-packages = ["fox_coding_agent.src", "fox_coding_agent.src.core"]
-package-dir = {"fox_coding_agent.src" = "src", "fox_coding_agent.src.core" = "src/core"}
+packages = [
+    "fox_coding_agent.src",
+    "fox_coding_agent.src.core",
+    "fox_coding_agent.src.extensions",
+    "fox_coding_agent.src.extensions.memory",
+]
+
+[tool.setuptools.package-dir]
+"fox_coding_agent.src" = "src"
+"fox_coding_agent.src.core" = "src/core"
+"fox_coding_agent.src.extensions" = "src/extensions"
+"fox_coding_agent.src.extensions.memory" = "src/extensions/memory"

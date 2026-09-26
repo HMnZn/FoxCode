@@ -24,6 +24,8 @@ RESERVED_COMMANDS = {"help", "exit", "quit", "new", "resume", "cwd", "reload", "
 class ExtensionContext:
     cwd: Path
     agent_session: object
+    user_dir: Path
+    project_trusted: bool
     services: dict[str, object] = field(default_factory=dict)
 
     @property

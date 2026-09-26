@@ -15,6 +15,7 @@ from fox_coding_agent.src import AgentSessionRuntime, SettingsManager
 from fox_coding_agent.src.core.model_config import ModelConfig
 from fox_coding_agent.src.core.model_registry import ModelRegistry
 from fox_coding_agent.src.core.trust import ProjectTrustManager
+from fox_coding_agent.src.extensions.memory import setup as memory_extension
 
 THINKING_LEVELS = ("off", "minimal", "low", "medium", "high", "xhigh", "max")
 
@@ -38,6 +39,7 @@ def build_parser():
     parser.add_argument("--list-models", action="store_true", help="列出用户 models.json 中可切换的模型后退出")
     parser.add_argument("--tools", help="启用的工具名，以逗号分隔；空字符串禁用工具")
     parser.add_argument("--extension", action="append", default=[], type=Path, help="加载 Python 扩展，可重复")
+    parser.add_argument("--memory", action="store_true", help="启用项目级长期记忆扩展")
     trust = parser.add_mutually_exclusive_group()
     trust.add_argument("--trust-project", dest="project_trust", action="store_true",
                        help="信任并记录当前项目，允许加载项目资源和执行工具")
@@ -243,6 +245,7 @@ async def run(args, *, stream_fn=None):
     runtime = AgentSessionRuntime(cwd, model=model, session_file=session_file,
                                   user_dir=args.user_dir, settings_overrides=overrides, stream_fn=stream_fn,
                                   extension_paths=args.extension,
+                                  extension_factories=(memory_extension,) if args.memory else (),
                                   project_trusted=(args.project_trust if args.project_trust is not None else None),
                                   trust_resolver=lambda path: trust_manager.decision(path) is True)
     try:

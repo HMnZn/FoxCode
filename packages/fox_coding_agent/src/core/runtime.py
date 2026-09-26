@@ -206,7 +206,13 @@ class AgentSessionRuntime:
             summary_fn=self._summary_fn, transform_context=transform_context,
         ))
         agent_session.extensions = extensions
-        agent_session.extension_context = ExtensionContext(cwd, agent_session, extensions.api.services)
+        agent_session.extension_context = ExtensionContext(
+            cwd=cwd,
+            agent_session=agent_session,
+            user_dir=self.user_dir,
+            project_trusted=project_trusted,
+            services=extensions.api.services,
+        )
         if settings.tools is not None and [t.name for t in agent_session.state.tools] != settings.tools:
             agent_session.set_active_tools(settings.tools)
         elif settings.tools is None and os.name != "nt" and "powershell" in available:
