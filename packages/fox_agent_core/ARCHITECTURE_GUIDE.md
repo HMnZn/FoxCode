@@ -4,7 +4,7 @@
 
 配套 [AGENT_CORE_LAB.ipynb](AGENT_CORE_LAB.ipynb) 只导入 fox_ai 与 agent-core，独立进行真实回答、自定义工具、事件和 follow-up 实验，不需要先运行宿主实验。
 
-阅读路线：第一至三章建立概念，第四至九章解释执行与异常路径，第十章讲扩展边界，第十一章讲验证与面试。源码从 `types.py → agent_loop.py → agent.py` 阅读。
+阅读路线：第一至三章建立概念，第四至九章解释执行与异常路径，第十章讲循环扩展点，第十一、十二章补齐 Harness、SessionStorage 和 Compaction，第十三章讲验证与面试。建议按 `types.py → agent_loop.py → agent.py → harness/` 的顺序阅读源码。
 
 ## 第一章：Agent 内核到底在解决什么问题
 
@@ -393,13 +393,13 @@ messages：已经定稿的对话消息，供后续上下文使用
 
 假设同一个 Agent 同时启动两个循环：它们可能都读取同一段历史，然后交错写入不同的 assistant 和 toolResult。最终既无法解释哪个工具结果属于哪个目标，也很难正确执行取消和压缩。
 
-当前方案是一个 Agent 同时只处理一次运行，新要求使用消息队列进入。Harness 的忙碌约束还覆盖手动压缩、切换分支等操作，避免修改上下文时发生竞争。
+当前方案是一个 Agent 同时只处理一次运行，新要求使用消息队列进入。通用 Harness 用 `run()` 为宿主操作提供同样的忙碌约束；编码宿主的 `AgentSession` 进一步用它覆盖手动压缩，并在切换分支前调用 `ensure_idle()`，避免修改上下文时发生竞争。
 
 这能简化同一对象内的并发语义，但不会自动保护两个不同 Harness 写同一个 JSONL 文件。
 
 ### 6.6 事件先更新运行状态，持久化再确定历史
 
-在 Harness 路径中，Agent 先处理事件更新状态，Harness 的订阅器再将完成消息保存到 Session。操作结束时，Harness 从 Session 重建消息列表，使保存下来的历史成为恢复消息的依据。
+在 Harness 路径中，Agent 先处理事件更新状态，Harness 的订阅器再调用 `persist_message` 保存完成消息。通用 Harness 不知道如何从某种 Session 重建上下文；编码宿主的 `AgentSession.after_run` 才会从 `SessionManager` 重建消息列表，使保存下来的历史成为恢复消息的依据。
 
 这意味着内存状态和磁盘文件之间有一个短暂的处理窗口。当前设计通过失败传播和结束时重新同步来处理普通存储失败，并没有实现跨内存、文件和外部工具的统一事务。
 
@@ -514,7 +514,9 @@ Schema 可以检查必填字段、数据类型、取值范围和多余字段。�
 | 消息 | `message_start` / `message_update` / `message_end` | 消息从开始、变化到定稿 |
 | 工具 | `tool_execution_start` / `update` / `end` | 一次工具调用的处理过程 |
 
-Harness 另外提供压缩相关事件，用于展示正在整理历史等宿主操作。压缩事件没有被混进工具调用类型里，职责更容易区分。
+关键 payload 也不同：`AgentEndEvent.messages` 是本次 run 新产生的消息；`TurnEndEvent` 同时带定稿 assistant 消息和该轮工具结果；`MessageUpdateEvent` 可携带底层 `AssistantMessageEvent`；工具开始事件带调用 ID、名称和参数，进度事件带 `partial_result`，结束事件带最终 `AgentToolResult` 和 `is_error`。
+
+`fox_agent_core.harness` 只定义了宽松的 `HarnessEvent` 标记协议，通用 `AgentHarness` 本身不会自动生成压缩事件。编码宿主的 `AgentSession` 额外发出 `compaction_start` / `compaction_end` / `compaction_error`；这些宿主事件没有混进 Agent 工具调用类型，因此两层职责仍然可以区分。
 
 ### 8.3 模型事件与 Agent 事件解决不同层级的问题
 
@@ -666,30 +668,359 @@ Agent 使用 `shield` 保护内部运行的等待关系；检测到调用者取�
 
 当前消息对象也不是完全不可变的。编写变换 Hook 时，最好返回需要的新列表或新对象，避免意外原地修改多个层共享的数据。
 
+### 10.3 Hook 的输入与返回值要按契约使用
+
+只知道 Hook 名称还不够，宿主必须知道它收到什么，又能改变什么。当前实现中常用的 payload 如下：
+
+| Hook | 主要输入 | 有效返回值 |
+| --- | --- | --- |
+| `prepare_request` | `context`、`model`、`turn_index`、`cancel_event` | 可返回新的 `context`、`model`、`thinkingLevel` |
+| `prepare_next_turn` | 上一轮的 `message`、`tool_results`、`context`、`new_messages` | 同上，用于下一轮请求 |
+| `transform_context` | 待发给模型的消息列表、`cancel_event` | 返回请求侧消息列表 |
+| `convert_to_llm` | 经过变换的消息列表 | 返回 `fox_ai.Context` 可接受的消息 |
+| `before_tool_call` | assistant 消息、ToolCall、已校验参数、context | `{"block": true, "reason": "...", "terminate": true?}` |
+| `after_tool_call` | 工具结果、`is_error` 以及调用上下文 | 可覆盖 `content`、`details`、`terminate`、`is_error` |
+| `should_stop_after_turn` | 与 `prepare_next_turn` 相同的上轮摘要 | 真值表示当前 run 到此停止 |
+
+`prepare_request` 和 `prepare_next_turn` 返回的 `thinkingLevel="off"` 会清除本次调用的 reasoning 设置。通过 `Agent` 调用时，包装层也会把返回的 context、model 和 thinking level 同步回 `AgentState`。
+
+`before_tool_call` 发生在 JSON Schema 校验之后；因此参数根本不合法时，它不会被调用。`after_tool_call` 只在已经得到校验后参数且没有进入取消状态时执行；它可以处理工具自身的失败结果，却不是通用的 `finally`。
+
+### 10.4 选择使用 agent_loop、Agent 还是 Harness
+
+| 入口 | 调用方需要自己负责 | 适合场景 |
+| --- | --- | --- |
+| `agent_loop()` / `agent_loop_continue()` | 管理 context、config、消费 EventStream 和保存结果 | 研究循环、完全自定义的调度器 |
+| `Agent` | 提供模型和工具，决定是否持久化 | 进程内的有状态对话与任务 |
+| `AgentHarness` | 组装 `AgentOptions`，通过 Hook 实现宿主策略 | 需要单操作互斥、持久化边界的可复用宿主 |
+
+`agent_loop()` 返回 `EventStream[AgentEvent, list[AgentMessage]]`；异步迭代得到过程事件，`await stream.result()` 得到本次 run 新产生的消息，而不是输入 context 中的全部历史。`agent_loop_continue()` 要求现有上下文非空，且末尾不能是 assistant 消息。
+
+`Agent.prompt()` 则会将字符串转成带时间戳的 `UserMessage`，维护历史和队列。`Agent.continue_()` 适合继续末尾为 user/toolResult 的未完成上下文；如果末尾是 assistant，只有已经排队的 steering 或 follow-up 能使它继续。`reset()` 只清空运行消息、错误和队列，不会换掉模型、system prompt 或工具。
+
+### 10.5 AgentOptions 的配置可以按职责分组
+
+| 配置组 | 字段 | 说明 |
+| --- | --- | --- |
+| 初始状态 | `initial_state` | 可传 `AgentState` 或字典；字典出现未知字段会报错 |
+| 模型边界 | `stream_fn`、`get_api_key`、`stream_options` 与其他关键字参数 | 选择流函数、动态凭据和请求选项 |
+| 上下文 | `transform_context`、`convert_to_llm` | 调整本次请求看到的消息 |
+| 轮次 Hook | `prepare_request`、`prepare_next_turn`、`should_stop_after_turn` | 请求前准备、继续前准备与提前停止 |
+| 工具 Hook | `before_tool_call`、`after_tool_call` | 实际执行前后的宿主策略 |
+| 调度 | `steering_mode`、`follow_up_mode`、`tool_execution`、`max_turns` | 队列消费、工具批次和轮次上限 |
+
+`initial_state` 里的 messages 和 tools 列表会被复制，正在运行的标记、流式消息和 pending tool-call 集合会被重置，避免用一份初始状态创建两个 Agent 时共享运行期容器。这仍然是浅层的容器分离，不是对每个消息和工具对象做完整深拷贝。
+
+`max_turns` 必须是正整数或 `None`；两种队列模式只允许 `all` / `one-at-a-time`，工具执行模式只允许 `parallel` / `sequential`。这些配置在 Agent 构造时就会校验，不需要等到第一次模型请求才失败。
+
 <a id="ch11"></a>
 
-## 第十一章：验证、源码地图与面试表达
+## 第十一章：AgentHarness——如何把内核嵌入宿主
 
-### 11.1 先验证确定性协议，再验证真实模型行为
+### 11.1 Harness 解决的是操作生命周期
+
+`Agent` 已经能执行 prompt，但宿主通常还需要统一回答三个问题：
+
+1. 除了 prompt，手动压缩或其他宿主操作能否和当前运行并发？
+2. 一次操作开始、消息完成和操作结束时，宿主要在哪里接入？
+3. 内核事件怎样传给 UI、日志或宿主自定义事件的订阅者？
+
+`AgentHarness` 是围绕 `Agent` 的小型生命周期壳。它不是第二个 Agent loop，也不会解析 cwd、凭据、Skill 或 JSONL。它只把“单操作互斥 + Hook + 事件转发”做成可复用骨架。
+
+### 11.2 AgentHarnessConfig 和 HarnessHooks
+
+`AgentHarnessConfig` 只有两个字段：
+
+| 字段 | 作用 |
+| --- | --- |
+| `agent_options` | 完整的 `AgentOptions`，Harness 用它创建内部 Agent |
+| `hooks` | 宿主注入的 `HarnessHooks`，默认为空 Hook 集合 |
+
+`HarnessHooks` 的三个回调都可以是同步函数或 async 函数：
+
+| Hook | 执行时机 | 典型用途 |
+| --- | --- | --- |
+| `before_run()` | Harness 置为 busy 后、真正 action 前 | 恢复检查、准备宿主状态 |
+| `persist_message(message)` | 收到 `MessageEndEvent` 后 | 保存定稿消息 |
+| `after_run()` | action 或 `before_run` 成功与否都会进入的 finally 路径 | 状态对齐、宿主级清理 |
+
+Hook 是持久化和宿主策略的接缝，不是事务管理器。如果 `persist_message` 失败，异常会沿事件链向上暴露；Harness 不会假装消息已经保存。如果 `after_run` 自身再抛异常，它也可能覆盖 action 原本的异常，因此清理 Hook 应尽量小而可靠。
+
+### 11.3 run() 的完整时序
+
+```text
+ensure_idle
+  → _busy = True，创建 _idle Future
+  → before_run
+  → await action()
+       └─ prompt / continue_ / 宿主自定义操作
+  → after_run                  # finally
+  → _busy = False
+  → 完成 _idle Future            # 内层 finally
+```
+
+`run(action)` 是通用入口，`prompt()` 和 `continue_()` 只是把 Agent 方法包进它。宿主可以用同一入口包住其他必须互斥的异步操作。
+
+`ensure_idle()` 同时检查 Harness 的 `_busy` 和内部 `agent.is_running`。这样既防止两个 Harness action 重叠，也防止调用方绕过 Harness 直接启动内部 Agent 后再开始新操作。
+
+`wait_for_idle()` 使用 `shield` 等待 `_idle` Future。取消某一个等待者不会破坏 Harness 的共用完成信号。`abort()` 则只把取消意图传给 Agent；宿主自定义的非 Agent action 如果也需要取消，子类必须自己提供信号，编码宿主的手动压缩就是这样做的。
+
+### 11.4 事件、持久化与订阅顺序
+
+Harness 在创建时就订阅内部 Agent。Agent 先完成自身的状态归约，再调用 Harness 的 `_on_agent_event`。对于 `MessageEndEvent`，Harness 先等待 `persist_message`，然后按订阅顺序逐个等待外部 listener：
+
+```text
+Agent 状态归约
+  → Harness.persist_message（仅 message_end）
+  → Harness listener 1
+  → Harness listener 2
+```
+
+这是一条串行路径。好处是 listener 看到完成消息时，持久化 Hook 已经成功；代价是慢 listener 会延迟运行。`subscribe()` 返回取消订阅函数，listener 签名为 `(event, cancel_event)`。
+
+`emit(event)` 可以让宿主子类发送自定义事件，但它不会触发 `persist_message`。只有来自 Agent 的 `MessageEndEvent` 走持久化分支。
+
+### 11.5 一个最小可运行示例
+
+```python
+import asyncio
+
+from fox_ai.src.providers.faux import FAUX_MODEL, FauxScript, clear_scripts, push_script
+from fox_agent_core.src import AgentHarness, AgentHarnessConfig, AgentOptions, HarnessHooks
+
+
+async def main():
+    saved = []
+    events = []
+    clear_scripts()
+    push_script(FauxScript(text="done"))
+
+    harness = AgentHarness(AgentHarnessConfig(
+        agent_options=AgentOptions(initial_state={"model": FAUX_MODEL}),
+        hooks=HarnessHooks(persist_message=saved.append),
+    ))
+    unsubscribe = harness.subscribe(lambda event, cancel: events.append(event.type))
+
+    await harness.prompt("finish this deterministic demo")
+    await harness.wait_for_idle()
+    unsubscribe()
+
+    assert [message.role for message in saved] == ["user", "assistant"]
+    assert events[0] == "agent_start"
+    assert events[-1] == "agent_end"
+
+
+asyncio.run(main())
+```
+
+Faux 只是离线演示边界。真实宿主会把 `persist_message` 接到自己的 Session 实现，并根据需要组装工具、凭据与 Hook。
+
+### 11.6 HarnessEvent 和 Result 的真实定位
+
+`harness/events.py` 中的 `HarnessEvent` 只是要求对象具有 `type: str` 的 Protocol，用于标注宿主扩展事件。它没有事件注册表，也不会在运行时验证事件。
+
+`harness/result.py` 提供 `HarnessError`、`Ok[T]`、`Err` 和 `Result`，用于宿主希望把“预期中的失败”表达为值的场景。当前 `AgentHarness.run()` 没有自动将异常包成 `Err`，内核主路也没有强制使用 `Result`。这是一组可选的类型词汇，不能把它描述成已实现的全局错误通道。
+
+<a id="ch12"></a>
+
+## 第十二章：SessionStorage 与 Compaction——历史存储和模型上下文是两件事
+
+### 12.1 SessionStorage 只定义后端契约
+
+`SessionStorage` 是同步 Protocol，共有四类方法：
+
+| 类别 | 方法 |
+| --- | --- |
+| 身份与时间 | `create_entry_id()`、`create_timestamp()` |
+| 元数据 | `get_metadata()` |
+| 历史条目 | `get_entries()`、`get_entry()`、`append_entry()` |
+| 当前位置与标签 | `get_leaf_id()`、`set_leaf_id()`、`get_label()`、`set_label()` |
+
+它不提供 `build_context()`、fork、JSONL 编码或压缩提交。这些都需要更高层的会话管理器解释条目语义。`fox_coding_agent.SessionManager` 就是一种这样的实现，但不属于通用内核。
+
+### 12.2 SessionEntry 表达一棵可分支的历史树
+
+`SessionEntry` 包含 `id`、`parent_id`、`timestamp`、`type`、`data` 和可选 `label`。`parent_id` 把当前条目指向已有父节点，多个子节点可以共享同一段前缀历史。
+
+`SessionEntryType` 包含以下标签：
+
+| 类型 | 预期语义 |
+| --- | --- |
+| `message` | 一条完成的对话消息 |
+| `compaction` | 历史摘要和保留尾部 |
+| `branch_summary` | 分支摘要的预留类型 |
+| `thinking_level_change` | 思考级别变化 |
+| `model_change` | 模型快照变化 |
+| `active_tools_change` | 启用工具集合变化 |
+| `label` | 会话标签变化 |
+| `session_info` | 会话信息的预留类型 |
+
+通用存储层只限定标签名，不校验每种 `data` 的具体结构。例如它不知道 `message` 必须是哪种 Pydantic 模型，也不会自动把 `compaction` 展开成上下文。
+
+### 12.3 InMemorySessionStorage 保证了什么
+
+内存实现默认提供一个随机会话 ID（构造时传入的 metadata 可显式覆盖），条目 ID 是 16 位十六进制字符串，时间戳使用 UTC ISO 8601 毫秒精度。追加时会验证：
+
+- `id` 不能与已有条目重复；
+- 非空 `parent_id` 必须指向已有条目；
+- 追加成功后，leaf 自动移到新条目；
+- `set_leaf_id()` 只能选择已有条目或 `None`。
+
+它不提供文件持久化、跨进程锁、事务、删除或深拷贝。`get_entries()` 返回新列表，但列表里仍是原来的 `SessionEntry` 对象；外部修改条目仍可能破坏内存结构。因此它适合测试和临时会话，不是持久化数据库。
+
+### 12.4 实现新存储后端时要补齐哪些保证
+
+通用 Protocol 只规定方法形状。一个真正的持久化后端还应明确：
+
+- `append_entry` 和 leaf 变更是否原子；
+- 写入失败后如何恢复原 leaf；
+- 条目顺序是追加顺序还是时间戳顺序；
+- 多进程或多服务实例是否允许同时写；
+- `data` 怎样序列化和做 schema/version 迁移；
+- 无效 parent、无效 leaf 和损坏数据在加载时怎样被拒绝。
+
+通用内核没有假设这些策略已经由 Protocol 自动实现。
+
+### 12.5 压缩的五个步骤
+
+Compaction 模块将算法拆成可独立测试的小步骤：
+
+```text
+estimate_tokens / estimate_context_tokens
+  → should_compact
+  → find_cut_point
+  → generate_summary
+  → CompactionResult(summary, retained_tail, removed_count)
+```
+
+`compact()` 只返回候选结果，不修改输入列表，不追加 SessionEntry，也不替宿主决定是否提交。这样摘要生成失败时，原历史仍然保留。
+
+### 12.6 token 估算和触发阈值
+
+`estimate_tokens()` 是保守启发式，不是 provider tokenizer：
+
+- ASCII 文本大约按 4 字符/token；
+- 非 ASCII 字符按 1 字符/token；
+- 工具名和 JSON 参数也计入；
+- 每张图像固定估算 1024 token；
+- 每条消息再加少量 role 等元数据开销。
+
+`calculate_context_tokens(usage)` 是另一个辅助函数，它对规范化 `Usage` 的 input、output、cache_read 和 cache_write 求和。它不会自动校准 `estimate_tokens()`，是否使用 provider usage 仍由宿主决定。
+
+自动触发规则是：
+
+```text
+reserve = min(settings.reserve_tokens, context_window // 2)
+threshold = context_window - reserve
+context_tokens >= threshold  →  建议压缩
+```
+
+`settings.enabled=False` 或 `context_window <= 0` 时，`should_compact()` 返回假。但直接调用 `compact()` 不会检查 `enabled`：这个开关控制自动触发策略，不是禁止手动压缩的全局锁。
+
+### 12.7 切割点为什么只能近似满足预算
+
+`find_cut_point()` 从后向前累加整条消息，返回一个索引：
+
+```python
+messages[:cut]   # 候选摘要部分
+messages[cut:]   # 原样保留的最近部分
+```
+
+消息不会被从中间截断，因此一条特别长的最近消息可能超过 `keep_recent_tokens`。当切割点落在 `ToolResultMessage` 上时，算法会向前移动，避免保留尾部以孤立工具结果开头。它依赖输入历史本来就按 assistant ToolCall 后跟工具结果的正常顺序组织，不会修复任意损坏历史。
+
+如果 `cut == 0`，表示当前没有可移入摘要的前缀；`compact()` 会返回空 summary、原样尾部和 `removed_count=0`，不会为了凑预算删掉整条最近消息。
+
+### 12.8 摘要请求的隔离和失败语义
+
+`generate_summary()` 会将待摘要消息序列化为文本，用独立的 system prompt 要求模型保留目标、约束、文件路径、已完成工作和待办项，并把对话当作数据而非新指令。摘要请求：
+
+- 使用独立随机 `session_id`；
+- 强制 `cache_retention="none"`；
+- 默认 `max_tokens=2000`，调用方可显式覆盖；
+- 无论成功或失败都关闭 EventStream；
+- 对 error、aborted、length、pending 或空摘要明确报错。
+
+当前文本序列化保留文本块和工具调用的名称/参数，不会把图像数据或 thinking 全文写进摘要 prompt。这能减少上下文，也意味着这些信息不能只依赖当前摘要算法保留。
+
+`compact()` 支持注入 `summary_fn`，便于离线测试或使用领域专用摘要器。它在摘要完成后再检查取消和非空结果，最终仍只返回 `CompactionResult`。将这个结果写入 Session、保留原始条目或替换 Agent context，都是宿主的提交策略。
+
+### 12.9 通用算法与编码宿主策略的边界
+
+`fox_agent_core` 提供估算、判断、切割和摘要生成。`fox_coding_agent.AgentSession` 还会做以下事情：
+
+- 在 `prepare_request` 中把 system prompt 和工具声明也计入预算；
+- 发出压缩开始、结束和错误事件；
+- 成功后追加 compaction entry，再从 Session 重建 context；
+- 压缩后仍然超窗口时阻止模型请求；
+- 手动压缩时忽略 `enabled` 自动开关，但仍遵守 Harness 忙碌约束。
+
+把这些宿主行为与通用算法分开，才能准确判断修改某个阈值或持久化方式应该改哪一层。
+
+<a id="ch13"></a>
+
+## 第十三章：验证、公开 API、源码地图与面试表达
+
+### 13.1 先验证确定性协议，再验证真实模型行为
 
 离线测试通过注入 `stream_fn` 控制响应序列，覆盖工具结果配对、Schema 错误、取消收尾、事件顺序、队列优先级和轮次限制。真实模型 Notebook 检查实际 provider 是否能返回工具调用、消费结果并继续回答；不能用离线成功推断所有模型都会遵循提示。
 
 工具调用应先产生助手消息，再产生一一对应的结果。取消必须清理子任务；工具执行失败通常作为错误结果交回模型，宿主订阅失败则需暴露。达到 `max_turns` 是明确的执行边界，不能无声丢弃已消费的排队输入。
 
-### 11.2 源码地图
+仓库的主回归命令是：
+
+```bash
+uv run --frozen python -m unittest discover -s tests -v
+```
+
+`tests/test_agent_core.py` 覆盖 loop、Agent、事件、取消、队列和宿主组装；`tests/test_harness_tools.py` 覆盖摘要参数、Agent 状态独立性、Session fork 以及 provider 清理边界。真实网络集成不应替代这些可重复的离线协议测试。
+
+### 13.2 公开导入面不是所有文件名的并集
+
+| 导入路径 | 主要公开能力 |
+| --- | --- |
+| `fox_agent_core.src` | `Agent`、`AgentOptions`、loop 入口、Agent/Harness 主要类型、选定的 Session 契约 |
+| `fox_agent_core.src.harness` | 完整 Harness API，包括 Compaction、`HarnessEvent`、`Result`、`SessionEntryType` |
+| `fox_ai.src` | Model、Message、Context、Tool、EventStream 等模型边界 |
+
+例如 `CompactionSettings` 和 `compact` 应从 `fox_agent_core.src.harness` 导入，它们并没有被根 `fox_agent_core.src` 重新导出。使用公开 `__all__` 能减少对私有辅助函数的耦合。
+
+### 13.3 完整源码地图
 
 | 文件 | 阅读问题 |
 | --- | --- |
-| [types.py](src/types.py) | 状态、消息、事件和 AgentTool 的契约是什么？ |
+| [types.py](src/types.py) | 状态、消息、事件、AgentTool 和 LoopConfig 的契约是什么？ |
 | [agent_loop.py](src/agent_loop.py) | 工具与排队消息分别如何推动下一轮？ |
 | [agent.py](src/agent.py) | 谁拥有当前任务、队列、订阅者和取消信号？ |
-| [event_stream.py](src/event_stream.py) | 怎样提供增量事件和最终结果？ |
+| [event_stream.py](src/event_stream.py) | 怎样专门化 `fox_ai.EventStream` 并返回本次新消息？ |
 | [_async.py](src/_async.py) | 子任务如何响应取消并完成清理？ |
+| [harness/harness.py](src/harness/harness.py) | 单操作互斥、Hook 和事件转发如何连接？ |
+| [harness/hooks.py](src/harness/hooks.py) | 宿主可以注入哪些生命周期回调？ |
+| [harness/session.py](src/harness/session.py) | 最小存储 Protocol 和内存后端保证什么？ |
+| [harness/compaction.py](src/harness/compaction.py) | 估算、切割、摘要和提交策略怎样分层？ |
+| [harness/events.py](src/harness/events.py) | 宿主自定义事件的最小标记协议是什么？ |
+| [harness/result.py](src/harness/result.py) | 哪些预期失败可以用值语义表达？ |
+| [harness/__init__.py](src/harness/__init__.py) | Harness 子包真正公开了哪些名称？ |
 
-### 11.3 面试表达
+推荐阅读顺序是：先看契约，再看循环，然后看 Agent 如何归约事件，最后看 Harness 如何把它们组装到宿主生命周期。Compaction 和 SessionStorage 可在理解 Harness 边界后独立阅读。
 
-“我把通用 Agent 建模为有状态对象加执行循环：Agent 管理任务与队列，loop 管理模型和工具的闭环，事件把运行过程暴露给宿主。内核依赖统一模型接口和工具协议，因此具体文件工具、历史保存和上下文压缩都可以在外层组合。”
+### 13.4 能力边界清单
 
-追问没有 tool_use 是否结束时，要同时考虑工具调用与 steering 等待输入，以及外层 follow-up 队列。追问为什么不用一个大 Agent 类时，要解释稳定的调度机制与变化的产品策略分别由谁拥有。
+| 已实现 | 尚未由本层保证 |
+| --- | --- |
+| 标准消息与工具闭环 | 工具副作用 exactly-once |
+| steering / follow-up 进程内队列 | 持久化任务队列和公平调度 |
+| 单 Agent / Harness 的运行互斥 | 多进程分布式锁 |
+| asyncio 协作式取消与子任务清理 | 撤销已经发生的外部副作用 |
+| 后端中性 SessionStorage Protocol | 持久化路径、文件格式和 schema 迁移 |
+| 启发式压缩算法 | 精确 tokenizer、无损摘要和超长历史分层压缩 |
+| 进程内事件订阅 | 持久事件日志、背压和跨进程事件总线 |
+
+这张表用于防止把“存在接口”误说成“已实现生产级保证”。例如 `SessionStorage` 是可替换后端的开始，不是多进程安全的结论；`cancel_event` 是取消协议，不是文件回滚机制。
+
+### 13.5 面试表达
+
+“我把通用 Agent 建模为有状态对象加执行循环：Agent 管理任务与队列，loop 管理模型和工具的闭环，事件把运行过程暴露给宿主。AgentHarness 提供单操作生命周期和持久化 Hook，SessionStorage 只定义后端契约，Compaction 只返回候选摘要结果。因此循环机制、存储实现和产品策略可以独立演进。”
+
+追问没有 tool_use 是否结束时，要同时考虑工具调用与 steering 等待输入，以及外层 follow-up 队列。追问为什么不用一个大 Agent 类时，要解释稳定的调度机制、宿主生命周期与变化的产品策略分别由谁拥有。
 
 本层不保证工具副作用 exactly-once，不提供进程级权限隔离，不决定 Session 的持久化路径。下一篇 [fox_coding_agent](../fox_coding_agent/ARCHITECTURE_GUIDE.md) 解释这些宿主问题如何组装。

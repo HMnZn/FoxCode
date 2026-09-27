@@ -27,6 +27,7 @@ from fox_ai.src import (
     ThinkingContent,
     ToolCall,
     ToolResultMessage,
+    Usage,
     UserMessage,
     ImageContent,
     stream_simple,
@@ -81,7 +82,7 @@ def estimate_tokens(message: Message) -> int:
     total_chars = 0
     non_ascii = 0
     image_tokens = 0
-    content = getattr(message, "content", None)
+    content = message.content
     if isinstance(content, str):
         total_chars += len(content)
         non_ascii += sum(ord(ch) > 127 for ch in content)
@@ -109,19 +110,14 @@ def estimate_context_tokens(messages: list[Message]) -> int:
     return sum(estimate_tokens(m) for m in messages)
 
 
-def calculate_context_tokens(usage: Any) -> int:
+def calculate_context_tokens(usage: Usage | None) -> int:
     """从 AssistantMessage.usage 提取已用 token（input + output + cache）。
 
     对应上游 ``calculateContextTokens``。
     """
     if usage is None:
         return 0
-    def get(name, alias=None):
-        if isinstance(usage, dict):
-            return usage.get(name, usage.get(alias, 0)) or 0
-        return getattr(usage, name, 0) or (getattr(usage, alias, 0) if alias else 0) or 0
-
-    return get("input") + get("output") + get("cache_read", "cacheRead") + get("cache_write", "cacheWrite")
+    return usage.input + usage.output + usage.cache_read + usage.cache_write
 
 
 # ============================================================
@@ -217,12 +213,11 @@ async def generate_summary(
         "cache_retention": "none",
     }
     opts = SimpleStreamOptions(**isolated_options)
-    response = await cancellable(stream_fn(model, ctx, opts), cancel_event)
+    response = stream_fn(model, ctx, opts)
     try:
         result = await cancellable(response.result(), cancel_event)
     finally:
-        if hasattr(response, "aclose"):
-            await response.aclose()
+        await response.aclose()
     if result.stop_reason in ("error", "aborted", "length", "pending"):
         raise RuntimeError(result.error_message or f"Summary response ended with {result.stop_reason}")
     summary = "\n".join(block.text for block in result.content if isinstance(block, TextContent)).strip()
@@ -264,8 +259,8 @@ def _serialize_conversation(messages: list[Message]) -> str:
     """把消息列表序列化为可读文本（供摘要）。"""
     lines: list[str] = []
     for msg in messages:
-        role = getattr(msg, "role", "unknown")
-        content = getattr(msg, "content", "")
+        role = msg.role
+        content = msg.content
         if isinstance(content, str):
             text = content
         elif isinstance(content, list):

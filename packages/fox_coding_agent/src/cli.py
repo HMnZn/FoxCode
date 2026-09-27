@@ -17,7 +17,7 @@ from fox_coding_agent.src.core.model_registry import ModelRegistry
 from fox_coding_agent.src.core.trust import ProjectTrustManager
 from fox_coding_agent.src.extensions.memory import setup as memory_extension
 
-THINKING_LEVELS = ("off", "minimal", "low", "medium", "high", "xhigh", "max")
+THINKING_LEVELS = ("off", "minimal", "low", "medium", "high", "xhigh")
 
 
 def build_parser():

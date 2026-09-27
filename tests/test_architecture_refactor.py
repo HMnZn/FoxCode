@@ -6,8 +6,15 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from fox_ai.src import AssistantMessage, TextContent, ToolCall, Usage, UsageCost, UserMessage
+from fox_ai.src import (
+    AssistantMessage, Context, TextContent, ThinkingContent, ToolCall, Usage,
+    UsageCost, UserMessage,
+)
 from fox_ai.src.providers.faux import FAUX_MODEL, FauxScript, clear_scripts, push_script
+from fox_ai.src.providers.openai_provider import (
+    _convert_messages,
+    _resolve_thinking_token_budget_field,
+)
 from fox_coding_agent.src import (
     AgentSession,
     AgentSessionConfig,
@@ -76,6 +83,30 @@ class ModelBoundaryTests(unittest.TestCase):
         for module in ("auth", "harness", "session", "compaction"):
             with self.assertRaises(ModuleNotFoundError):
                 importlib.import_module(f"fox_coding_agent.src.core.{module}")
+
+    def test_removed_openai_compatibility_paths_stay_removed(self):
+        self.assertIsNone(
+            _resolve_thinking_token_budget_field({"supportsThinkingTokenBudget": True})
+        )
+        self.assertEqual(
+            _resolve_thinking_token_budget_field(
+                {"thinkingTokenBudgetField": "thinking_token_budget"}
+            ),
+            "thinking_token_budget",
+        )
+
+        encrypted = {"type": "reasoning.encrypted", "id": "reasoning-id", "data": "opaque"}
+        legacy_context = Context(messages=[AssistantMessage(content=[ToolCall(
+            id="call", name="tool", arguments={}, thought_signature=json.dumps(encrypted)
+        )])])
+        legacy_messages, _ = _convert_messages(legacy_context)
+        self.assertNotIn("reasoning_details", legacy_messages[0])
+
+        canonical_context = Context(messages=[AssistantMessage(content=[ThinkingContent(
+            thinking="", thinking_signature=json.dumps([encrypted])
+        )])])
+        canonical_messages, _ = _convert_messages(canonical_context)
+        self.assertEqual(canonical_messages[0]["reasoning_details"], [encrypted])
 
 
 class TrustAndExtensionTests(unittest.IsolatedAsyncioTestCase):

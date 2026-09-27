@@ -185,7 +185,7 @@ def _serialize_message(data: Any) -> Any:
     """序列化 message 数据（Pydantic model → dict）。"""
     if data is None:
         return None
-    if hasattr(data, "model_dump"):
+    if isinstance(data, (UserMessage, AssistantMessage, ToolResultMessage)):
         return data.model_dump(by_alias=True, mode="json")
     return data
 

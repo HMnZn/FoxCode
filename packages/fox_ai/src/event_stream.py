@@ -24,7 +24,7 @@ class EventStream(Generic[TEvent, TResult], AsyncIterator[TEvent]):
     def __init__(self) -> None:
         self._queue: asyncio.Queue[Any] = asyncio.Queue()
         self._ended = False
-        self._result_future: asyncio.Future[TResult] = asyncio.get_event_loop().create_future()
+        self._result_future: asyncio.Future[TResult] = asyncio.get_running_loop().create_future()
         self._events: list[TEvent] = []
         self._producer: asyncio.Task[Any] | None = None
 

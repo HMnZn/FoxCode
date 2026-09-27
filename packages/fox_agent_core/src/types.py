@@ -18,8 +18,10 @@ from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
 
 from fox_ai.src import (
+    AssistantMessage,
     AssistantMessageEvent,
     Context,
+    EventStream,
     ImageContent,
     Message,
     Model,
@@ -154,7 +156,7 @@ class AgentState:
 #: 流函数抽象（默认 pi-ai 的 stream_simple）。
 StreamFn = Callable[
     [Model, Context, SimpleStreamOptions | None],
-    Any,  # EventStream[AssistantMessageEvent, AssistantMessage]
+    EventStream[AssistantMessageEvent, AssistantMessage],
 ]
 
 

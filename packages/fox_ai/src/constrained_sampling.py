@@ -144,7 +144,7 @@ def make_strict_json_schema(schema: dict[str, Any]) -> dict[str, Any]:
 
 def get_json_schema_tool_parameters(tool: Tool, strict: bool | None) -> dict[str, Any]:
     """strict 为真时返回 strict 化的参数 schema，否则原样返回。"""
-    parameters = tool.to_json_schema() if hasattr(tool, "to_json_schema") else tool.parameters
+    parameters = tool.to_json_schema()
     if strict is True:
         return make_strict_json_schema(parameters)
     return parameters
@@ -227,7 +227,7 @@ def resolve_json_schema_strict_sampling(tool: Tool, supports_strict_mode: bool) 
     if supports_strict_mode:
         # v0.85.1：先验证 schema 能否 strict 化；不支持时退回普通工具，
         # 除非调用方声明 strict="require"（此时报错）。
-        parameters = tool.to_json_schema() if hasattr(tool, "to_json_schema") else tool.parameters
+        parameters = tool.to_json_schema()
         try:
             make_strict_json_schema(parameters)
             return True

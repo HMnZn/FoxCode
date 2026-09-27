@@ -160,14 +160,11 @@ def _resolve_thinking_token_budget_field(compat: dict[str, Any]) -> ThinkingToke
     """解析封顶 reasoning 的顶层字段名。
 
     对应上游 ``resolveThinkingTokenBudgetField``：
-    ``compat.thinkingTokenBudgetField`` 优先，遗留布尔
-    ``compat.supportsThinkingTokenBudget`` 等价于 ``"thinking_token_budget"``（vLLM）。
+    ``compat.thinkingTokenBudgetField`` 显式指定兼容端点使用的字段。
     """
     field = compat.get("thinkingTokenBudgetField")
     if isinstance(field, str) and field in _THINKING_BUDGET_FIELDS:
         return field
-    if compat.get("supportsThinkingTokenBudget"):
-        return "thinking_token_budget"
     return None
 
 
@@ -214,26 +211,6 @@ def parse_openai_reasoning_details(signature: str | None) -> list[dict[str, Any]
         isinstance(parsed, list)
         and len(parsed) > 0
         and all(_is_openai_reasoning_detail(d) for d in parsed)
-    ):
-        return parsed
-    return None
-
-
-def parse_legacy_encrypted_reasoning_detail(signature: str | None) -> dict[str, Any] | None:
-    """从工具调用的 thought_signature 解析遗留的加密 reasoning detail。"""
-    if not signature:
-        return None
-    try:
-        parsed = json.loads(signature)
-    except (ValueError, TypeError):
-        return None
-    if (
-        isinstance(parsed, dict)
-        and parsed.get("type") == "reasoning.encrypted"
-        and isinstance(parsed.get("id"), str)
-        and len(parsed["id"]) > 0
-        and isinstance(parsed.get("data"), str)
-        and len(parsed["data"]) > 0
     ):
         return parsed
     return None
@@ -470,25 +447,13 @@ def _convert_messages(
                     thinking_blocks.append(block)
                 elif isinstance(block, TextContent):
                     text_parts.append(block.text)
-            # reasoning 回放数据：优先 thinking 块签名里的结构化 details，
-            # 回退到遗留的工具调用 thoughtSignature 加密条目（v0.85.1）。
+            # reasoning 回放数据保存在 thinking 块签名里的结构化 details。
             preserved_reasoning_details: list[dict[str, Any]] | None = None
             for tb in thinking_blocks:
                 details = parse_openai_reasoning_details(tb.thinking_signature)
                 if details is not None:
                     preserved_reasoning_details = details
                     break
-            if preserved_reasoning_details is None:
-                legacy = [
-                    d
-                    for d in (
-                        parse_legacy_encrypted_reasoning_detail(tc.thought_signature)
-                        for tc in tool_call_blocks
-                    )
-                    if d is not None
-                ]
-                if legacy:
-                    preserved_reasoning_details = legacy
             for tc in tool_call_blocks:
                 input_property = (grammar_tool_input_properties or {}).get(tc.name)
                 if input_property is not None:

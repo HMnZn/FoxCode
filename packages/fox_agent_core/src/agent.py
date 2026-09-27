@@ -387,7 +387,7 @@ class Agent:
         if self._active_run:
             raise RuntimeError("Agent is already processing.")
         cancel_event = asyncio.Event()
-        future: asyncio.Future[None] = asyncio.get_event_loop().create_future()
+        future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
         self._active_run = {"promise": future, "cancel_event": cancel_event}
         self._state.is_streaming = True
         self._state.streaming_message = None

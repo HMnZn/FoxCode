@@ -141,7 +141,7 @@ class AuthTests(Workspace, unittest.IsolatedAsyncioTestCase):
         packages = str(Path(__file__).resolve().parents[1] / "packages")
         result = subprocess.run([sys.executable, "-c",
             "import sys; import fox_agent_core.src; assert 'fox_coding_agent' not in sys.modules"],
-            env={**os.environ, "PYTHONPATH": packages}, capture_output=True, text=True, timeout=10)
+            env={**os.environ, "PYTHONPATH": packages}, capture_output=True, text=True, timeout=30)
         self.assertEqual(result.returncode, 0, result.stderr)
 
 

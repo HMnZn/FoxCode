@@ -222,8 +222,9 @@ async def _stream_assistant_response(context, config, cancel_event, emit, stream
             if key:
                 opts["api_key"] = key
         opts["cancel_event"] = cancel_event
-        response = await cancellable((stream_fn or stream_simple)(
-            config.model, llm_context, SimpleStreamOptions(**opts)), cancel_event)
+        response = (stream_fn or stream_simple)(
+            config.model, llm_context, SimpleStreamOptions(**opts)
+        )
         iterator = response.__aiter__()
         while True:
             try:
@@ -232,17 +233,16 @@ async def _stream_assistant_response(context, config, cancel_event, emit, stream
                 break
             if event.type in ("done", "error"):
                 break
-            if hasattr(event, "partial"):
-                partial = event.partial.model_copy(deep=True)
-                if not added_partial:
-                    context.messages.append(partial)
-                    added_partial = True
-                    await _safe_emit(emit, MessageStartEvent(message=partial))
-                else:
-                    context.messages[-1] = partial
-                if event.type != "start":
-                    await _safe_emit(emit, MessageUpdateEvent(
-                        message=partial, assistant_message_event=event.model_copy(deep=True)))
+            partial = event.partial.model_copy(deep=True)
+            if not added_partial:
+                context.messages.append(partial)
+                added_partial = True
+                await _safe_emit(emit, MessageStartEvent(message=partial))
+            else:
+                context.messages[-1] = partial
+            if event.type != "start":
+                await _safe_emit(emit, MessageUpdateEvent(
+                    message=partial, assistant_message_event=event.model_copy(deep=True)))
         final = await cancellable(response.result(), cancel_event)
         if final.stop_reason == "pending":
             raise RuntimeError("Model stream ended without a stop reason")
@@ -253,7 +253,7 @@ async def _stream_assistant_response(context, config, cancel_event, emit, stream
         if partial is not None:
             final.content = partial.content
     finally:
-        if response is not None and hasattr(response, "aclose"):
+        if response is not None:
             await response.aclose()
     if added_partial:
         context.messages[-1] = final
