@@ -12,3 +12,5 @@ wheels/
 
 # Local agent sessions and learning artifacts
 .foxcode/
+.build-cache/
+.pytest_cache/

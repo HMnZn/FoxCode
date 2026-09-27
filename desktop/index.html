@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="zh-CN" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark light" />
+    <meta name="theme-color" content="#151517" media="(prefers-color-scheme: dark)" />
+    <meta name="theme-color" content="#f5f6f8" media="(prefers-color-scheme: light)" />
+    <link rel="icon" type="image/png" href="./icon.png" />
+    <link rel="apple-touch-icon" href="./icon.png" />
+    <title>FoxCode Studio · 灵狐</title>
+    <!-- Paint the shell colour before React mounts so the window never flashes white. -->
+    <style>
+      html {
+        background-color: #151517;
+      }
+      html.light {
+        background-color: #f5f6f8;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

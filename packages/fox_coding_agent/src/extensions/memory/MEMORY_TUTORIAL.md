@@ -252,6 +252,21 @@ api_key=sk-1234567890abcdefghijklmnop
 
 `memory_recall` 返回预算化 excerpt，而不是整篇正文。返回项包含 filename、topic、score、confidence、三信号 breakdown 和命中位置附近片段，并明确标记为低信任历史数据。
 
+### 3.8 为什么 settings 不需要列出 memory 工具
+
+Memory 是一个完整扩展，而不是散落在 core 中的三个内置工具。它在加载时注册工具，并在 `session_start`（首个模型请求之前）自行把三个工具合并进激活列表。因此下面的配置已经足够：
+
+```json
+{
+  "extensions": ["module:fox_coding_agent.src.extensions.memory:setup"],
+  "tools": ["read", "write", "edit", "grep", "find", "ls"]
+}
+```
+
+不需要再手工加入 `memory_remember`、`memory_recall`、`memory_forget`。合并是幂等的，reload 或恢复 Session 不会产生重复工具；core 与 CLI 也不包含任何 memory 工具名。
+
+要注意，自动激活不会绕过项目 trust。Memory 的读、写、删除属于 `extension-state`，修改的是扩展自有状态，因此在 `read-only`、`workspace-write`、`full-access` 下都可使用；未受信项目仍禁止访问。SDK 场景可以通过 `MemoryExtensionConfig(auto_activate_tools=False)` 关闭扩展的合并动作，让宿主 allowlist 或 Session 的人工选择保持最终决定权。
+
 ---
 
 ## 第四章：混合检索

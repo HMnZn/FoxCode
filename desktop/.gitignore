@@ -1,0 +1,8 @@
+node_modules/
+dist/
+dist-electron/
+release/
+artifacts/
+*.log
+.DS_Store
+.vite/

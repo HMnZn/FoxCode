@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>fox icon</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        width: 100%;
+        height: 100%;
+        background: transparent;
+        display: grid;
+        place-items: center;
+      }
+      svg {
+        display: block;
+      }
+    </style>
+  </head>
+  <body>
+    <!--
+      Static twin of src/components/brand/Fox.tsx (tone="brand", dot eyes).
+      Colors are literal because this page does not load the app stylesheet.
+      Regenerate the PNGs with: node scripts/icon.mjs
+    -->
+    <svg width="512" height="512" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <linearGradient id="fur" x1="6" y1="3" x2="26" y2="27" gradientUnits="userSpaceOnUse">
+          <stop offset="0%" stop-color="#ffab63" />
+          <stop offset="55%" stop-color="#f9762b" />
+          <stop offset="100%" stop-color="#e05a17" />
+        </linearGradient>
+      </defs>
+      <g transform="translate(0 1.5)">
+        <g fill="url(#fur)" stroke="url(#fur)" stroke-width="2.4" stroke-linejoin="round">
+          <path d="M7.4 13 5.3 4.6 14 8.2Z" />
+          <path d="M24.6 13 26.7 4.6 18 8.2Z" />
+        </g>
+        <g fill="#fff2e3" opacity="0.5">
+          <path d="M8.7 11.5 7.3 6.5 12.3 8.8Z" />
+          <path d="M23.3 11.5 24.7 6.5 19.7 8.8Z" />
+        </g>
+        <g fill="url(#fur)" stroke="url(#fur)" stroke-width="1.8" stroke-linejoin="round">
+          <path d="M7.4 19.6 4.3 17.2 7.8 15.3Z" />
+          <path d="M24.6 19.6 27.7 17.2 24.2 15.3Z" />
+        </g>
+        <path
+          d="M16 25.6c-6 0-10-3.9-10-9.4 0-4.5 4.5-7.9 10-7.9s10 3.4 10 7.9c0 5.5-4 9.4-10 9.4Z"
+          fill="url(#fur)"
+        />
+        <path
+          d="M16 25.6c-3.1 0-5.4-1.7-5.4-4.1 0-1.5 1.6-2.5 5.4-2.5s5.4 1 5.4 2.5c0 2.4-2.3 4.1-5.4 4.1Z"
+          fill="#fff2e3"
+        />
+        <g fill="#3c2413">
+          <ellipse cx="12.2" cy="15.7" rx="1.3" ry="1.55" />
+          <ellipse cx="19.8" cy="15.7" rx="1.3" ry="1.55" />
+        </g>
+        <g fill="#fff2e3" opacity="0.85">
+          <circle cx="12.7" cy="15" r="0.48" />
+          <circle cx="20.3" cy="15" r="0.48" />
+        </g>
+        <path
+          d="M16 19.7c.35 0 .68.15.9.42l.5.63c.4.5.04 1.25-.6 1.25h-1.6c-.64 0-1-.75-.6-1.25l.5-.63c.22-.27.55-.42.9-.42Z"
+          fill="#3c2413"
+        />
+        <g fill="none" stroke="#3c2413" stroke-width="0.95" stroke-linecap="round">
+          <path d="M16 21.95v.7" />
+          <path d="M16 22.65q-1.05.9-2.2.05" />
+          <path d="M16 22.65q1.05.9 2.2.05" />
+        </g>
+      </g>
+    </svg>
+  </body>
+</html>

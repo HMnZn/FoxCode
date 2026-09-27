@@ -19,19 +19,19 @@ uv run fox --resume --compact
 
 交互中用 `/model` 列出模型，`/model deepseek/deepseek-v4-pro` 切换；`/thinking` 查看当前强度，`/thinking high`、`/thinking xhigh` 或 `/thinking off` 设置。新会话默认选 models.json 中第一个模型、思考关闭；模型与思考级别会保存到 Session。`/cwd` 切换项目后继续从同一用户目录取凭据，密钥不会进入 Session。修改 models.json 或 auth.json 后使用 `/reload`；想应用已修改的模型元数据，再执行 `/model 名称`。
 
-设置文件保存运行策略，避免在入口重复堆叠参数。用户级 `settings.json` 可以只写模型，也可以统一配置权限、Memory、工具、扩展与输出限制，例如：
+设置文件保存运行策略，避免在入口重复堆叠参数。用户级 `settings.json` 可以只写模型，也可以统一配置权限、工具、扩展与输出限制，例如：
 
 ```json
 {
   "model": "provider/model-id",
   "permission_mode": "workspace-write",
-  "memory": true,
+  "extensions": ["module:fox_coding_agent.src.extensions.memory:setup"],
   "stream_options": {"max_tokens": 8192},
   "tools": ["read", "write", "edit", "grep", "find", "ls"]
 }
 ```
 
-`permission_mode` 支持 `read-only`（只读工具）、`workspace-write`（只允许 `write`/`edit` 修改工作区，禁止 shell）和 `full-access`（全部工具）。命令行 `--permission` 只覆盖本次进程。
+`permission_mode` 控制工作区与系统操作：`read-only` 禁止修改项目，`workspace-write` 只允许 `write`/`edit` 修改工作区并禁止 shell，`full-access` 允许全部运行时工具。扩展可以把自身管理的数据声明为 `extension-state`；这类状态操作不受三档工作区权限影响，但仍要求项目已信任。命令行 `--permission` 只覆盖本次进程。
 
 面试准备先读内核的 13 章，再读编码宿主的 9 章，分别理解通用机制与项目策略。
 
@@ -57,9 +57,9 @@ fox CLI / Notebook
 
 连续对话中支持 `/help`、`/new`、`/resume 文件`、`/fork [条目 ID]`、`/cwd 目录`、`/reload`、`/trust`、`/untrust`、`/permission`、`/compact`、`/usage`、`/export`、`/tools`、`/model`、`/thinking`、`/skill 名称`、`/prompt 名称` 和扩展命令。`/fork` 会创建新的持久化 Session 并切换过去；原 Session 不再被后续消息修改。
 
-扩展示例：[project_info.py](examples/extensions/project_info.py)。在 `settings.json` 的 `extensions` 数组中加入扩展路径后，可执行 `fox --command project-info`。详细 API 与边界见[宿主指南·第六章](packages/fox_coding_agent/ARCHITECTURE_GUIDE.md#ch06)。
+扩展示例：[project_info.py](examples/extensions/project_info.py)。`settings.json` 的 `extensions` 数组支持 Python 文件、`module:<包>[:callable]` 和 `entrypoint:<name>`；加入后可执行 `fox --command project-info`。详细 API 与边界见[宿主指南·第六章](packages/fox_coding_agent/ARCHITECTURE_GUIDE.md#ch06)。
 
-长期记忆作为 `fox_coding_agent` 的可选扩展提供，而不是写进通用 agent loop。在 `settings.json` 中设置 `"memory": true` 启用；模型侧只暴露对应用户意图的 `memory_remember`、`memory_recall` 和 `memory_forget` 三个工具。列举、完整读取和目录查看属于人工审计能力，继续由 `/memory list`、`/memory search 关键词`、`/memory read 文件名`、`/memory delete 文件名` 与 `/memory dir` 提供。记忆保存在用户目录的 `~/.foxcode/projects/<项目路径哈希>/memory/`，以 Markdown 条目为事实来源，`MEMORY.md` 是可重建索引。只有已信任项目能够读写和自动召回记忆。
+长期记忆作为 `fox_coding_agent` 的可选扩展提供，而不是写进通用 agent loop。在 `extensions` 中加入 `module:fox_coding_agent.src.extensions.memory:setup` 启用；模型侧只暴露对应用户意图的 `memory_remember`、`memory_recall` 和 `memory_forget` 三个工具。列举、完整读取和目录查看属于人工审计能力，继续由 `/memory list`、`/memory search 关键词`、`/memory read 文件名`、`/memory delete 文件名` 与 `/memory dir` 提供。记忆保存在用户目录的 `~/.foxcode/projects/<项目路径哈希>/memory/`，以 Markdown 条目为事实来源，`MEMORY.md` 是可重建索引。只有已信任项目能够读写和自动召回记忆。
 
 自动召回只修改发给模型的本次请求副本，不写入 Session JSONL。这样长期知识与对话历史拥有独立生命周期，关闭 Memory 扩展或删除条目后，旧 Session 不会继续携带隐藏的记忆文本。
 

@@ -4,7 +4,7 @@
 
 配套 [CODING_AGENT_LAB.ipynb](CODING_AGENT_LAB.ipynb) 演示真实模型、文件工具、Session、Skill 和压缩。
 
-这份文档同时承担三种用途：第一次运行请先看第十章；理解设计时按第一至九章阅读；开发或排错时直接查第十一、十二章。文中的能力状态以当前仓库代码为准：Session、Compaction、Skills、Extensions 与 Memory 已实现，MCP、自进化 Skill、TUI 和插件市场仍是设计方向，不能当成已经可用的功能。
+这份文档同时承担三种用途：第一次运行请先看第十章；理解设计时按第一至九章阅读；开发或排错时直接查第十一、十二章。文中的能力状态以当前仓库代码为准：Session、Compaction、Skills、Extensions、Memory、子 Agent 与 stdio MCP 已实现，自进化 Skill、TUI 和插件市场仍是设计方向，不能当成已经可用的功能。
 
 <a id="ch01"></a>
 
@@ -469,7 +469,7 @@ Skill 可以指导模型怎样组合工具，但技能文件本身不会因为�
 ## 第六章：Extensions
 
 
-扩展是包含同步 `setup(api)` 函数的 Python 文件。它可以注册：
+扩展是提供同步 `setup(api)` 函数的 Python 文件、可导入模块或已安装包 entry point。它可以注册：
 
 | API | 作用 |
 | --- | --- |
@@ -480,7 +480,7 @@ Skill 可以指导模型怎样组合工具，但技能文件本身不会因为�
 | `register_service(name, service)` | 注册供扩展协作的进程内服务 |
 | `register_context_transform(name, fn)` | 只转换本次模型请求的消息副本 |
 
-handler 支持同步或异步，签名为 `(data, context)`；`context.cwd` 是所属项目，`context.user_dir` 是用户级 `.foxcode` 目录，`context.project_trusted` 表示项目信任状态，`context.agent_session` 和 `context.session` 提供当前宿主与会话。Agent/Compaction 事件的 data 是事件对象；`before_prompt`、`tool_call`、`tool_result`、`session_start`、`session_shutdown` 的 data 是字典。
+handler 支持同步或异步，签名为 `(data, context)`；`context.cwd` 是所属项目，`context.user_dir` 是用户级 `.foxcode` 目录，`context.project_trusted` 表示项目信任状态，`context.session` 提供当前会话。`context.active_tools`、`activate_tools()` 与 `add_runtime_tools()` 是扩展操作模型工具集的稳定边界，动态发现工具不需要了解 AgentSession 内部结构。Agent/Compaction 事件的 data 是事件对象；`before_prompt`、`tool_call`、`tool_result`、`session_start`、`session_shutdown` 的 data 是字典。
 
 `before_prompt` 可返回 `{"message": "替换后的输入"}`；`tool_call` 可返回 `{"block": True, "reason": "原因"}`；`tool_result` 可补充或替换 content/details/is_error 等结果字段。普通事件只用于观察，返回值不改变核心循环。宿主传入的工具阻止策略先执行，扩展不会使已阻止的工具真正执行。
 
@@ -490,11 +490,24 @@ handler 支持同步或异步，签名为 `(data, context)`；`context.cwd` 是�
 
 ```json
 {
-  "extensions": ["extensions/project_info.py"]
+  "extensions": [
+    "extensions/project_info.py",
+    "module:fox_coding_agent.src.extensions.memory:setup",
+    "entrypoint:company-tools"
+  ]
 }
 ```
 
-配置中的相对路径以该 settings.json 所在目录为基准，因此上例对应 `.foxcode/extensions/project_info.py`。扩展是具有进程权限的 Python 代码，不是隔离执行的 Skill；本版不会扫描并自动执行所有项目 `.py` 文件。
+文件相对路径以该 settings.json 所在目录为基准，因此上例对应 `.foxcode/extensions/project_info.py`。`module:<package>[:callable]` 显式导入可安装模块，省略 callable 时使用 `setup`；`entrypoint:<name>` 从 Python 包元数据的 `foxcode.extensions` group 加载唯一同名入口。第三方包只需在自己的 `pyproject.toml` 声明入口，FoxCode 核心无需增加 import、设置字段或包目录。扩展是具有进程权限的 Python 代码，不是隔离执行的 Skill；本版不会扫描并自动执行所有项目 `.py` 文件或所有已安装 entry point。
+
+第三方包的声明示例：
+
+```toml
+[project.entry-points."foxcode.extensions"]
+company-tools = "company_fox_extension:setup"
+```
+
+安装该包后，在 settings 中写入 `"entrypoint:company-tools"` 即可显式启用；删除该项并 `/reload` 即停用。扩展自己的业务配置由扩展读取，不向 `RuntimeSettings` 增加专用字段。
 
 完整可运行示例见 [project_info.py](../../examples/extensions/project_info.py)。它添加 word_count 工具、project-info 命令和一个文件工具 Hook：
 
@@ -503,7 +516,7 @@ uv run fox --command project-info
 uv run fox --interactive
 ```
 
-`/reload` 会重新编译显式扩展的源文件，使用新的注册表，避免重复事件处理器和旧模块缓存。加载失败保留当前 AgentSession。当前支持单文件扩展和 SDK 工厂，不包含插件市场、包安装、Provider 扩展或自定义 UI 组件协议。
+`/reload` 会重新编译显式扩展文件并重建全部模块/entry point 注册表，避免重复事件处理器。加载失败保留当前 AgentSession。当前支持单文件、模块入口、Python package entry point 和 SDK 工厂；不包含插件市场、包安装、Provider 扩展或自定义 UI 组件协议。
 
 <a id="ch07"></a>
 
@@ -512,7 +525,7 @@ uv run fox --interactive
 
 ```powershell
 uv run fox --trust-project --interactive
-# settings.json 中配置 "memory": true 后：
+# settings.json 的 extensions 中加载 Memory 后：
 uv run fox --trust-project --permission workspace-write --interactive
 uv run fox --resume --interactive
 uv run fox --resume --compact
@@ -521,7 +534,7 @@ uv run fox --skill release-audit -p "检查开发环境"
 uv run fox --template review -p "src/module.py"
 ```
 
-连续对话提供 `/new`、`/resume 文件`、`/fork [条目 ID]`、`/cwd 目录`、`/reload`、`/trust`、`/untrust`、`/permission`、`/compact`、`/usage`、`/export`、`/tools`、`/model`、`/thinking`、`/skill 名称`、`/prompt 名称` 和扩展命令。配置 `memory: true` 时还会注册 `/memory`。`/tools none` 禁用工具；`/help` 显示可用命令；`/exit` 结束。当前每次任务等待完成后打印最终回复，Ctrl+C 结束 CLI；没有实现终端组件、复杂键盘交互或 TUI。
+连续对话提供 `/new`、`/resume 文件`、`/fork [条目 ID]`、`/cwd 目录`、`/reload`、`/trust`、`/untrust`、`/permission`、`/compact`、`/usage`、`/export`、`/tools`、`/model`、`/thinking`、`/skill 名称`、`/prompt 名称` 和扩展命令。加载 Memory 扩展时还会注册 `/memory`。`/tools none` 禁用工具；`/help` 显示可用命令；`/exit` 结束。当前每次任务等待完成后打印最终回复，Ctrl+C 结束 CLI；没有实现终端组件、复杂键盘交互或 TUI。
 
 非交互 JSON 模式继续保留稳定的逐行事件输出，扩展命令返回 `command_result`。普通扩展 print 被导向 stderr；扩展若直接写文件描述符或启动自己的后台任务，需自行遵守宿主输出和资源清理约定。
 
@@ -592,7 +605,7 @@ fox_coding_agent/src/
 
 ### 9.2 Memory：已实现为策略化可选扩展
 
-当前实现位于 `src/extensions/memory/`，通过 `settings.json` 的 `memory: true` 显式启用。它参考 BearCode 的四个核心选择：项目路径映射到独立目录、正文使用人可读 Markdown、`MEMORY.md` 作为派生索引、模型请求前按需召回。FoxCode 对边界做了进一步收紧：
+当前实现位于 `src/extensions/memory/`，通过 `extensions` 中的模块入口显式启用。它参考 BearCode 的四个核心选择：项目路径映射到独立目录、正文使用人可读 Markdown、`MEMORY.md` 作为派生索引、模型请求前按需召回。FoxCode 对边界做了进一步收紧：
 
 - 记忆统一保存在 `~/.foxcode/projects/<project-hash>/memory/`，不会向用户项目写入额外知识文件。
 - Markdown 条目是事实来源，`MEMORY.md` 随 CRUD 重建；文件名、类型、字段长度、条目数和路径都经过校验。
@@ -618,7 +631,8 @@ session_start
 扩展注册 `memory.store` 服务供其他扩展协作，同时只向模型注册 `memory_remember`、`memory_recall`、`memory_forget`。`memory_recall` 返回带 provenance 和三信号分解的预算化 excerpt，不返回最多 20K 的完整正文；完整 list/read 只保留在 `/memory` 命令。默认自动召回最多 3 条、注入 12000 字符，模型主动 recall 的正文总预算为 6000 字符，可以在 SDK 中传入配置：
 
 ```python
-from fox_coding_agent.src import AgentSessionRuntime, MemoryExtensionConfig, create_memory_extension
+from fox_coding_agent.src import AgentSessionRuntime
+from fox_coding_agent.src.extensions.memory import MemoryExtensionConfig, create_memory_extension
 
 runtime = AgentSessionRuntime(
     ".",
@@ -634,11 +648,15 @@ runtime = AgentSessionRuntime(
 
 这里不自动从每轮对话提取并永久保存内容。写入必须是模型对 `memory_remember` 的显式工具调用；工具返回可观察的 `accepted/action/reasons/superseded` 决策，并禁止保存凭据。用户可以用 `/memory` 检查和删除。完整的字段、评分原因、50/120 golden set、消融结果和复现命令见 [Memory v2 设计文档](src/extensions/memory/MEMORY_DESIGN.md)。
 
-### 9.3 MCP：连接管理器不是一个巨型工具（设计草案）
+### 9.3 MCP：连接管理器不是一个巨型工具
 
-**当前仓库尚未实现 `extensions/mcp/`。** 如果后续加入，MCP 扩展应注册 `mcp.manager` 服务。每个远端 tool 映射成普通 `AgentTool` proxy，内核继续使用现有参数校验、事件和取消逻辑。Manager 负责连接、能力发现、超时与关闭；proxy 只把一次 `execute()` 转给目标 server。
+当前实现位于 `extensions/mcp/`，注册 `mcp.manager` 服务。每个远端 tool 映射成普通 `AgentTool` proxy，内核继续使用现有参数校验、事件、权限和取消逻辑。Manager 负责 stdio 连接、协议协商、分页能力发现、超时与关闭；proxy 只把一次 `execute()` 转给目标 server。
 
-配置建议分两层：`~/.foxcode/mcp.json` 保存用户 server，项目 `.foxcode/mcp.json` 保存项目 server。项目配置必须经过 trust；凭据引用 CredentialStore 或环境变量，不直接写进 Session。mini 版本可以先采用 lazy connect：扩展 setup 同步注册已配置的 proxy，首次执行时连接；以后再给 ExtensionRunner 增加正式的 async start/stop 生命周期。
+配置分两层：`~/.foxcode/mcp.json` 保存用户 server，项目 `.foxcode/mcp.json` 保存项目 server。项目配置必须经过 trust；凭据使用环境变量引用，不写进 Session。扩展在异步 `session_start` 中完成连接和发现，再通过 `ExtensionContext.add_runtime_tools()` 注入不持久化的动态 proxy；`session_shutdown` 关闭整个进程组。当前边界只覆盖 stdio tools，HTTP/OAuth、resources、prompts、sampling、elicitation、tasks 与 Apps 尚未实现。完整配置与安全约束见 [MCP 设计文档](src/extensions/mcp/MCP_DESIGN.md)。
+
+### 9.3.1 子 Agent：隔离上下文，继承能力上限
+
+`extensions/subagent/` 注册 `subagent.manager` 服务和一个 `agent` 工具。每次调用创建独立的内存 Session，只继承父会话的模型、认证流、工作目录、思考级别和已启用工具，不复制父对话。`explore` 与 `plan` 固定只读工具集，`general` 使用父工具但排除 `agent`，自定义 Markdown profile 可进一步白名单；每个子工具调用仍重新经过父权限模式检查。项目 profile 只有在项目受信时加载。完整格式见 [子 Agent 设计文档](src/extensions/subagent/SUBAGENT_DESIGN.md)。
 
 ### 9.4 自进化 Skill：生成候选，不自动覆盖生效 Skill（设计草案）
 
@@ -818,7 +836,7 @@ uv run fox --skill release-audit -p "检查当前分支"
 Memory 不是默认能力，必须在每次启动时显式加载：
 
 ```powershell
-uv run fox --trust-project --permission full-access --interactive
+uv run fox --trust-project --permission workspace-write --interactive
 ```
 
 然后输入“请记住：默认用中文回答，代码注释也使用中文”。只有模型实际调用 `memory_remember` 后才完成持久化；一句普通的“我记住了”不能作为保存成功的证据。使用以下命令验证：
@@ -828,7 +846,7 @@ uv run fox --trust-project --permission full-access --interactive
 /memory dir
 ```
 
-再新建一个同项目、同样启用 Memory 的会话询问偏好。召回内容只注入本次请求副本，不会复制进 Session JSONL。若没有条目，依次检查：有效 `settings.json` 是否为 `memory: true`、项目是否 trusted、权限是否为 `full-access`、模型是否真的发出了 `memory_remember` 工具调用。
+再新建一个同项目、同样加载 Memory 的会话询问偏好。召回内容只注入本次请求副本，不会复制进 Session JSONL。Memory 的状态读写独立于三档工作区权限；若没有条目，依次检查：`extensions` 是否包含 Memory 入口、项目是否 trusted、模型是否真的发出了 `memory_remember` 工具调用。
 
 ### 10.6 最小验收清单
 
@@ -859,9 +877,8 @@ uv run fox --trust-project --permission full-access --interactive
 | `compaction.reserve_tokens` | integer，默认 `16384` | 为输出预留的窗口空间 |
 | `compaction.keep_recent_tokens` | integer，默认 `8000` | 压缩时尽量原样保留的近期消息预算 |
 | `tools` | `string[] \| null` | `null` 使用平台默认；空数组禁用；名称必须唯一且存在 |
-| `extensions` | `string[]`，默认空 | 显式加载的 Python 扩展文件 |
-| `memory` | boolean，默认 `false` | 启用内置项目长期记忆扩展 |
-| `permission_mode` | `read-only` / `workspace-write` / `full-access` | 工具权限；默认 `full-access` 以保持 SDK 兼容 |
+| `extensions` | `string[]`，默认空 | 显式加载扩展文件、`module:` 模块或 `entrypoint:` 包入口 |
+| `permission_mode` | `read-only` / `workspace-write` / `full-access` | 工作区与系统工具权限；默认 `full-access` 以保持 SDK 兼容，`extension-state` 独立于此模式 |
 | `max_turns` | 正整数，默认 `100` | 一次 Agent 操作的最大轮数 |
 | `model_retry_attempts` | `0..5`，默认 `1` | 对可安全重试的空响应错误最多恢复几次 |
 | `tool_execution` | `parallel` / `sequential` | 同一轮多个工具调用的执行策略 |
@@ -883,7 +900,7 @@ uv run fox --trust-project --permission full-access --interactive
   },
   "tool_execution": "parallel",
   "permission_mode": "workspace-write",
-  "memory": true,
+  "extensions": ["module:fox_coding_agent.src.extensions.memory:setup"],
   "session_scope": "project"
 }
 ```
@@ -955,7 +972,7 @@ Prompt 模板虽然在 untrusted 项目也可被发现，但它只做 `$ARGUMENT
 | `--list-models` | 列出目录模型，不创建 Session |
 | `--json` | stdout 使用逐行 JSON；诊断和普通扩展 print 走 stderr |
 
-模型 endpoint、协议和能力写入 `models.json`；`api_key_env`、`stream_options`、`tools`、`extensions` 与 `memory` 写入 `settings.json`，CLI 不再解析这些配置项。`--thinking` 和交互 `/thinking` 接受 `off|minimal|low|medium|high|xhigh`。
+模型 endpoint、协议和能力写入 `models.json`；`api_key_env`、`stream_options`、`tools` 与 `extensions` 写入 `settings.json`，CLI 不再解析这些配置项。`--thinking` 和交互 `/thinking` 接受 `off|minimal|low|medium|high|xhigh`。
 
 `--interactive` 不能与 `--json`、`-p`、`--command`、`--skill`、`--template`、`--list-models` 混用。`--list-models` 也不能和任务或 Session 动作混用。
 
@@ -978,7 +995,7 @@ Prompt 模板虽然在 untrusted 项目也可被发现，但它只做 `$ARGUMENT
 | `/thinking [level]` | 查看或切换思考强度 |
 | `/skill NAME [args]` | 显式注入 Skill 正文并开始一轮 |
 | `/prompt NAME [args]` | 渲染 Prompt 模板并开始一轮 |
-| `/memory ...` | 仅 `settings.json` 配置 `memory: true` 后存在 |
+| `/memory ...` | 仅加载 Memory 扩展后存在 |
 | `/help`、`/exit` | 查看帮助或退出 |
 
 扩展注册的命令会动态加入 `/help`。保留命令名不能被扩展覆盖。
@@ -1007,7 +1024,8 @@ Prompt 模板虽然在 untrusted 项目也可被发现，但它只做 `$ARGUMENT
 import asyncio
 from pathlib import Path
 
-from fox_coding_agent.src import AgentSessionRuntime, create_memory_extension
+from fox_coding_agent.src import AgentSessionRuntime
+from fox_coding_agent.src.extensions.memory import create_memory_extension
 
 
 async def main() -> None:
@@ -1099,7 +1117,7 @@ uv run --with pytest pytest -q tests/test_runtime.py -k reload
 | `A model is required` | `models.json` 是否存在，settings 的引用是否正确，或是否显式传了模型 |
 | 模型存在但认证失败 | `auth.json` provider 名是否一致；`api_key_env` 是否有值；endpoint 是否匹配 |
 | `Project is not trusted` | 使用 `--trust-project` 或 `/trust`；确认切换后的真实 cwd |
-| 新会话没有长期记忆 | 是否配置 `memory: true`；项目是否 trusted；权限是否允许；`/memory list` 是否真的有条目 |
+| 新会话没有长期记忆 | 是否在 `extensions` 加载 Memory；项目是否 trusted；权限是否允许；`/memory list` 是否真的有条目 |
 | “我记住了”但目录为空 | 模型没有调用 `memory_remember`；普通文本回复不会触发持久化 |
 | Skill/Prompt 找不到 | 检查目录、frontmatter、名称和 `/reload` 输出的 Resource diagnostics |
 | 扩展命令不存在 | 确认扩展路径、同步 `setup(api)` 和命令名是否与保留名冲突 |
@@ -1118,6 +1136,6 @@ uv run --with pytest pytest -q tests/test_runtime.py -k reload
 - 自动重试只覆盖没有内容、没有已知副作用的特定错误；不能承诺 exactly-once。
 - Compaction 是启发式预算与有损摘要；原始历史仍保留，但下一次模型上下文可能只看到摘要视图。
 - Memory 是项目路径作用域，不是跨所有项目的全局用户画像；移动项目会得到新的 memory id。
-- 当前没有 MCP、TUI、插件市场、多进程 Session 锁和分布式事务。需要这些能力时，应在现有边界上新增明确协议，而不是把行为塞进 agent loop。
+- 当前没有 MCP HTTP/OAuth、TUI、插件市场、多进程 Session 锁和分布式事务。需要这些能力时，应在现有边界上新增明确协议，而不是把行为塞进 agent loop。
 
 完成以上实践后，再按“CLI → Runtime → AgentSession → AgentHarness → Agent → Provider”的调用顺序阅读源码，能把用户可见行为、宿主策略与底层机制一一对应起来。

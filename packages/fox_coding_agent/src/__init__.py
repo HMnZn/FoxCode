@@ -11,17 +11,15 @@ from .core.model_config import ModelConfig, ModelConfigSnapshot, ConfiguredModel
 from .core.model_registry import ModelRegistry
 from .core.model_runtime import ModelRuntime
 from .core.trust import ProjectTrustManager
-from .core.permissions import PERMISSION_MODES, PermissionMode, check_tool_permission
+from .core.permissions import (
+    EXTENSION_STATE_ACTIONS, PERMISSION_DOMAINS, PERMISSION_MODES,
+    ExtensionStateAction, PermissionDomain, PermissionMode, check_tool_permission,
+)
 from .core.resources import ResourceLoader, ResourceProvider, Resources, ContextFile, PromptTemplate
 from .core.tools import (ReadTool, WriteTool, EditTool, BashTool, PowerShellTool,
                          GrepTool, FindTool, LsTool, create_coding_tools, create_all_tools)
 from .core.system_prompt import build_system_prompt
 from .core.extensions import ExtensionAPI, ExtensionRunner, ExtensionContext
-from .extensions.memory import (
-    HybridRetriever, MemoryEntry, MemoryExtensionConfig, MemoryService, MemoryStore,
-    RetrievalConfig, SearchResult, WriteDecision, WriteResult,
-    create_memory_extension, project_memory_id,
-)
 from .core.session_manager import (
     SessionManager, SessionEntry, SessionStorage,
     InMemorySessionStorage, JsonlSessionStorage,

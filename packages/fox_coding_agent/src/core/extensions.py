@@ -7,11 +7,13 @@ Each runtime build gets a new runner/module namespace, so reload doesn't duplica
 from __future__ import annotations
 
 import contextlib
+import importlib
 import inspect
 import re
 import sys
 import types
 from dataclasses import dataclass, field
+from importlib import metadata
 from pathlib import Path
 from uuid import uuid4
 
@@ -37,6 +39,19 @@ class ExtensionContext:
         if name not in self.services:
             raise KeyError(f"Extension service is not registered: {name}")
         return self.services[name]
+
+    @property
+    def active_tools(self) -> tuple:
+        """Current model-facing tools as an immutable extension view."""
+        return tuple(self.agent_session.state.tools)
+
+    def activate_tools(self, names) -> None:
+        """Select static or dynamically registered tools while the session is idle."""
+        self.agent_session.set_active_tools(list(names))
+
+    def add_runtime_tools(self, tools, *, activate: bool = True) -> None:
+        """Register ephemeral tools discovered during an async lifecycle hook."""
+        self.agent_session.add_runtime_tools(list(tools), activate=activate)
 
 
 @dataclass
@@ -102,27 +117,71 @@ class ExtensionRunner:
         self._modules = []
 
     @classmethod
-    def load(cls, paths=(), factories=()):
+    def load(cls, paths=(), factories=(), specs=(), sources=()):
         runner = cls()
         try:
+            for source in dict.fromkeys(sources):
+                if isinstance(source, str) and source.startswith(("module:", "entrypoint:")):
+                    runner._setup(runner._load_spec(source))
+                else:
+                    runner._load_file(source)
             for file in dict.fromkeys(Path(p).resolve() for p in paths):
-                if file.suffix != ".py" or not file.is_file():
-                    raise ValueError(f"Extension must be an existing Python file: {file}")
-                name = f"_fox_extension_{uuid4().hex}"
-                module = types.ModuleType(name)
-                module.__file__ = str(file)
-                sys.modules[name] = module
-                runner._modules.append(name)
-                # Compile source directly so a same-size edit within one second is still reloaded.
-                with contextlib.redirect_stdout(sys.stderr):
-                    exec(compile(file.read_text(encoding="utf-8-sig"), str(file), "exec"), module.__dict__)
-                    runner._setup(getattr(module, "setup", None))
+                runner._load_file(file)
             for factory in factories:
                 runner._setup(factory)
+            for spec in dict.fromkeys(specs):
+                runner._setup(runner._load_spec(spec))
             return runner
         except BaseException:
             runner.dispose()
             raise
+
+    def _load_file(self, value) -> None:
+        file = Path(value).resolve()
+        if file.suffix != ".py" or not file.is_file():
+            raise ValueError(f"Extension must be an existing Python file: {file}")
+        name = f"_fox_extension_{uuid4().hex}"
+        module = types.ModuleType(name)
+        module.__file__ = str(file)
+        sys.modules[name] = module
+        self._modules.append(name)
+        # Compile source directly so a same-size edit within one second is still reloaded.
+        with contextlib.redirect_stdout(sys.stderr):
+            exec(compile(file.read_text(encoding="utf-8-sig"), str(file), "exec"), module.__dict__)
+            self._setup(getattr(module, "setup", None))
+
+    @staticmethod
+    def _load_spec(spec: str):
+        """Resolve an explicitly configured module or package entry point."""
+        if not isinstance(spec, str) or not spec:
+            raise ValueError("Extension spec must be a nonempty string")
+        if spec.startswith("module:"):
+            target = spec.removeprefix("module:")
+            module_name, separator, attribute = target.rpartition(":")
+            if not separator:
+                module_name, attribute = target, "setup"
+            if not module_name or not attribute:
+                raise ValueError(f"Invalid module extension spec: {spec}")
+            module = importlib.import_module(module_name)
+            try:
+                return getattr(module, attribute)
+            except AttributeError as exc:
+                raise ValueError(
+                    f"Extension module {module_name!r} has no attribute {attribute!r}"
+                ) from exc
+        if spec.startswith("entrypoint:"):
+            name = spec.removeprefix("entrypoint:")
+            if not name:
+                raise ValueError("Extension entry point name must not be empty")
+            matches = list(metadata.entry_points(group="foxcode.extensions", name=name))
+            if len(matches) != 1:
+                raise ValueError(
+                    f"Expected one foxcode.extensions entry point named {name!r}, found {len(matches)}"
+                )
+            return matches[0].load()
+        raise ValueError(
+            "Extension specs must use 'module:<package>[:callable]' or 'entrypoint:<name>'"
+        )
 
     def _setup(self, factory):
         if not callable(factory):

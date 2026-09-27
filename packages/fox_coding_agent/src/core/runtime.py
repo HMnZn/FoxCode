@@ -33,7 +33,7 @@ class AgentSessionRuntime:
                  session_file: str | Path | None = None, user_dir: str | Path | None = None,
                  settings_overrides: dict | None = None, stream_fn=None, stream_options: dict | None = None,
                  resource_providers=(), tool_factory=None, before_tool_call=None, after_tool_call=None,
-                 extension_paths=(), extension_factories=(), summary_fn=None,
+                 extension_paths=(), extension_factories=(), extension_specs=(), summary_fn=None,
                  project_trusted: bool | None = True, trust_resolver=None):
         self.user_dir = Path(user_dir).expanduser().resolve() if user_dir else Path.home() / ".foxcode"
         self.model_runtime = ModelRuntime(self.user_dir, stream_fn=stream_fn)
@@ -43,6 +43,7 @@ class AgentSessionRuntime:
         self._tool_factory = tool_factory or create_all_tools
         self._extension_paths = tuple(Path(p).expanduser().resolve() for p in extension_paths)
         self._extension_factories = tuple(extension_factories)
+        self._extension_specs = tuple(extension_specs)
         self._summary_fn = summary_fn
         self._preparing = False
         self._hook_cancel = None
@@ -148,14 +149,11 @@ class AgentSessionRuntime:
         agent_session.hooks.persist_message = agent_session.session.append_message
 
     def _build(self, cwd, session, model, manager, resources, project_trusted):
-        paths = [Path(p).expanduser() for p in manager.settings.extensions]
-        paths = [p if p.is_absolute() else cwd / p for p in paths]
-        factories = list(self._extension_factories)
-        if manager.settings.memory:
-            from ..extensions.memory import setup as memory_extension
-            factories.append(memory_extension)
         extensions = ExtensionRunner.load(
-            [*paths, *self._extension_paths], tuple(dict.fromkeys(factories))
+            paths=self._extension_paths,
+            factories=tuple(dict.fromkeys(self._extension_factories)),
+            specs=self._extension_specs,
+            sources=manager.settings.extensions,
         )
         try:
             return self._build_with_extensions(
@@ -170,7 +168,6 @@ class AgentSessionRuntime:
         settings = manager.settings
         had_tool_selection = "active_tools" in session.build_settings()
         tools = [*self._tool_factory(cwd), *extensions.api.tools]
-        tools_by_name = {tool.name: tool for tool in tools}
         available = {tool.name for tool in tools}
         if len(available) != len(tools):
             raise ValueError("Extension tool names must not collide with built-in/custom tools")
@@ -185,9 +182,10 @@ class AgentSessionRuntime:
                     "Project is not trusted; restart with --trust-project before executing tools"
                 )}
             call = data["tool_call"]
-            reason = check_tool_permission(
-                tools_by_name[call.name], data["args"], cwd, settings.permission_mode
-            )
+            tool = agent_session.get_tool(call.name)
+            if tool is None:
+                return {"block": True, "reason": f"Tool '{call.name}' is not registered"}
+            reason = check_tool_permission(tool, data["args"], cwd, settings.permission_mode)
             if reason:
                 return {"block": True, "reason": reason}
             if self._before:

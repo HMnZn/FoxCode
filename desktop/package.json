@@ -1,0 +1,45 @@
+{
+  "name": "foxcode-desktop",
+  "private": true,
+  "version": "0.1.0",
+  "description": "FoxCode Studio — Electron desktop UI for the FoxCode coding agent (UI-only; does not modify packages/)",
+  "main": "electron/main.js",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "dev:no-gpu": "node scripts/dev.mjs --no-gpu",
+    "dev:web": "vite",
+    "build": "tsc -p tsconfig.json && vite build",
+    "build:web": "vite build",
+    "start": "electron .",
+    "shot": "node scripts/shot.mjs",
+    "icon": "node scripts/make-icon.mjs",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "clsx": "^2.1.1",
+    "lucide-react": "^1.48.0",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
+    "tailwind-merge": "^3.7.0",
+    "zustand": "^5.0.15"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.3.3",
+    "@testing-library/dom": "^10.4.2",
+    "@testing-library/react": "^16.3.3",
+    "@types/node": "^26.6.3",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.1",
+    "electron": "^44.4.5",
+    "jsdom": "^30.1.1",
+    "tailwindcss": "^4.3.3",
+    "typescript": "^5.9.3",
+    "vite": "^8.3.1",
+    "vitest": "^5.0.2"
+  }
+}

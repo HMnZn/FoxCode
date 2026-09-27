@@ -83,6 +83,7 @@ class AgentSession(CoreAgentHarness):
         self._manual_cancel: asyncio.Event | None = None
         tools = list(config.tools) if config.tools is not None else create_coding_tools(self.cwd)
         self._tools = {tool.name: tool for tool in tools}
+        self._runtime_tool_names: set[str] = set()
         if len(self._tools) != len(tools):
             raise ValueError("Tool names must be unique")
         self._default_tool_names = list(self._tools)
@@ -278,10 +279,41 @@ class AgentSession(CoreAgentHarness):
         if len(names) != len(set(names)):
             raise ValueError("Tool names must be unique")
 
+    def get_tool(self, name: str):
+        """Return a registered tool, including tools added by a runtime extension."""
+        return self._tools.get(name)
+
+    def add_runtime_tools(self, tools: list[Any], *, activate: bool = True) -> None:
+        """Add ephemeral tools discovered after session construction.
+
+        Dynamic capabilities such as MCP are not persisted in ``active_tools``:
+        they must be rediscovered for every runtime, which prevents a resumed
+        session from depending on a server that is no longer configured.
+        """
+        self.ensure_idle()
+        additions = list(tools)
+        names = [tool.name for tool in additions]
+        if len(names) != len(set(names)):
+            raise ValueError("Runtime tool names must be unique")
+        collisions = set(names) & self._tools.keys()
+        if collisions:
+            raise ValueError(f"Runtime tools collide with available tools: {sorted(collisions)}")
+        for tool in additions:
+            if not callable(getattr(tool, "execute", None)) or not getattr(tool, "name", None):
+                raise TypeError("Runtime tools must implement AgentTool")
+            self._tools[tool.name] = tool
+            self._runtime_tool_names.add(tool.name)
+        if activate and additions:
+            self.state.tools = [*self.state.tools, *additions]
+            self._refresh_system_prompt()
+
     def set_active_tools(self, names: list[str]) -> None:
         self.ensure_idle()
         self._validate_tool_names(names)
-        self.session.append_active_tools_change(names)
+        # Runtime-discovered tools (for example MCP proxies) are deliberately
+        # rediscovered instead of becoming a resume-time dependency.
+        persisted = [name for name in names if name not in self._runtime_tool_names]
+        self.session.append_active_tools_change(persisted)
         self.state.tools = [self._tools[name] for name in names]
         self._refresh_system_prompt()
 

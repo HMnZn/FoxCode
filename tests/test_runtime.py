@@ -46,13 +46,17 @@ class SettingsTests(Workspace, unittest.TestCase):
         settings = SettingsManager(self.project, user_dir=self.user).settings
         self.assertEqual(settings.model, "demo/pro")
 
-    def test_permission_and_memory_are_runtime_settings(self):
+    def test_permission_and_extensions_are_runtime_settings(self):
         write(self.user / "settings.json", json.dumps({
-            "permission_mode": "read-only", "memory": True,
+            "permission_mode": "read-only",
+            "extensions": ["module:fox_coding_agent.src.extensions.memory:setup"],
         }))
         settings = SettingsManager(self.project, user_dir=self.user).settings
         self.assertEqual(settings.permission_mode, "read-only")
-        self.assertTrue(settings.memory)
+        self.assertEqual(
+            settings.extensions,
+            ["module:fox_coding_agent.src.extensions.memory:setup"],
+        )
         with self.assertRaises(ValueError):
             SettingsManager(self.project, user_dir=self.user,
                             overrides={"permission_mode": "unrestricted"})
@@ -85,10 +89,22 @@ class SettingsTests(Workspace, unittest.TestCase):
         self.assertEqual(manager.settings.max_turns, 3)
         self.assertFalse(list(manager.project_path.parent.glob(".settings-*.tmp")))
 
+    def test_extension_paths_are_resolved_but_import_specs_are_preserved(self):
+        write(self.user / "settings.json", json.dumps({"extensions": [
+            "extensions/demo.py",
+            "module:demo_extension:setup",
+            "entrypoint:demo",
+        ]}))
+        settings = SettingsManager(self.project, user_dir=self.user).settings
+        self.assertEqual(settings.extensions[0], str((self.user / "extensions/demo.py").resolve()))
+        self.assertEqual(settings.extensions[1:], [
+            "module:demo_extension:setup", "entrypoint:demo",
+        ])
+
     def test_invalid_configuration_keeps_previous_snapshot(self):
         manager = SettingsManager(self.project, user_dir=self.user)
         manager.update({"max_turns": 8})
-        for invalid in ({"max_turns": 0}, {"max_truns": 9}, {"tools": [10]},
+        for invalid in ({"max_turns": 0}, {"max_truns": 9}, {"memory": True}, {"tools": [10]},
                         {"compaction": {"reserve_tokens": -1}}):
             with self.subTest(invalid=invalid), self.assertRaises(ValueError):
                 manager.update(invalid)

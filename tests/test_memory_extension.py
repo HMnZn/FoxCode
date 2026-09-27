@@ -129,12 +129,15 @@ class MemoryExtensionTests(unittest.IsolatedAsyncioTestCase):
         self.project.mkdir()
         clear_scripts()
 
-    def runtime(self, stream, *, trusted=True):
+    def runtime(self, stream, *, trusted=True, permission_mode=None):
+        overrides = ({"permission_mode": permission_mode}
+                     if permission_mode is not None else None)
         runtime = AgentSessionRuntime(
             self.project,
             user_dir=self.user,
             model=FAUX_MODEL,
             stream_fn=stream,
+            settings_overrides=overrides,
             extension_factories=(create_memory_extension(),),
             project_trusted=trusted,
         )
@@ -193,7 +196,9 @@ class MemoryExtensionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_settings_enable_packaged_extension(self):
         (self.user / "settings.json").parent.mkdir(parents=True, exist_ok=True)
-        (self.user / "settings.json").write_text('{"memory": true}', encoding="utf-8")
+        (self.user / "settings.json").write_text(json.dumps({
+            "extensions": ["module:fox_coding_agent.src.extensions.memory:setup"]
+        }), encoding="utf-8")
         runtime = AgentSessionRuntime(
             self.project, user_dir=self.user, model=FAUX_MODEL, project_trusted=True,
         )
@@ -202,6 +207,92 @@ class MemoryExtensionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(memory_tools, {
             "memory_remember", "memory_recall", "memory_forget",
         })
+
+    async def test_extension_activates_its_tools_outside_host_tool_allowlist(self):
+        (self.user / "settings.json").parent.mkdir(parents=True, exist_ok=True)
+        (self.user / "settings.json").write_text(
+            '{"tools": ["read"]}', encoding="utf-8"
+        )
+        stream = scripted(
+            FauxScript(tool_calls=[ToolCall(
+                id="memory-allowlist",
+                name="memory_remember",
+                arguments={
+                    "name": "测试偏好",
+                    "description": "验证扩展自行激活工具",
+                    "type": "user",
+                    "content": "默认使用中文回答。",
+                },
+            )]),
+            FauxScript(text="已记住"),
+        )
+        runtime = self.runtime(stream)
+
+        # Before extension startup the host allowlist remains exact.
+        self.assertEqual([tool.name for tool in runtime.state.tools], ["read"])
+        await runtime.prompt("请记住这个偏好")
+
+        self.assertEqual(
+            [tool.name for tool in runtime.state.tools],
+            ["read", "memory_remember", "memory_recall", "memory_forget"],
+        )
+        self.assertEqual(len(MemoryStore(self.user, self.project).list()), 1)
+
+    async def test_memory_mutations_are_independent_of_workspace_permission_mode(self):
+        store = MemoryStore(self.user, self.project)
+        for mode in ("read-only", "workspace-write", "full-access"):
+            doomed = store.save(
+                name=f"delete in {mode}", description="permission regression fixture",
+                type="project", content=f"remove this memory in {mode}",
+            )
+            stream = scripted(
+                FauxScript(tool_calls=[ToolCall(
+                    id=f"remember-{mode}", name="memory_remember", arguments={
+                        "name": f"remember in {mode}",
+                        "description": "permission regression fixture",
+                        "type": "user",
+                        "content": f"memory writes work in {mode}",
+                    },
+                )]),
+                FauxScript(text="saved"),
+                FauxScript(tool_calls=[ToolCall(
+                    id=f"forget-{mode}", name="memory_forget",
+                    arguments={"filename": doomed.filename},
+                )]),
+                FauxScript(text="deleted"),
+            )
+            runtime = self.runtime(stream, permission_mode=mode)
+
+            await runtime.prompt("remember this")
+            self.assertIn(
+                f"memory writes work in {mode}",
+                {entry.content for entry in store.list()},
+            )
+            await runtime.prompt("forget the selected memory")
+            with self.assertRaises(FileNotFoundError):
+                store.read(doomed.filename)
+
+            await runtime.close()
+
+    async def test_untrusted_project_still_blocks_memory_mutation(self):
+        stream = scripted(
+            FauxScript(tool_calls=[ToolCall(
+                id="untrusted-memory", name="memory_remember", arguments={
+                    "name": "blocked memory",
+                    "description": "must not be persisted",
+                    "type": "user",
+                    "content": "untrusted projects cannot write memory",
+                },
+            )]),
+            FauxScript(text="blocked"),
+        )
+        runtime = self.runtime(stream, trusted=False, permission_mode="full-access")
+
+        await runtime.prompt("remember this")
+
+        self.assertEqual(MemoryStore(self.user, self.project).list(), [])
+        self.assertTrue(runtime.state.messages[-2].is_error)
+        self.assertIn("not trusted", runtime.state.messages[-2].content[0].text)
 
     async def test_recall_returns_bounded_excerpts_not_full_memory_bodies(self):
         content = "alpha architecture details " * 500

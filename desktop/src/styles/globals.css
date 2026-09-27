@@ -1,0 +1,425 @@
+@import "tailwindcss";
+
+@source "../../index.html";
+@source "../**/*.{ts,tsx}";
+
+/* ------------------------------------------------------------------ *
+ * FoxCode Studio — design tokens
+ * Dark is the default theme; `.light` on <html> swaps the same vars.
+ * Tailwind v4 emits these as :root vars, so utilities such as
+ * `bg-surface` / `text-fg-muted` / `border-line` resolve through them
+ * and re-theme instantly when the class changes.
+ *
+ * The neutral ramp, radii and elevation follow the DSH desktop palette
+ * (near-black canvas, three lifted panel layers, alpha hairlines) so the
+ * two apps read as siblings; the fox accent stays ours.
+ * ------------------------------------------------------------------ */
+
+@theme {
+  --font-sans: "Inter", "Segoe UI Variable Text", "Segoe UI", system-ui,
+    -apple-system, "PingFang SC", "Microsoft YaHei UI", sans-serif;
+  --font-mono: "JetBrains Mono", "Cascadia Mono", "SF Mono", ui-monospace,
+    Consolas, "Liberation Mono", monospace;
+
+  /* Neutral ramp = the DSH desktop surfaces (bg-base + layer 1..3 +
+   * sidebar-fill). Elevation only comes from these layers plus hairlines. */
+  --color-canvas: #151517;
+  --color-surface: #1b1b1c;
+  --color-surface-2: #232324;
+  --color-surface-3: #2c2c2e;
+  --color-surface-4: #353638;
+  --color-overlay: #2c2c2e;
+  --color-bubble: #2c2c2e;
+  --color-bubble-hi: #43454a;
+  /* Hairlines are alpha, never solid: l1/l2/l3 in DSH terms. */
+  --color-line: rgb(255 255 255 / 0.059);
+  --color-line-strong: rgb(255 255 255 / 0.122);
+  --color-line-heavy: rgb(255 255 255 / 0.161);
+
+  /* Label ramp: primary / secondary / tertiary / caption. */
+  --color-fg: #f9fafb;
+  --color-fg-muted: #cfd3d6;
+  --color-fg-subtle: #adb2b8;
+  --color-fg-caption: #81858c;
+
+  /* Hover / active fills for rows, list items and ghost buttons. */
+  --color-interactive: rgb(255 255 255 / 0.078);
+  --color-interactive-strong: rgb(255 255 255 / 0.141);
+
+  /* Ink call to action + business-blue focus/link, both straight from DSH
+   * (brand-primary is ink there, not the brand colour). */
+  --color-brand-primary: #f9fafb;
+  --color-brand-primary-hover: #ebeef2;
+  --color-on-brand: #0f1115;
+  --color-focus: #7aaaff;
+  --color-link: #7aaaff;
+
+  /* DSH paints tooltips on their own opaque elevated surface in both themes,
+   * so light mode gets white-on-dark ink instead of a light card. */
+  --color-tooltip: #2c2c2e;
+  --color-tooltip-fg: #f9fafb;
+
+  --color-scrollbar: #3c3c3d;
+  --color-scrollbar-hover: #545557;
+
+  /* 灵狐 brand palette — reserved for the fox mark, wordmark and glow. */
+  --color-fox: #f9762b;
+  --color-fox-hi: #ffab63;
+  --color-fox-lo: #e05a17;
+  --color-fox-cream: #fff2e3;
+  --color-fox-dark: #3c2413;
+  --color-fox-glow: rgb(249 118 43 / 0.22);
+
+  /* `accent` is the fox orange: brand marks, the wordmark and the mascot
+   * halo. Interactive chrome uses brand-primary / focus instead. */
+  --color-accent: #ff8a3d;
+  --color-accent-hi: #ffa25c;
+  --color-accent-lo: #e2722a;
+  --color-accent-soft: rgb(255 138 61 / 0.14);
+  --color-accent-ring: rgb(255 138 61 / 0.38);
+
+  --color-info: #7aaaff;
+  --color-info-soft: rgb(122 170 255 / 0.14);
+  --color-success: #22c55e;
+  --color-success-soft: rgb(34 197 94 / 0.14);
+  --color-warn: #f59e0b;
+  --color-warn-soft: rgb(245 158 11 / 0.14);
+  --color-danger: #f25a5a;
+  --color-danger-soft: rgb(242 90 90 / 0.14);
+  --color-think: #a78bfa;
+  --color-think-soft: rgb(167 139 250 / 0.14);
+
+  --color-on-accent: #201308;
+
+  --radius-xs: 4px;
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 20px;
+  /* Dialogs and the composer card use the wide DSH panel radius. */
+  --radius-panel: 28px;
+
+  /* DSH writes the hairline edge *inside* the shadow, so raised surfaces
+   * carry no border at all. */
+  --shadow-stroke: 0 0 0 0.5px var(--color-line);
+  --shadow-panel: 0 0 0 0.5px var(--color-line), 0 3px 8px 0 rgb(0 0 0 / 0.031),
+    0 0 16px 0 rgb(0 0 0 / 0.02);
+  --shadow-prominent: 0 0 0 0.5px var(--color-line), 0 3px 8px 0 rgb(0 0 0 / 0.039),
+    0 0 20px 0 rgb(0 0 0 / 0.051);
+  --shadow-soft: 0 0 0 0.5px var(--color-line), 0 4px 16px 0 rgb(0 0 0 / 0.031),
+    0 0 24px 0 rgb(0 0 0 / 0.031);
+
+  --shadow-card: 0 0 0 0.5px var(--color-line), 0 3px 8px 0 rgb(0 0 0 / 0.031);
+  --shadow-pop: 0 0 0 0.5px var(--color-line-strong), 0 12px 32px -8px rgb(0 0 0 / 0.45);
+  --shadow-glow: 0 0 0 1px var(--color-accent-ring), 0 0 24px -6px var(--color-accent-ring);
+
+  --shadow-elev-1: 0 2px 4px 0 rgb(0 0 0 / 0.051);
+  --shadow-elev-2: var(--shadow-panel);
+  --shadow-elev-3: var(--shadow-prominent);
+
+  --ease-out-quint: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-spring: cubic-bezier(0.34, 1.4, 0.64, 1);
+  /* DSH's shared in-out curve — used for layout/indicator transitions. */
+  --ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
+
+  --animate-rise: rise 0.22s var(--ease-out-quint) both;
+  --animate-fade: fade 0.16s ease-out both;
+  --animate-slide-in: slide-in 0.2s var(--ease-out-quint) both;
+  --animate-blink: blink 1.05s steps(2, start) infinite;
+  --animate-shimmer: shimmer 2.1s linear infinite;
+  --animate-pulse-soft: pulse-soft 1.9s var(--ease-spring) infinite;
+  --animate-spin-slow: spin 1.4s linear infinite;
+}
+
+.light {
+  /* DSH light is white-on-white: bg-base #fff, sidebar #f9fafb, and the
+   * separation comes from hairlines instead of grey panels. */
+  --color-canvas: #ffffff;
+  --color-surface: #f9fafb;
+  --color-surface-2: #f5f6f7;
+  --color-surface-3: #ebeef2;
+  --color-surface-4: #e1e5ee;
+  --color-overlay: #ffffff;
+  --color-bubble: #edf3fe;
+  --color-bubble-hi: #d3e2ff;
+  --color-line: rgb(0 0 0 / 0.039);
+  --color-line-strong: rgb(0 0 0 / 0.102);
+  --color-line-heavy: rgb(0 0 0 / 0.122);
+
+  --color-fg: #0f1115;
+  --color-fg-muted: #61666b;
+  --color-fg-subtle: #81858c;
+  --color-fg-caption: #adb2b8;
+
+  --color-interactive: rgb(38 49 72 / 0.059);
+  --color-interactive-strong: rgb(38 49 72 / 0.102);
+
+  --color-brand-primary: #0f1115;
+  --color-brand-primary-hover: #43454a;
+  --color-on-brand: #ffffff;
+  --color-focus: #4176e6;
+  --color-link: #4176e6;
+
+  --color-tooltip: #31343a;
+  --color-tooltip-fg: #ffffff;
+
+  --color-scrollbar: #e5e5e5;
+  --color-scrollbar-hover: #d4d4d4;
+
+  --color-accent: #d9691a;
+  --color-accent-hi: #ec7d2c;
+  --color-accent-lo: #b95a12;
+  --color-accent-soft: rgb(217 105 26 / 0.12);
+  --color-accent-ring: rgb(217 105 26 / 0.32);
+
+  --color-fox: #e2681d;
+  --color-fox-hi: #f68a3f;
+  --color-fox-lo: #bd4f0d;
+  --color-fox-cream: #fff6ec;
+  --color-fox-dark: #331d0e;
+  --color-fox-glow: rgb(226 104 29 / 0.18);
+
+  --color-info: #4176e6;
+  --color-info-soft: rgb(65 118 230 / 0.1);
+  --color-success: #22c55e;
+  --color-success-soft: rgb(34 197 94 / 0.12);
+  --color-warn: #f59e0b;
+  --color-warn-soft: rgb(245 158 11 / 0.12);
+  --color-danger: #ec1313;
+  --color-danger-soft: rgb(236 19 19 / 0.08);
+  --color-think: #6d4dd4;
+
+  --color-on-accent: #2a1608;
+
+  --shadow-panel: 0 0 0 0.5px var(--color-line), 0 3px 8px 0 rgb(0 0 0 / 0.031),
+    0 0 16px 0 rgb(0 0 0 / 0.02);
+  --shadow-prominent: 0 0 0 0.5px var(--color-line-strong),
+    0 3px 8px 0 rgb(0 0 0 / 0.039), 0 0 20px 0 rgb(0 0 0 / 0.051);
+  --shadow-soft: 0 0 0 0.5px var(--color-line), 0 4px 16px 0 rgb(0 0 0 / 0.031),
+    0 0 24px 0 rgb(0 0 0 / 0.031);
+
+  --shadow-card: 0 0 0 0.5px var(--color-line), 0 3px 8px 0 rgb(0 0 0 / 0.031);
+  --shadow-pop: 0 0 0 0.5px var(--color-line-strong), 0 16px 44px -12px rgb(15 23 42 / 0.18);
+  --shadow-elev-1: 0 1px 2px rgb(15 23 42 / 0.05);
+  --shadow-elev-2: var(--shadow-panel);
+  --shadow-elev-3: var(--shadow-prominent);
+}
+
+@keyframes rise {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes slide-in {
+  from { opacity: 0; transform: translateX(12px) scale(0.98); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+@keyframes shimmer {
+  0% { background-position: -160% 0; }
+  100% { background-position: 260% 0; }
+}
+@keyframes pulse-soft {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.45; transform: scale(0.86); }
+}
+
+@layer base {
+  :root {
+    color-scheme: dark;
+  }
+  .light {
+    color-scheme: light;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+    overflow: hidden;
+  }
+
+  body {
+    margin: 0;
+    background-color: var(--color-canvas);
+    color: var(--color-fg);
+    font-family: var(--font-sans);
+    /* DSH content size: 14px / 22px (xs-13 for secondary text). */
+    font-size: 14px;
+    line-height: 22px;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    overscroll-behavior: none;
+  }
+
+  ::selection {
+    background: color-mix(in srgb, var(--color-focus) 28%, transparent);
+    color: var(--color-fg);
+  }
+
+  /* 5px DSH scrollbar: transparent track, capsule thumb clipped to content. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-scrollbar) transparent;
+  }
+  ::-webkit-scrollbar {
+    width: 5px;
+    height: 5px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+    margin-block: 0;
+  }
+  ::-webkit-scrollbar-thumb {
+    background-color: var(--color-scrollbar);
+    border: 0 solid transparent;
+    background-clip: content-box;
+    border-radius: 999px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background-color: var(--color-scrollbar-hover);
+  }
+  ::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+
+  button,
+  input,
+  textarea,
+  select {
+    font: inherit;
+    color: inherit;
+  }
+
+  textarea {
+    field-sizing: content;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-focus);
+    outline-offset: 2px;
+  }
+  /* Only raise the focus ring for keyboard users (DSH input-modality trick). */
+  html[data-input-modality="pointer"] :focus-visible:not(:read-write) {
+    outline-color: transparent;
+  }
+}
+
+/* DSH makes every box a squircle (superellipse) and opts circles/capsules out. */
+@supports (corner-shape: superellipse(1.5)) {
+  *,
+  ::before,
+  ::after {
+    corner-shape: superellipse(1.5);
+  }
+  .rounded-full,
+  .rounded-full::before,
+  .rounded-full::after,
+  ::-webkit-scrollbar-thumb {
+    corner-shape: round;
+  }
+}
+
+@utility drag-region {
+  -webkit-app-region: drag;
+}
+@utility no-drag {
+  -webkit-app-region: no-drag;
+}
+
+@utility text-2xs {
+  font-size: 11px;
+  line-height: 16px;
+  letter-spacing: 0.02em;
+}
+
+@utility surface-card {
+  background-color: var(--color-surface-2);
+  border: 0;
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-panel);
+}
+
+/* Primary call to action — ink, exactly like DSH's brand-primary. */
+@utility btn-primary {
+  background-color: var(--color-brand-primary);
+  color: var(--color-on-brand);
+  border: 0;
+  &:hover {
+    background-color: var(--color-brand-primary-hover);
+  }
+  &:active {
+    filter: brightness(0.94);
+  }
+  &:disabled {
+    opacity: 0.5;
+  }
+}
+
+/* Brand tile behind the fox mark. */
+@utility fox-tile {
+  display: grid;
+  place-items: center;
+  background-color: var(--color-accent-soft);
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--color-accent) 28%, transparent);
+  border-radius: var(--radius-md);
+}
+
+/* Floating surface: like DSH, the hairline edge lives *inside* the
+ * shadow instead of being a border, so the rim stays sub-pixel crisp. */
+@utility surface-pop {
+  background-color: color-mix(in oklab, var(--color-overlay) 92%, transparent);
+  border: 0;
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-pop);
+  backdrop-filter: blur(40px) saturate(150%);
+}
+
+/* Long static lists (sessions, extensions): let the engine skip off-screen rows.
+   `auto` keeps the last measured height, so the scrollbar never jumps once a row
+   has been on screen. Cheap native alternative to a JS virtualizer. */
+@utility virtual-row {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 54px;
+}
+
+/* Streaming text shimmer used on the "thinking" label and live tool status. */
+@utility shimmer-text {
+  background: linear-gradient(
+    100deg,
+    var(--color-fg-subtle) 20%,
+    var(--color-fg) 42%,
+    var(--color-fg-subtle) 62%
+  );
+  background-size: 220% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: var(--animate-shimmer);
+}
+
+/* Thin scroll containers that hide the bar until hover. */
+@utility scroll-quiet {
+  scrollbar-color: transparent transparent;
+  &:hover {
+    scrollbar-color: var(--color-line-strong) transparent;
+  }
+}
+
+/* Motion is decoration here: honour the OS "reduce motion" preference. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}

@@ -5,6 +5,8 @@ import importlib
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from fox_ai.src import (
     AssistantMessage, Context, TextContent, ThinkingContent, ToolCall, Usage,
@@ -165,6 +167,26 @@ class TrustAndExtensionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([message.content for message in source], ["question"])
         with self.assertRaises(ValueError):
             runner.api.register_service("memory.index", object())
+
+    def test_extension_module_and_package_entrypoint_specs(self):
+        module_runner = ExtensionRunner.load(specs=(
+            "module:fox_coding_agent.src.extensions.memory:setup",
+        ))
+        self.addCleanup(module_runner.dispose)
+        self.assertIsNotNone(module_runner.api.get_service("memory.store"))
+
+        marker = object()
+        def setup(api):
+            api.register_service("demo.service", marker)
+
+        fake = SimpleNamespace(load=lambda: setup)
+        with patch(
+            "fox_coding_agent.src.core.extensions.metadata.entry_points",
+            return_value=[fake],
+        ):
+            package_runner = ExtensionRunner.load(specs=("entrypoint:demo",))
+        self.addCleanup(package_runner.dispose)
+        self.assertIs(package_runner.api.get_service("demo.service"), marker)
 
 
 class SessionRecoveryTests(unittest.IsolatedAsyncioTestCase):

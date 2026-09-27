@@ -35,7 +35,6 @@ class RuntimeSettings(BaseModel):
     compaction: CompactionSettings = Field(default_factory=CompactionSettings)
     tools: list[str] | None = None
     extensions: list[str] = Field(default_factory=list)
-    memory: bool = False
     permission_mode: Literal["read-only", "workspace-write", "full-access"] = "full-access"
     max_turns: int = Field(default=100, gt=0)
     model_retry_attempts: int = Field(default=1, ge=0, le=5)
@@ -71,8 +70,12 @@ class SettingsManager:
         if not isinstance(data, dict):
             raise ValueError(f"Settings must be a JSON object: {path}")
         if isinstance(data.get("extensions"), list):
-            data["extensions"] = [str((path.parent / Path(item).expanduser()).resolve())
-                                  if isinstance(item, str) else item for item in data["extensions"]]
+            data["extensions"] = [
+                item if isinstance(item, str) and item.startswith(("module:", "entrypoint:"))
+                else str((path.parent / Path(item).expanduser()).resolve())
+                if isinstance(item, str) else item
+                for item in data["extensions"]
+            ]
         return data
 
     def _validate(self, user: dict, project: dict) -> RuntimeSettings:

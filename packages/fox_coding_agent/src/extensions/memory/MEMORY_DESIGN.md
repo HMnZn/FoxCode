@@ -105,6 +105,27 @@ memory_forget    按用户明确要求忘记
 
 `memory_recall` 不返回完整正文，而是在总字符预算内返回命中位置附近的 excerpt、filename、topic、score、confidence 和三信号 breakdown。工具结果标记 `trust=historical-data`、`instruction_priority=none`。
 
+### 5.1 工具激活由扩展自治
+
+`settings.tools` 只需要描述宿主的基础工具，不应重复填写 memory 的内部工具名。启用 memory 本身已经是一次显式能力选择：
+
+```json
+{
+  "extensions": ["module:fox_coding_agent.src.extensions.memory:setup"],
+  "tools": ["read", "write", "edit", "grep", "find", "ls"]
+}
+```
+
+Memory 在 `setup(api)` 中注册工具，在首次请求之前的 `session_start` 生命周期中，把缺失的三个工具幂等地合并到当前激活列表。这样扩展通过模块入口、包 entry point、Python factory 或扩展文件加载时行为一致，core、CLI 和 settings schema 都不需要知道 `memory_*` 名称。
+
+```text
+宿主 tools allowlist ─┐
+                     ├─ session_start 合并 ── 本次模型工具集
+memory 自有工具 ─────┘
+```
+
+这只解决“工具是否暴露”，不会绕过项目 trust。Memory 工具声明通用的 `extension-state` 权限域，其读、写、删除操作修改的是扩展自有状态，因此不受 `read-only`、`workspace-write`、`full-access` 三档工作区权限影响；未受信项目仍由 runtime 在调用前统一阻止。core 只认识通用权限域，不导入或识别 Memory。SDK 使用者可以设置 `MemoryExtensionConfig(auto_activate_tools=False)`，让宿主 allowlist 或 Session 的人工选择保持最终决定权。
+
 ## 6. 预算化安全注入
 
 - 严格保证 `used_chars <= max_chars`；
