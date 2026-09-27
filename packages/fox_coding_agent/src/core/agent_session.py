@@ -265,7 +265,7 @@ class AgentSession(CoreAgentHarness):
 
     def set_thinking_level(self, level) -> None:
         self.ensure_idle()
-        if level not in (None, "off", "minimal", "low", "medium", "high", "xhigh", "max"):
+        if level not in (None, "off", "minimal", "low", "medium", "high", "xhigh"):
             raise ValueError(f"Invalid thinking level: {level}")
         level = None if level == "off" else level
         self.session.append_thinking_level_change(level)

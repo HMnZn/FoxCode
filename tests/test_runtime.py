@@ -46,6 +46,17 @@ class SettingsTests(Workspace, unittest.TestCase):
         settings = SettingsManager(self.project, user_dir=self.user).settings
         self.assertEqual(settings.model, "demo/pro")
 
+    def test_permission_and_memory_are_runtime_settings(self):
+        write(self.user / "settings.json", json.dumps({
+            "permission_mode": "read-only", "memory": True,
+        }))
+        settings = SettingsManager(self.project, user_dir=self.user).settings
+        self.assertEqual(settings.permission_mode, "read-only")
+        self.assertTrue(settings.memory)
+        with self.assertRaises(ValueError):
+            SettingsManager(self.project, user_dir=self.user,
+                            overrides={"permission_mode": "unrestricted"})
+
     def test_api_key_belongs_to_auth_not_settings(self):
         manager = SettingsManager(self.project, user_dir=self.user)
         for scope in ("user", "project"):
@@ -163,6 +174,60 @@ class RuntimeTests(Workspace, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(restored.cwd, self.project)
         self.assertEqual(restored.state.model.id, "faux")
 
+    async def test_permission_modes_enforce_write_boundaries(self):
+        outside = self.root / "outside.txt"
+        stream = scripted(
+            FauxScript(tool_calls=[ToolCall(id="read-only", name="write", arguments={
+                "path": "blocked.txt", "content": "blocked"})]), FauxScript(text="blocked"),
+            FauxScript(tool_calls=[ToolCall(id="inside", name="write", arguments={
+                "path": "inside.txt", "content": "inside"})]), FauxScript(text="inside"),
+            FauxScript(tool_calls=[ToolCall(id="outside", name="write", arguments={
+                "path": str(outside), "content": "outside"})]), FauxScript(text="outside blocked"),
+            FauxScript(tool_calls=[ToolCall(id="shell", name="bash", arguments={
+                "command": "echo should-not-run"})]), FauxScript(text="shell blocked"),
+            FauxScript(tool_calls=[ToolCall(id="full", name="write", arguments={
+                "path": str(outside), "content": "full"})]), FauxScript(text="full access"),
+        )
+        runtime = self.make_runtime(
+            stream_fn=stream, settings_overrides={"permission_mode": "read-only"}
+        )
+        await runtime.prompt("try a write")
+        self.assertFalse((self.project / "blocked.txt").exists())
+        self.assertTrue(runtime.state.messages[-2].is_error)
+
+        await runtime.set_permission_mode("workspace-write")
+        await runtime.prompt("write inside")
+        self.assertEqual((self.project / "inside.txt").read_text(), "inside")
+        await runtime.prompt("write outside")
+        self.assertFalse(outside.exists())
+        self.assertTrue(runtime.state.messages[-2].is_error)
+        self.assertEqual(runtime.permission_mode, "workspace-write")
+        await runtime.prompt("try a shell")
+        self.assertTrue(runtime.state.messages[-2].is_error)
+
+        await runtime.set_permission_mode("full-access")
+        await runtime.prompt("write outside with full access")
+        self.assertEqual(outside.read_text(), "full")
+
+    async def test_fork_creates_and_switches_to_independent_durable_session(self):
+        runtime = self.make_runtime(stream_fn=scripted(
+            FauxScript(text="before fork"), FauxScript(text="after fork"),
+        ))
+        await runtime.prompt("first")
+        original_path = runtime.session_file
+        original_id = runtime.session.storage.get_metadata()["id"]
+
+        fork_path = await runtime.fork()
+        self.assertEqual(runtime.session_file, fork_path)
+        self.assertNotEqual(fork_path, original_path)
+        self.assertTrue(fork_path.is_file())
+        self.assertNotEqual(runtime.session.storage.get_metadata()["id"], original_id)
+        self.assertEqual(len(runtime.state.messages), 2)
+
+        await runtime.prompt("second")
+        self.assertEqual(len(SessionManager(JsonlSessionStorage(original_path)).build_context()), 2)
+        self.assertEqual(len(SessionManager(JsonlSessionStorage(fork_path)).build_context()), 4)
+
     async def test_switch_cwd_keeps_user_defaults_until_target_overrides_them(self):
         write(self.user / "settings.json", json.dumps({
             "api_key_env": "FOX_TEST_API_KEY",
@@ -260,10 +325,21 @@ class RuntimeTests(Workspace, unittest.IsolatedAsyncioTestCase):
 
 
 class CliTests(Workspace, unittest.IsolatedAsyncioTestCase):
+    def test_parser_exposes_permission_and_removes_settings_options(self):
+        parser = build_parser()
+        args = parser.parse_args(["--permission", "workspace-write", "--interactive"])
+        self.assertEqual(args.permission, "workspace-write")
+        options = {option for action in parser._actions for option in action.option_strings}
+        self.assertIn("--permission", options)
+        thinking = next(action for action in parser._actions if action.dest == "thinking")
+        self.assertEqual(tuple(thinking.choices), ("off", "minimal", "low", "medium", "high", "xhigh"))
+        self.assertTrue({"--provider", "--base-url", "--api", "--api-key-env",
+                         "--max-tokens", "--tools", "--extension", "--memory"}.isdisjoint(options))
+
     async def test_json_events_and_resume_keep_transcript(self):
         parser = build_parser()
         args = parser.parse_args(["--cwd", str(self.project), "--user-dir", str(self.user),
-                                  "--provider", "faux", "--model", "faux", "--json", "-p", "first"])
+                                  "--model", "faux/faux", "--json", "-p", "first"])
         stdout, stderr = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
             result = await run(args, stream_fn=scripted(FauxScript(text="hello")))
@@ -302,7 +378,7 @@ class CliProcessTests(Workspace, unittest.TestCase):
                               capture_output=True, text=True, timeout=15)
 
     def test_entrypoint_print_json_and_latest(self):
-        result = self.command("--provider", "faux", "--model", "faux", "-p", "test")
+        result = self.command("--model", "faux/faux", "-p", "test")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), "faux response")
         resumed = self.command("-p", "next", "--resume", "--json")
@@ -319,7 +395,7 @@ class CliProcessTests(Workspace, unittest.TestCase):
         write(self.project / ".foxcode/settings.json", json.dumps({"max_turns": 1}))
         result = self.command("--model", "unknown", "--json", "-p", "test")
         self.assertEqual(result.returncode, 1)
-        self.assertIn("--base-url", json.loads(result.stdout)["error"])
+        self.assertIn("models.json", json.loads(result.stdout)["error"])
 
 
 if __name__ == "__main__":

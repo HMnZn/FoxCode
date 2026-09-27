@@ -1,9 +1,17 @@
-"""Built-in long-term memory extension."""
+"""Built-in policy-aware long-term memory extension."""
 
 from .extension import MemoryExtensionConfig, MemoryService, create_memory_extension, setup
-from .store import MEMORY_TYPES, MemoryEntry, MemoryStore, MemoryType, project_memory_id
+from .injection import InjectionReport, build_memory_context
+from .models import (
+    MemoryEntry, MemoryStatus, MemoryType, ScoreBreakdown, SearchResult,
+    WriteDecision, WriteResult,
+)
+from .retrieval import HybridRetriever, RetrievalConfig, baseline_search
+from .store import MEMORY_TYPES, MemoryStore, project_memory_id
 
 __all__ = [
-    "MEMORY_TYPES", "MemoryEntry", "MemoryExtensionConfig", "MemoryService",
-    "MemoryStore", "MemoryType", "create_memory_extension", "project_memory_id", "setup",
+    "MEMORY_TYPES", "HybridRetriever", "InjectionReport", "MemoryEntry",
+    "MemoryExtensionConfig", "MemoryService", "MemoryStatus", "MemoryStore", "MemoryType",
+    "RetrievalConfig", "ScoreBreakdown", "SearchResult", "WriteDecision", "WriteResult",
+    "baseline_search", "build_memory_context", "create_memory_extension", "project_memory_id", "setup",
 ]

@@ -25,6 +25,9 @@ packages = [
     "fox_coding_agent.src.core",
     "fox_coding_agent.src.extensions",
     "fox_coding_agent.src.extensions.memory",
+    "fox_coding_agent.src.extensions.memory.fixtures",
+    "fox_coding_agent.src.extensions.memory.fixtures.memory_eval",
+    "fox_coding_agent.src.extensions.memory.fixtures.memory_eval.store",
 ]
 
 [tool.setuptools.package-dir]
@@ -32,3 +35,13 @@ packages = [
 "fox_coding_agent.src.core" = "src/core"
 "fox_coding_agent.src.extensions" = "src/extensions"
 "fox_coding_agent.src.extensions.memory" = "src/extensions/memory"
+
+[tool.setuptools.package-data]
+"fox_coding_agent.src.extensions.memory" = [
+    "MEMORY_DESIGN.md",
+    "MEMORY_TUTORIAL.md",
+    "fixtures/memory_eval/*.json",
+    "fixtures/memory_eval/*.jsonl",
+    "fixtures/memory_eval/*.py",
+    "fixtures/memory_eval/store/*.md",
+]

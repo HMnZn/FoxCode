@@ -1,0 +1,22 @@
+{
+  "records": 50,
+  "queries": 120,
+  "superseded_ids": [
+    "project_python-48af465261.md",
+    "project_api-92e50d5ecd.md",
+    "project_memory-fd51da6ba1.md"
+  ],
+  "expired_ids": [
+    "project_staging-d4238274ac.md",
+    "project_memory-f90d8c01ce.md",
+    "reference_memory-71ca9554ff.md",
+    "feedback_memory-f42d40d4df.md",
+    "user_memory-73e0f55500.md",
+    "project_memory-d8f2fef959.md",
+    "reference_memory-a8bc79d479.md",
+    "project_feature-flag-8ae9807670.md",
+    "feedback_memory-932d8a7741.md",
+    "reference_memory-5352b962a3.md"
+  ],
+  "generated_by": "generate.py (manually reviewed source records and query templates)"
+}

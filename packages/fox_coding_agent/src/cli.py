@@ -10,36 +10,32 @@ import sys
 from pathlib import Path
 
 from pydantic import BaseModel
-from fox_ai.src import AssistantMessage, Model, TextContent, get_model
+from fox_ai.src import AssistantMessage, TextContent, get_model
 from fox_coding_agent.src import AgentSessionRuntime, SettingsManager
 from fox_coding_agent.src.core.model_config import ModelConfig
 from fox_coding_agent.src.core.model_registry import ModelRegistry
+from fox_coding_agent.src.core.permissions import PERMISSION_MODES
 from fox_coding_agent.src.core.trust import ProjectTrustManager
-from fox_coding_agent.src.extensions.memory import setup as memory_extension
 
 THINKING_LEVELS = ("off", "minimal", "low", "medium", "high", "xhigh")
 
 
 def build_parser():
-    parser = argparse.ArgumentParser(prog="fox", description="FoxCode mini coding agent")
+    parser = argparse.ArgumentParser(
+        prog="fox", description="FoxCode mini coding agent",
+        epilog="运行策略请写入 ~/.foxcode/settings.json 或项目 .foxcode/settings.json。",
+    )
     parser.add_argument("-p", "--prompt", help="执行任务后退出")
     parser.add_argument("--resume", nargs="?", const="latest", metavar="SESSION.jsonl",
                         help="恢复指定会话；省略路径则恢复当前项目最近会话")
     parser.add_argument("--json", action="store_true", help="stdout 输出逐行 JSON 事件")
     parser.add_argument("--cwd", type=Path, default=None, help="项目目录，默认当前目录")
     parser.add_argument("--user-dir", type=Path, help="用户配置目录，默认 ~/.foxcode")
-    parser.add_argument("--provider", help="模型 provider，例如 deepseek")
     parser.add_argument("--model", help="模型 ID 或 provider/model；优先匹配用户 models.json")
-    parser.add_argument("--base-url", help="自定义服务地址；须与 --model 一起使用")
-    parser.add_argument("--api", choices=["openai-completions", "anthropic-messages"],
-                        help="自定义模型协议；默认 openai-completions")
-    parser.add_argument("--api-key-env", help="存放 API key 的环境变量名")
-    parser.add_argument("--max-tokens", type=int, help="单次输出 token 上限")
     parser.add_argument("--thinking", choices=THINKING_LEVELS, help="本次会话的思考强度")
     parser.add_argument("--list-models", action="store_true", help="列出用户 models.json 中可切换的模型后退出")
-    parser.add_argument("--tools", help="启用的工具名，以逗号分隔；空字符串禁用工具")
-    parser.add_argument("--extension", action="append", default=[], type=Path, help="加载 Python 扩展，可重复")
-    parser.add_argument("--memory", action="store_true", help="启用项目级长期记忆扩展")
+    parser.add_argument("--permission", choices=PERMISSION_MODES,
+                        help="权限：仅查看、工作区内修改或完全访问；默认读取 settings.json")
     trust = parser.add_mutually_exclusive_group()
     trust.add_argument("--trust-project", dest="project_trust", action="store_true",
                        help="信任并记录当前项目，允许加载项目资源和执行工具")
@@ -75,26 +71,18 @@ def _emit(value):
 
 def _select_model(args, registry=None):
     if not args.model:
-        if args.provider or args.base_url or args.api:
-            raise ValueError("--provider, --base-url and --api require --model")
         return None
-    provider = args.provider or "openai"
-    if registry is not None and not args.base_url and not args.api:
-        reference = f"{provider}/{args.model}" if args.provider else args.model
+    reference = args.model
+    if registry is not None:
         matches = [entry for entry in registry.models if reference.lower() in
                    {entry.reference.lower(), entry.model.id.lower(), entry.model.name.lower()}]
         if matches:
             return registry.resolve(reference).model
-    registered = get_model(provider, args.model)
-    if registered is not None and not args.base_url and not args.api:
+    provider, separator, model_id = reference.partition("/")
+    registered = get_model(provider, model_id) if separator else get_model("openai", reference)
+    if registered is not None:
         return registered
-    if not args.base_url:
-        raise ValueError("Unregistered models require --base-url, or configure a full model in settings.json")
-    # This is a conservative local context budget, not a claim about the provider's maximum window.
-    return Model(id=args.model, name=args.model, provider=provider,
-                 api=args.api or "openai-completions", base_url=args.base_url,
-                 input=["text"], context_window=32768, max_tokens=args.max_tokens or 4096,
-                 compat={"supportsStrictMode": False})
+    raise ValueError(f"Unknown model '{reference}'; configure it in models.json")
 
 
 def _print_answer(runtime):
@@ -117,7 +105,7 @@ def _print_models(runtime):
 
 
 async def _interactive(runtime):
-    print("FoxCode · /help 查看命令，/exit 退出")
+    print(f"FoxCode · {runtime.permission_mode} · /help 查看命令，/exit 退出")
     while True:
         try:
             line = input("fox> ").strip()
@@ -135,7 +123,7 @@ async def _interactive(runtime):
             if command in ("exit", "quit"):
                 return
             if command == "help":
-                print("/new /resume FILE /cwd DIR /reload /trust /untrust /compact /usage /export FILE /tools [names] /model [provider/id] /thinking [off|minimal|low|medium|high|xhigh|max] /skill NAME [args] /prompt NAME [args] /exit")
+                print("/new /resume FILE /fork [ENTRY_ID] /cwd DIR /reload /trust /untrust /permission [read-only|workspace-write|full-access] /compact /usage /export FILE /tools [names] /model [provider/id] /thinking [off|minimal|low|medium|high|xhigh] /skill NAME [args] /prompt NAME [args] /exit")
                 for name, (_, description) in runtime.agent_session.extensions.api.commands.items():
                     print(f"/{name}: {description}")
             elif command == "new":
@@ -145,6 +133,8 @@ async def _interactive(runtime):
                     runtime.cwd, user_dir=runtime.user_dir,
                     project_trusted=runtime.project_trusted,
                 ))
+            elif command == "fork":
+                await runtime.fork(arguments or None)
             elif command == "cwd":
                 if arguments:
                     target = Path(arguments).expanduser()
@@ -159,6 +149,10 @@ async def _interactive(runtime):
                 ProjectTrustManager(runtime.user_dir).set(runtime.cwd, trusted)
                 await runtime.set_project_trust(trusted)
                 print("项目已信任" if trusted else "项目已设为不信任")
+            elif command == "permission":
+                if arguments:
+                    await runtime.set_permission_mode(arguments)
+                print(f"权限: {runtime.permission_mode}")
             elif command == "reload":
                 await runtime.reload()
                 print("配置、资源和扩展已重载")
@@ -196,7 +190,7 @@ async def _interactive(runtime):
                 result = await runtime.run_command(command, arguments)
                 if result is not None:
                     print(json.dumps(_json_value(result), ensure_ascii=False))
-            if command in ("new", "resume", "cwd"):
+            if command in ("new", "resume", "fork", "cwd"):
                 print(f"Session: {runtime.session_file}", file=sys.stderr)
         except Exception as exc:
             print(f"fox: {exc}", file=sys.stderr)
@@ -228,15 +222,9 @@ async def run(args, *, stream_fn=None):
         session_file = (AgentSessionRuntime.latest_session(
                             cwd, user_dir=args.user_dir, project_trusted=initial_trusted)
                         if args.resume == "latest" else Path(args.resume).expanduser().resolve())
-    if args.max_tokens is not None and args.max_tokens <= 0:
-        raise ValueError("--max-tokens must be positive")
     overrides = {}
-    if args.api_key_env:
-        overrides["api_key_env"] = args.api_key_env
-    if args.max_tokens:
-        overrides["stream_options"] = {"max_tokens": args.max_tokens}
-    if args.tools is not None:
-        overrides["tools"] = [name.strip() for name in args.tools.split(",") if name.strip()]
+    if args.permission:
+        overrides["permission_mode"] = args.permission
     # Require explicit model selection or settings for new sessions; no arbitrary paid default.
     project_trusted = initial_trusted
     if model is None and session_file is None:
@@ -244,8 +232,6 @@ async def run(args, *, stream_fn=None):
                                 project_trusted=project_trusted).settings.model
     runtime = AgentSessionRuntime(cwd, model=model, session_file=session_file,
                                   user_dir=args.user_dir, settings_overrides=overrides, stream_fn=stream_fn,
-                                  extension_paths=args.extension,
-                                  extension_factories=(memory_extension,) if args.memory else (),
                                   project_trusted=(args.project_trust if args.project_trust is not None else None),
                                   trust_resolver=lambda path: trust_manager.decision(path) is True)
     try:
@@ -256,6 +242,7 @@ async def run(args, *, stream_fn=None):
         if args.cwd is not None and runtime.cwd != cwd:
             raise ValueError(f"Session belongs to {runtime.cwd}; omit --cwd to restore it, or create a new session")
         print(f"Session: {runtime.session_file}", file=sys.stderr)
+        print(f"Permission: {runtime.permission_mode}", file=sys.stderr)
         if not runtime.project_trusted:
             print("Project is untrusted: project resources and tools are disabled; use --trust-project or /trust",
                   file=sys.stderr)
@@ -264,7 +251,8 @@ async def run(args, *, stream_fn=None):
         for diagnostic in runtime.resources.diagnostics:
             print(f"Resource: {diagnostic}", file=sys.stderr)
         if args.json:
-            _emit({"type": "session_start", "session_file": runtime.session_file, "cwd": runtime.cwd})
+            _emit({"type": "session_start", "session_file": runtime.session_file,
+                   "cwd": runtime.cwd, "permission": runtime.permission_mode})
 
             def on_event(event, cancel_event):
                 _emit(event)

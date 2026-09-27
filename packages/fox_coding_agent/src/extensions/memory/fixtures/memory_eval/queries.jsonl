@@ -1,0 +1,120 @@
+{"id": "literal-001", "kind": "literal", "query": "默认回复使用什么语言？", "relevant_ids": ["user_memory-97f509300f.md"]}
+{"id": "literal-002", "kind": "literal", "query": "回答篇幅有什么偏好？", "relevant_ids": ["user_memory-9076c76cf0.md"]}
+{"id": "literal-003", "kind": "literal", "query": "代码改动后的测试要求是什么？", "relevant_ids": ["user_memory-ebe4467f6a.md"]}
+{"id": "literal-004", "kind": "literal", "query": "代码注释应该写什么？", "relevant_ids": ["user_memory-e7ad55bb4f.md"]}
+{"id": "literal-005", "kind": "literal", "query": "产品文案可以使用 emoji 吗？", "relevant_ids": ["user_memory-d0c4fb82c6.md"]}
+{"id": "literal-006", "kind": "literal", "query": "高风险改动要补充什么？", "relevant_ids": ["user_memory-adf8561851.md"]}
+{"id": "literal-007", "kind": "literal", "query": "修复时如何处理公共 API？", "relevant_ids": ["feedback_api-689acd3d72.md"]}
+{"id": "literal-008", "kind": "literal", "query": "测试应该先跑哪个范围？", "relevant_ids": ["feedback_memory-43e9126221.md"]}
+{"id": "literal-009", "kind": "literal", "query": "如何处理工作区已有修改？", "relevant_ids": ["feedback_memory-34eb530df1.md"]}
+{"id": "literal-010", "kind": "literal", "query": "交付说明如何引用代码？", "relevant_ids": ["feedback_memory-9ca0ae25af.md"]}
+{"id": "literal-011", "kind": "literal", "query": "代码补丁的范围要求是什么？", "relevant_ids": ["feedback_memory-1652d1bc31.md"]}
+{"id": "literal-012", "kind": "literal", "query": "什么时候需要向用户提问？", "relevant_ids": ["feedback_memory-6098570e47.md"]}
+{"id": "literal-013", "kind": "literal", "query": "项目以前如何安装依赖？", "relevant_ids": ["project_python-33e306429b.md"]}
+{"id": "literal-014", "kind": "literal", "query": "项目现在如何安装依赖？", "relevant_ids": ["project_python-33e306429b.md"]}
+{"id": "literal-015", "kind": "literal", "query": "旧版 API 前缀是什么？", "relevant_ids": ["project_api-6c23d4f848.md"]}
+{"id": "literal-016", "kind": "literal", "query": "当前 API 前缀是什么？", "relevant_ids": ["project_api-6c23d4f848.md"]}
+{"id": "literal-017", "kind": "literal", "query": "旧测试目录在哪里？", "relevant_ids": ["project_memory-be149f4e5f.md"]}
+{"id": "literal-018", "kind": "literal", "query": "当前测试目录在哪里？", "relevant_ids": ["project_memory-be149f4e5f.md"]}
+{"id": "literal-019", "kind": "literal", "query": "项目分层架构是什么？", "relevant_ids": ["project_memory-13a5ce2a34.md"]}
+{"id": "literal-020", "kind": "literal", "query": "CLI 的启动命令是什么？", "relevant_ids": ["project_cli-3a90832771.md"]}
+{"id": "literal-021", "kind": "literal", "query": "包之间的依赖方向是什么？", "relevant_ids": ["project_memory-d6481f375c.md"]}
+{"id": "literal-022", "kind": "literal", "query": "会话使用什么格式保存？", "relevant_ids": ["project_memory-2737a25cdc.md"]}
+{"id": "literal-023", "kind": "literal", "query": "未信任项目有哪些限制？", "relevant_ids": ["project_memory-69b10e0fca.md"]}
+{"id": "literal-024", "kind": "literal", "query": "项目要求哪个 Python 版本？", "relevant_ids": ["project_python-30ef84cb36.md"]}
+{"id": "literal-025", "kind": "literal", "query": "项目使用什么格式化工具？", "relevant_ids": ["project_memory-9d069e69d5.md"]}
+{"id": "literal-026", "kind": "literal", "query": "稳定版本从哪个分支发布？", "relevant_ids": ["project_memory-30a954771b.md"]}
+{"id": "literal-027", "kind": "literal", "query": "本地开发使用什么数据库？", "relevant_ids": ["project_memory-353c84ad02.md"]}
+{"id": "literal-028", "kind": "literal", "query": "缓存键和过期策略是什么？", "relevant_ids": ["project_memory-fdaf18bd1b.md"]}
+{"id": "literal-029", "kind": "literal", "query": "项目采用什么鉴权方式？", "relevant_ids": ["project_memory-bffaa5b68d.md"]}
+{"id": "literal-030", "kind": "literal", "query": "哪份规范定义重试规则？", "relevant_ids": ["reference_memory-bde253af7d.md"]}
+{"id": "literal-031", "kind": "literal", "query": "Pydantic 校验参考哪个文档？", "relevant_ids": ["reference_pydantic-4f711b7c22.md"]}
+{"id": "literal-032", "kind": "literal", "query": "asyncio 行为参考哪里？", "relevant_ids": ["reference_python-593df5a0ad.md"]}
+{"id": "literal-033", "kind": "literal", "query": "线上故障按哪份手册处理？", "relevant_ids": ["reference_memory-d29f562390.md"]}
+{"id": "literal-034", "kind": "literal", "query": "接口契约文件在哪里？", "relevant_ids": ["reference_api-schema-26cad9b690.md"]}
+{"id": "literal-035", "kind": "literal", "query": "记忆系统设计文档叫什么？", "relevant_ids": ["reference_memory-ed94f3eb07.md"]}
+{"id": "literal-036", "kind": "literal", "query": "外部 HTTP 请求超时是多少？", "relevant_ids": ["project_http-12c52c8d29.md"]}
+{"id": "literal-037", "kind": "literal", "query": "网络错误最多重试几次？", "relevant_ids": ["project_memory-5deaf5f32e.md"]}
+{"id": "literal-038", "kind": "literal", "query": "默认时区是什么？", "relevant_ids": ["user_memory-339467b50a.md"]}
+{"id": "literal-039", "kind": "literal", "query": "公共 Python 函数需要类型标注吗？", "relevant_ids": ["user_memory-3d88452021.md"]}
+{"id": "literal-040", "kind": "literal", "query": "错误消息应该包含哪些信息？", "relevant_ids": ["feedback_memory-a2f81c53c0.md"]}
+{"id": "paraphrase-001", "kind": "paraphrase", "query": "平时用哪种语言回答我？", "relevant_ids": ["user_memory-97f509300f.md"]}
+{"id": "paraphrase-002", "kind": "paraphrase", "query": "回复需要多精炼？", "relevant_ids": ["user_memory-9076c76cf0.md"]}
+{"id": "paraphrase-003", "kind": "paraphrase", "query": "改完程序后要怎么验证？", "relevant_ids": ["user_memory-ebe4467f6a.md"]}
+{"id": "paraphrase-004", "kind": "paraphrase", "query": "备注应该讲实现还是讲原因？", "relevant_ids": ["user_memory-e7ad55bb4f.md"]}
+{"id": "paraphrase-005", "kind": "paraphrase", "query": "命令行输出能放表情符号吗？", "relevant_ids": ["user_memory-d0c4fb82c6.md"]}
+{"id": "paraphrase-006", "kind": "paraphrase", "query": "动到认证和迁移时还应交代哪些内容？", "relevant_ids": ["user_memory-adf8561851.md"]}
+{"id": "paraphrase-007", "kind": "paraphrase", "query": "内部重构能直接改对外接口吗？", "relevant_ids": ["feedback_api-689acd3d72.md"]}
+{"id": "paraphrase-008", "kind": "paraphrase", "query": "验证代码时先全量还是先单测？", "relevant_ids": ["feedback_memory-43e9126221.md"]}
+{"id": "paraphrase-009", "kind": "paraphrase", "query": "看到未提交改动时应该怎么办？", "relevant_ids": ["feedback_memory-34eb530df1.md"]}
+{"id": "paraphrase-010", "kind": "paraphrase", "query": "汇报修改时怎样让文件位置可定位？", "relevant_ids": ["feedback_memory-9ca0ae25af.md"]}
+{"id": "paraphrase-011", "kind": "paraphrase", "query": "改文件时应该大面积重排吗？", "relevant_ids": ["feedback_memory-1652d1bc31.md"]}
+{"id": "paraphrase-012", "kind": "paraphrase", "query": "信息不全时都要停下来确认吗？", "relevant_ids": ["feedback_memory-6098570e47.md"]}
+{"id": "paraphrase-013", "kind": "paraphrase", "query": "旧的包管理流程是什么？", "relevant_ids": ["project_python-33e306429b.md"]}
+{"id": "paraphrase-014", "kind": "paraphrase", "query": "当前使用哪个包管理工具？", "relevant_ids": ["project_python-33e306429b.md"]}
+{"id": "paraphrase-015", "kind": "paraphrase", "query": "以前的接口路径从哪里开始？", "relevant_ids": ["project_api-6c23d4f848.md"]}
+{"id": "paraphrase-016", "kind": "paraphrase", "query": "现在接口端点的统一路径是哪一个？", "relevant_ids": ["project_api-6c23d4f848.md"]}
+{"id": "paraphrase-017", "kind": "paraphrase", "query": "以前单测放在哪个文件夹？", "relevant_ids": ["project_memory-be149f4e5f.md"]}
+{"id": "paraphrase-018", "kind": "paraphrase", "query": "现在自动化测试应该放到哪个路径？", "relevant_ids": ["project_memory-be149f4e5f.md"]}
+{"id": "paraphrase-019", "kind": "paraphrase", "query": "模型协议、代理循环和产品运行时分别在哪层？", "relevant_ids": ["project_memory-13a5ce2a34.md"]}
+{"id": "paraphrase-020", "kind": "paraphrase", "query": "怎样 launch 交互式命令行？", "relevant_ids": ["project_cli-3a90832771.md"]}
+{"id": "paraphrase-021", "kind": "paraphrase", "query": "哪个模块不能反向 import 产品代码？", "relevant_ids": ["project_memory-d6481f375c.md"]}
+{"id": "paraphrase-022", "kind": "paraphrase", "query": "对话记录怎样持久化？", "relevant_ids": ["project_memory-2737a25cdc.md"]}
+{"id": "paraphrase-023", "kind": "paraphrase", "query": "项目何时可以执行工具并读取长期记忆？", "relevant_ids": ["project_memory-69b10e0fca.md"]}
+{"id": "paraphrase-024", "kind": "paraphrase", "query": "运行环境最低需要什么 Python？", "relevant_ids": ["project_python-30ef84cb36.md"]}
+{"id": "paraphrase-025", "kind": "paraphrase", "query": "Python 文件怎么统一格式？", "relevant_ids": ["project_memory-9d069e69d5.md"]}
+{"id": "paraphrase-026", "kind": "paraphrase", "query": "release 流程使用哪条 git branch？", "relevant_ids": ["project_memory-30a954771b.md"]}
+{"id": "paraphrase-027", "kind": "paraphrase", "query": "开发环境的 DB 是哪一种？", "relevant_ids": ["project_memory-353c84ad02.md"]}
+{"id": "paraphrase-028", "kind": "paraphrase", "query": "Redis 数据如何命名并控制失效？", "relevant_ids": ["project_memory-fdaf18bd1b.md"]}
+{"id": "paraphrase-029", "kind": "paraphrase", "query": "认证令牌如何过期和轮换？", "relevant_ids": ["project_memory-bffaa5b68d.md"]}
+{"id": "paraphrase-030", "kind": "paraphrase", "query": "自动 retry 应遵循哪个文档？", "relevant_ids": ["reference_memory-bde253af7d.md"]}
+{"id": "paraphrase-031", "kind": "paraphrase", "query": "数据模型 validation 去哪里查？", "relevant_ids": ["reference_pydantic-4f711b7c22.md"]}
+{"id": "paraphrase-032", "kind": "paraphrase", "query": "异步取消和超时应该查哪份说明？", "relevant_ids": ["reference_python-593df5a0ad.md"]}
+{"id": "paraphrase-033", "kind": "paraphrase", "query": "服务异常时第一步该做什么？", "relevant_ids": ["reference_memory-d29f562390.md"]}
+{"id": "paraphrase-034", "kind": "paraphrase", "query": "endpoint 的字段定义以什么为准？", "relevant_ids": ["reference_api-schema-26cad9b690.md"]}
+{"id": "paraphrase-035", "kind": "paraphrase", "query": "哪里说明长期记忆的检索和注入方案？", "relevant_ids": ["reference_memory-ed94f3eb07.md"]}
+{"id": "paraphrase-036", "kind": "paraphrase", "query": "调用第三方接口的 deadline 如何设置？", "relevant_ids": ["project_http-12c52c8d29.md"]}
+{"id": "paraphrase-037", "kind": "paraphrase", "query": "短暂 failure 的 backoff 策略是什么？", "relevant_ids": ["project_memory-5deaf5f32e.md"]}
+{"id": "paraphrase-038", "kind": "paraphrase", "query": "未标注 timezone 的时间按哪里理解？", "relevant_ids": ["user_memory-339467b50a.md"]}
+{"id": "paraphrase-039", "kind": "paraphrase", "query": "新增方法的 typing 要做到什么程度？", "relevant_ids": ["user_memory-3d88452021.md"]}
+{"id": "paraphrase-040", "kind": "paraphrase", "query": "exception 文案怎样才可操作？", "relevant_ids": ["feedback_memory-a2f81c53c0.md"]}
+{"id": "referential-001", "kind": "referential", "context": "默认回复使用什么语言？", "query": "那它呢？", "relevant_ids": ["user_memory-97f509300f.md"]}
+{"id": "referential-002", "kind": "referential", "context": "回答篇幅有什么偏好？", "query": "这个呢？", "relevant_ids": ["user_memory-9076c76cf0.md"]}
+{"id": "referential-003", "kind": "referential", "context": "代码改动后的测试要求是什么？", "query": "那项约定是什么？", "relevant_ids": ["user_memory-ebe4467f6a.md"]}
+{"id": "referential-004", "kind": "referential", "context": "修复时如何处理公共 API？", "query": "它具体怎么做？", "relevant_ids": ["feedback_api-689acd3d72.md"]}
+{"id": "referential-005", "kind": "referential", "context": "如何处理工作区已有修改？", "query": "那它呢？", "relevant_ids": ["feedback_memory-34eb530df1.md"]}
+{"id": "referential-006", "kind": "referential", "context": "项目现在如何安装依赖？", "query": "这个呢？", "relevant_ids": ["project_python-33e306429b.md"]}
+{"id": "referential-007", "kind": "referential", "context": "当前 API 前缀是什么？", "query": "那项约定是什么？", "relevant_ids": ["project_api-6c23d4f848.md"]}
+{"id": "referential-008", "kind": "referential", "context": "当前测试目录在哪里？", "query": "它具体怎么做？", "relevant_ids": ["project_memory-be149f4e5f.md"]}
+{"id": "referential-009", "kind": "referential", "context": "项目分层架构是什么？", "query": "那它呢？", "relevant_ids": ["project_memory-13a5ce2a34.md"]}
+{"id": "referential-010", "kind": "referential", "context": "CLI 的启动命令是什么？", "query": "这个呢？", "relevant_ids": ["project_cli-3a90832771.md"]}
+{"id": "referential-011", "kind": "referential", "context": "包之间的依赖方向是什么？", "query": "那项约定是什么？", "relevant_ids": ["project_memory-d6481f375c.md"]}
+{"id": "referential-012", "kind": "referential", "context": "会话使用什么格式保存？", "query": "它具体怎么做？", "relevant_ids": ["project_memory-2737a25cdc.md"]}
+{"id": "referential-013", "kind": "referential", "context": "未信任项目有哪些限制？", "query": "那它呢？", "relevant_ids": ["project_memory-69b10e0fca.md"]}
+{"id": "referential-014", "kind": "referential", "context": "项目要求哪个 Python 版本？", "query": "这个呢？", "relevant_ids": ["project_python-30ef84cb36.md"]}
+{"id": "referential-015", "kind": "referential", "context": "项目使用什么格式化工具？", "query": "那项约定是什么？", "relevant_ids": ["project_memory-9d069e69d5.md"]}
+{"id": "referential-016", "kind": "referential", "context": "本地开发使用什么数据库？", "query": "它具体怎么做？", "relevant_ids": ["project_memory-353c84ad02.md"]}
+{"id": "referential-017", "kind": "referential", "context": "缓存键和过期策略是什么？", "query": "那它呢？", "relevant_ids": ["project_memory-fdaf18bd1b.md"]}
+{"id": "referential-018", "kind": "referential", "context": "项目采用什么鉴权方式？", "query": "这个呢？", "relevant_ids": ["project_memory-bffaa5b68d.md"]}
+{"id": "referential-019", "kind": "referential", "context": "外部 HTTP 请求超时是多少？", "query": "那项约定是什么？", "relevant_ids": ["project_http-12c52c8d29.md"]}
+{"id": "referential-020", "kind": "referential", "context": "网络错误最多重试几次？", "query": "它具体怎么做？", "relevant_ids": ["project_memory-5deaf5f32e.md"]}
+{"id": "none-001", "kind": "none", "query": "旧 staging 域名是什么？", "relevant_ids": []}
+{"id": "none-002", "kind": "none", "query": "旧 deploy.sh 怎么发布 production？", "relevant_ids": []}
+{"id": "none-003", "kind": "none", "query": "Grafana 42 面板看什么？", "relevant_ids": []}
+{"id": "none-004", "kind": "none", "query": "现在还可以跳过 mypy 吗？", "relevant_ids": []}
+{"id": "none-005", "kind": "none", "query": "客户演示期间只用英文吗？", "relevant_ids": []}
+{"id": "none-006", "kind": "none", "query": "本地服务还是 8080 端口吗？", "relevant_ids": []}
+{"id": "none-007", "kind": "none", "query": "ENG-118 需求是什么？", "relevant_ids": []}
+{"id": "none-008", "kind": "none", "query": "beta_ui feature flag 怎么开？", "relevant_ids": []}
+{"id": "none-009", "kind": "none", "query": "CI 还能 skip integration 吗？", "relevant_ids": []}
+{"id": "none-010", "kind": "none", "query": "旧值班分机号码是多少？", "relevant_ids": []}
+{"id": "none-011", "kind": "none", "query": "项目的 Kubernetes namespace 是什么？", "relevant_ids": []}
+{"id": "none-012", "kind": "none", "query": "前端使用 React 还是 Vue？", "relevant_ids": []}
+{"id": "none-013", "kind": "none", "query": "谁负责审批数据库访问？", "relevant_ids": []}
+{"id": "none-014", "kind": "none", "query": "生产环境有多少台服务器？", "relevant_ids": []}
+{"id": "none-015", "kind": "none", "query": "设计稿的 Figma 链接在哪里？", "relevant_ids": []}
+{"id": "none-016", "kind": "none", "query": "移动端最低支持哪个 iOS 版本？", "relevant_ids": []}
+{"id": "none-017", "kind": "none", "query": "公司报销上限是多少？", "relevant_ids": []}
+{"id": "none-018", "kind": "none", "query": "邮件通知使用哪个 SMTP？", "relevant_ids": []}
+{"id": "none-019", "kind": "none", "query": "对象存储 bucket 名称是什么？", "relevant_ids": []}
+{"id": "none-020", "kind": "none", "query": "每周例会在哪个会议室？", "relevant_ids": []}

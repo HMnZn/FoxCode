@@ -17,7 +17,7 @@ from uuid import uuid4
 
 from fox_agent_core.src._async import maybe_await
 
-RESERVED_COMMANDS = {"help", "exit", "quit", "new", "resume", "cwd", "reload", "compact", "tools", "model", "thinking", "skill", "prompt", "trust", "untrust", "export", "usage"}
+RESERVED_COMMANDS = {"help", "exit", "quit", "new", "resume", "fork", "cwd", "reload", "compact", "tools", "model", "thinking", "skill", "prompt", "trust", "untrust", "permission", "export", "usage"}
 
 
 @dataclass(frozen=True)
@@ -26,6 +26,7 @@ class ExtensionContext:
     agent_session: object
     user_dir: Path
     project_trusted: bool
+    permission_mode: str = "full-access"
     services: dict[str, object] = field(default_factory=dict)
 
     @property

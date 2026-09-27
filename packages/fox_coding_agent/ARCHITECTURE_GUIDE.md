@@ -172,7 +172,7 @@ uv run fox --resume -p "继续"
 | find | 按 glob 定位文件 | Python 遍历，支持嵌套 .gitignore，跳过目录符号链接 |
 | ls | 查看当前目录结构 | 包含隐藏条目，限制返回数量 |
 
-七种工具默认启用，PowerShell 默认只在 Windows 新会话启用；通过配置或 `--tools` 可以调整。名称错误和重复名称会在运行时初始化时报错，包括扩展工具与内置工具重名。
+七种工具默认启用，PowerShell 默认只在 Windows 新会话启用；通过 `settings.json` 的 `tools` 可以调整。名称错误和重复名称会在运行时初始化时报错，包括扩展工具与内置工具重名。
 
 find 与 Python grep 后备实现跳过 `.git/.foxcode/.venv/node_modules/__pycache__`，最多遍历 50000 个条目；需要查看这些目录时使用 read/ls 或显式缩小路径。find 支持 .gitignore，不完整模拟 git 的全局 excludes 配置；rg 搜索遵循 rg 自己的忽略规则。工具只处理 cwd 与路径解析，不提供操作系统级沙箱。
 
@@ -382,17 +382,60 @@ Skill 可以指导模型怎样组合工具，但技能文件本身不会因为�
 
 如果把所有技能全文都放进 system prompt，即使大多数技能与当前任务无关，也会长期占据上下文。
 
-当前机制先加载技能元数据，在 system prompt 中提供名称、描述和文件位置。模型判断有用时，可以通过 `read` 读取全文。显式 `invoke_skill()` 则直接把指定技能内容和补充要求加入本次用户输入。
+发现阶段实际会读取并解析整个技能文件，将 frontmatter、正文和绝对路径保存为内存中的 `Skill` 对象；但 system prompt 只投影名称、描述和文件位置，不注入正文。模型判断有用时，可以通过 `read` 再从该位置读取全文。显式 `invoke_skill()` 则直接把内存中的技能正文和补充要求加入本次用户输入。
 
 这种设计把“发现有哪些知识”与“加载具体知识”分开，降低普通请求的上下文负担。若宿主禁用了文件读取能力，就需要改用显式调用或提供另一种加载方式。
 
-### 5.3 技能不是权限系统
+### 5.3 Skill 是怎样被发现并建立索引的
+
+这里的“索引”不是向量数据库、embedding 或全文倒排索引，而是一次**文件系统扫描 + 元数据目录投影**。主 Runtime 在启动、切换 cwd 和 `/reload` 时由 `ResourceLoader` 生成一份资源快照，链路如下：
+
+```text
+用户 ~/.foxcode/skills
+        +
+受信任项目 <cwd>/.foxcode/skills
+        +
+显式 ResourceProvider 返回的 Skills
+        │
+        ▼
+递归发现 SKILL.md / 根级 .md
+        │
+        ▼
+解析 frontmatter、校验 name/description、保存正文和绝对路径
+        │
+        ▼
+按 name 去重，得到 list[Skill]
+        │
+        ├─ 自动发现：name + description + location → system prompt
+        └─ 显式调用：按精确 name 查找 → 正文 → 本轮用户消息
+```
+
+`load_skills_from_dir()` 对每个目录使用两阶段规则：
+
+1. 先按字典序读取目录项。如果当前目录直接包含 `SKILL.md`，就加载它并停止扫描该目录的其他文件和子目录；一个技能目录因此形成一个边界。
+2. 如果没有 `SKILL.md`，跳过隐藏条目和 `node_modules`，继续递归子目录。只有最初传入的技能根目录会把直接位于根级的普通 `*.md` 当作候选；更深层的普通 Markdown 不会被自动当作技能。
+
+普通根级 `*.md` 必须在 frontmatter 中声明非空 `description`，否则会静默跳过。`SKILL.md` 缺省 `name` 时使用其父目录名；名称必须是最长 64 字符的 kebab-case，描述最长 1024 字符。解析、读取、校验和目录遍历错误会进入 diagnostics，不会产生半有效 Skill。扫描还用解析后的真实路径记录已访问目录，避免符号链接环导致无限递归。
+
+主 Runtime 的覆盖顺序是用户级 < 项目级 < `ResourceProvider`，同名时后加载者覆盖，并记录诊断；未受信任项目不会扫描项目 Skill。较低层的 `load_skills(LoadSkillsOptions)` 是另一条可独立使用的 API，它支持显式路径，并采用“先加载者胜出、后续同名项记 collision”的规则。区分这两条入口很重要：CLI/Runtime 通常走 `ResourceLoader`，直接构造 `AgentSession` 且不传 `skills` 时才会使用 `load_skills()` 自动发现。
+
+索引是内存快照，没有常驻数据库、文件监听器或增量更新。修改文件后需要 `/reload` 或重建 Runtime；重载只有在新资源和会话候选都构造成功后才替换旧快照。
+
+### 5.4 “检索”是怎样发生的
+
+自动路径中，`format_skills_for_prompt()` 把可见技能格式化成 `<available_skills>` XML，每项只含 `name`、`description` 和 `location`。只有启用了 `read` 工具，这个目录才会被 `build_system_prompt()` 加入 system prompt。随后由模型根据当前任务与 description 的语义匹配决定是否读取某个 `location`；这里没有独立的相似度计算、top-k 召回或重排器，因此结果依赖模型判断，不能表述成确定性的语义检索系统。
+
+显式路径中，CLI 的 `--skill NAME`、交互命令 `/skill NAME [args]` 或 SDK 的 `invoke_skill(name, instructions)` 使用完整、区分大小写的名称查找当前 `list[Skill]`。找到后，`format_skill_invocation()` 把缓存正文、技能位置、相对引用基准目录和附加要求一起注入用户消息；找不到就报 `Unknown skill`。这个路径不要求启用 `read`。
+
+`disable-model-invocation: true` 只把技能从 `<available_skills>` 目录中排除，不会从内存集合删除，所以用户仍可按名称显式调用。换言之，当前实现有两个很小的“索引面”：给模型看的元数据目录，以及给显式调用使用的名称集合；它没有对 Skill 正文建立搜索索引。
+
+### 5.5 技能不是权限系统
 
 `disable_model_invocation` 在当前实现中主要影响技能是否出现在自动展示的目录中；显式调用仍然可以使用该技能。它不等于对文件访问施加了隔离。
 
 技能文本、读取的文件和命令输出都可能影响模型决策，因此工具权限应在可执行边界实施，不能只依赖一段“请不要执行危险操作”的提示词。
 
-### 5.4 关键 Hook 的时机
+### 5.6 关键 Hook 的时机
 
 | 扩展点 | 时机 | 可以解决的问题 |
 | --- | --- | --- |
@@ -409,13 +452,13 @@ Skill 可以指导模型怎样组合工具，但技能文件本身不会因为�
 
 `after_tool_call` 也不是无论发生什么都执行的 finally 钩子，例如取消或参数校验未完成时，不一定进入它。资源释放仍应放在工具自身的清理路径中。
 
-### 5.5 上下文变换与历史修改不能混为一谈
+### 5.7 上下文变换与历史修改不能混为一谈
 
 某次请求不发送一条消息，不代表应该从会话历史删除它。请求侧变换解决“模型这一轮看到什么”，Session 修改解决“历史保存什么”，两个动作的后果不同。
 
 当前消息对象也不是完全不可变的。编写变换 Hook 时，最好返回需要的新列表或新对象，避免意外原地修改多个层共享的数据。
 
-### 5.6 为什么先使用小接口，而不是直接做复杂插件系统
+### 5.8 为什么先使用小接口，而不是直接做复杂插件系统
 
 这个 mini 版本的主要扩展需求可以由工具协议、可替换流函数和少量生命周期回调覆盖。直接引入插件市场、动态模块加载、版本依赖管理和插件隔离，会增加一整套与 Agent 闭环不同的问题。
 
@@ -443,7 +486,7 @@ handler 支持同步或异步，签名为 `(data, context)`；`context.cwd` 是�
 
 `session_start` 在该 Harness 首次执行任务或命令前触发，`session_shutdown` 在使用过的 Harness 关闭或切换前触发。事件回调应避免直接启动同一宿主的另一次运行；需要新任务时，由外部调用方调度，或使用现有 steering/follow-up 队列。
 
-扩展通过 CLI `--extension 路径` 或配置显式加载，例如：
+扩展通过 `settings.json` 的 `extensions` 数组或 SDK 参数显式加载，例如：
 
 ```json
 {
@@ -451,13 +494,13 @@ handler 支持同步或异步，签名为 `(data, context)`；`context.cwd` 是�
 }
 ```
 
-配置中的相对路径以该 settings.json 所在目录为基准，因此上例对应 `.foxcode/extensions/project_info.py`。CLI 的相对路径则以命令启动目录为基准。扩展是具有进程权限的 Python 代码，不是隔离执行的 Skill；本版不会扫描并自动执行所有项目 `.py` 文件。
+配置中的相对路径以该 settings.json 所在目录为基准，因此上例对应 `.foxcode/extensions/project_info.py`。扩展是具有进程权限的 Python 代码，不是隔离执行的 Skill；本版不会扫描并自动执行所有项目 `.py` 文件。
 
 完整可运行示例见 [project_info.py](../../examples/extensions/project_info.py)。它添加 word_count 工具、project-info 命令和一个文件工具 Hook：
 
 ```powershell
-uv run fox --extension examples/extensions/project_info.py --command project-info
-uv run fox --extension examples/extensions/project_info.py --interactive
+uv run fox --command project-info
+uv run fox --interactive
 ```
 
 `/reload` 会重新编译显式扩展的源文件，使用新的注册表，避免重复事件处理器和旧模块缓存。加载失败保留当前 AgentSession。当前支持单文件扩展和 SDK 工厂，不包含插件市场、包安装、Provider 扩展或自定义 UI 组件协议。
@@ -469,15 +512,16 @@ uv run fox --extension examples/extensions/project_info.py --interactive
 
 ```powershell
 uv run fox --trust-project --interactive
-uv run fox --trust-project --memory --interactive
+# settings.json 中配置 "memory": true 后：
+uv run fox --trust-project --permission workspace-write --interactive
 uv run fox --resume --interactive
 uv run fox --resume --compact
-uv run fox --tools read,grep,find,ls -p "梳理项目结构"
+uv run fox -p "梳理项目结构"
 uv run fox --skill release-audit -p "检查开发环境"
 uv run fox --template review -p "src/module.py"
 ```
 
-连续对话提供 `/new`、`/resume 文件`、`/cwd 目录`、`/reload`、`/trust`、`/untrust`、`/compact`、`/usage`、`/export`、`/tools`、`/model`、`/thinking`、`/skill 名称`、`/prompt 名称` 和扩展命令。使用 `--memory` 时还会注册 `/memory`。`/tools none` 禁用工具；`/help` 显示可用命令；`/exit` 结束。当前每次任务等待完成后打印最终回复，Ctrl+C 结束 CLI；没有实现终端组件、复杂键盘交互或 TUI。
+连续对话提供 `/new`、`/resume 文件`、`/fork [条目 ID]`、`/cwd 目录`、`/reload`、`/trust`、`/untrust`、`/permission`、`/compact`、`/usage`、`/export`、`/tools`、`/model`、`/thinking`、`/skill 名称`、`/prompt 名称` 和扩展命令。配置 `memory: true` 时还会注册 `/memory`。`/tools none` 禁用工具；`/help` 显示可用命令；`/exit` 结束。当前每次任务等待完成后打印最终回复，Ctrl+C 结束 CLI；没有实现终端组件、复杂键盘交互或 TUI。
 
 非交互 JSON 模式继续保留稳定的逐行事件输出，扩展命令返回 `command_result`。普通扩展 print 被导向 stderr；扩展若直接写文件描述符或启动自己的后台任务，需自行遵守宿主输出和资源清理约定。
 
@@ -546,16 +590,18 @@ fox_coding_agent/src/
 
 这些模块通过 `setup(api)` 注册，不让 `fox_agent_core` 反向依赖它们。
 
-### 9.2 Memory：已实现为可选扩展
+### 9.2 Memory：已实现为策略化可选扩展
 
-当前实现位于 `src/extensions/memory/`，CLI 使用 `--memory` 显式启用。它参考 BearCode 的四个核心选择：项目路径映射到独立目录、正文使用人可读 Markdown、`MEMORY.md` 作为派生索引、模型请求前按需召回。FoxCode 对边界做了进一步收紧：
+当前实现位于 `src/extensions/memory/`，通过 `settings.json` 的 `memory: true` 显式启用。它参考 BearCode 的四个核心选择：项目路径映射到独立目录、正文使用人可读 Markdown、`MEMORY.md` 作为派生索引、模型请求前按需召回。FoxCode 对边界做了进一步收紧：
 
 - 记忆统一保存在 `~/.foxcode/projects/<project-hash>/memory/`，不会向用户项目写入额外知识文件。
 - Markdown 条目是事实来源，`MEMORY.md` 随 CRUD 重建；文件名、类型、字段长度、条目数和路径都经过校验。
-- 模型只能通过五个专用工具 CRUD，不能让一个任意路径写工具充当记忆接口。
-- 召回采用确定性的关键词评分；`pinned` 记忆始终参与候选，不额外发起一次隐藏模型请求。
+- 模型只看到 `memory_remember`、`memory_recall`、`memory_forget` 三个意图工具；list/read 等存储 CRUD 留在 `MemoryStore` 和 `/memory` 人工审计命令中。
+- 写入先经过 schema、敏感信息、重复与 topic 冲突检查；新事实可保留旧值并把它标记为 `superseded`，限时事实使用 `expiresAt`。
+- 召回严格限制为三个可解释信号：Contextual BM25F、Auditable Concept Graph 和 Temporal Truth Arbitration；阈值与相对置信带只负责拒答和候选选择，不额外堆叠相关性分数。
+- `pinned user/feedback` 是自动注入的 ambient policy，不污染显式搜索结果；expired/superseded 条目不会进入正常召回。
 - 只有 trusted 项目可以读写或召回。召回文本明确标记为历史观察，要求模型用当前文件验证项目事实。
-- context transform 深拷贝最后一条用户消息，只修改本次模型请求；召回正文不会写回 JSONL Session。
+- context transform 深拷贝最后一条用户消息，只修改本次模型请求；注入经过字符预算、相关片段截取和 XML 转义，召回正文不会写回 JSONL Session。
 
 ```text
 session_start
@@ -565,10 +611,11 @@ session_start
    │                                                        │
    └──────────────── 原始消息写入 Session ──────────────────┘
 
-模型 ── memory_save/read/search/list/delete ── Markdown + MEMORY.md
+模型 ── remember / recall / forget ── Markdown + MEMORY.md
+用户 ── /memory list/search/read/delete/dir ──┘
 ```
 
-扩展注册 `memory.store` 服务供其他扩展协作，同时注册 `memory_save`、`memory_search`、`memory_list`、`memory_read`、`memory_delete` 工具和 `/memory` 命令。默认最多召回 3 条、注入 12000 字符，可以在 SDK 中传入配置：
+扩展注册 `memory.store` 服务供其他扩展协作，同时只向模型注册 `memory_remember`、`memory_recall`、`memory_forget`。`memory_recall` 返回带 provenance 和三信号分解的预算化 excerpt，不返回最多 20K 的完整正文；完整 list/read 只保留在 `/memory` 命令。默认自动召回最多 3 条、注入 12000 字符，模型主动 recall 的正文总预算为 6000 字符，可以在 SDK 中传入配置：
 
 ```python
 from fox_coding_agent.src import AgentSessionRuntime, MemoryExtensionConfig, create_memory_extension
@@ -576,12 +623,16 @@ from fox_coding_agent.src import AgentSessionRuntime, MemoryExtensionConfig, cre
 runtime = AgentSessionRuntime(
     ".",
     extension_factories=(create_memory_extension(
-        MemoryExtensionConfig(max_recall=5, max_injected_chars=16000)
+        MemoryExtensionConfig(
+            max_recall=5,
+            max_injected_chars=16000,
+            max_tool_recall_chars=8000,
+        )
     ),),
 )
 ```
 
-这里不自动从每轮对话提取并永久保存内容。写入必须是模型对 `memory_save` 的显式工具调用，且 system prompt 规定只保存用户未来会期待继续生效的偏好、纠正、项目决策或参考信息，禁止保存凭据和瞬时任务状态。这个选择使“模型认为值得记住”成为可观察的工具事件，也让用户能用 `/memory` 检查和删除。
+这里不自动从每轮对话提取并永久保存内容。写入必须是模型对 `memory_remember` 的显式工具调用；工具返回可观察的 `accepted/action/reasons/superseded` 决策，并禁止保存凭据。用户可以用 `/memory` 检查和删除。完整的字段、评分原因、50/120 golden set、消融结果和复现命令见 [Memory v2 设计文档](src/extensions/memory/MEMORY_DESIGN.md)。
 
 ### 9.3 MCP：连接管理器不是一个巨型工具（设计草案）
 
@@ -767,17 +818,17 @@ uv run fox --skill release-audit -p "检查当前分支"
 Memory 不是默认能力，必须在每次启动时显式加载：
 
 ```powershell
-uv run fox --trust-project --memory --interactive
+uv run fox --trust-project --permission full-access --interactive
 ```
 
-然后输入“请记住：默认用中文回答，代码注释也使用中文”。只有模型实际调用 `memory_save` 后才完成持久化；一句普通的“我记住了”不能作为保存成功的证据。使用以下命令验证：
+然后输入“请记住：默认用中文回答，代码注释也使用中文”。只有模型实际调用 `memory_remember` 后才完成持久化；一句普通的“我记住了”不能作为保存成功的证据。使用以下命令验证：
 
 ```text
 /memory list
 /memory dir
 ```
 
-再新建一个同项目、同样带 `--memory` 的会话询问偏好。召回内容只注入本次请求副本，不会复制进 Session JSONL。若没有条目，依次检查：启动命令是否包含 `--memory`、项目是否 trusted、模型是否真的发出了 `memory_save` 工具调用。
+再新建一个同项目、同样启用 Memory 的会话询问偏好。召回内容只注入本次请求副本，不会复制进 Session JSONL。若没有条目，依次检查：有效 `settings.json` 是否为 `memory: true`、项目是否 trusted、权限是否为 `full-access`、模型是否真的发出了 `memory_remember` 工具调用。
 
 ### 10.6 最小验收清单
 
@@ -786,7 +837,7 @@ uv run fox --trust-project --memory --interactive
 - `/tools` 与 system prompt 中的工具列表一致。
 - `/reload` 后新的 AGENTS、Prompt、Skill 或扩展生效。
 - `/export` 能导出当前会话，`/usage` 能汇总当前活动分支。
-- 启用 Memory 后，`/memory list` 能看到由 `memory_save` 创建的条目。
+- 启用 Memory 后，`/memory list` 能看到由 `memory_remember` 创建的条目。
 - `uv run --with pytest pytest -q` 通过后，再把改动交给其他入口或 UI。
 
 <a id="ch11"></a>
@@ -809,6 +860,8 @@ uv run fox --trust-project --memory --interactive
 | `compaction.keep_recent_tokens` | integer，默认 `8000` | 压缩时尽量原样保留的近期消息预算 |
 | `tools` | `string[] \| null` | `null` 使用平台默认；空数组禁用；名称必须唯一且存在 |
 | `extensions` | `string[]`，默认空 | 显式加载的 Python 扩展文件 |
+| `memory` | boolean，默认 `false` | 启用内置项目长期记忆扩展 |
+| `permission_mode` | `read-only` / `workspace-write` / `full-access` | 工具权限；默认 `full-access` 以保持 SDK 兼容 |
 | `max_turns` | 正整数，默认 `100` | 一次 Agent 操作的最大轮数 |
 | `model_retry_attempts` | `0..5`，默认 `1` | 对可安全重试的空响应错误最多恢复几次 |
 | `tool_execution` | `parallel` / `sequential` | 同一轮多个工具调用的执行策略 |
@@ -829,11 +882,13 @@ uv run fox --trust-project --memory --interactive
     "keep_recent_tokens": 8000
   },
   "tool_execution": "parallel",
+  "permission_mode": "workspace-write",
+  "memory": true,
   "session_scope": "project"
 }
 ```
 
-`settings.json` 不接受 API key，也不接受完整模型对象。用户级相对扩展路径相对于 `~/.foxcode/`，项目级相对路径相对于 `<project>/.foxcode/`；CLI `--extension` 的相对路径相对于启动目录。
+`settings.json` 不接受 API key，也不接受完整模型对象。用户级相对扩展路径相对于 `~/.foxcode/`，项目级相对路径相对于 `<project>/.foxcode/`。
 
 ### 11.2 模型选择、密钥与 thinking 映射
 
@@ -864,7 +919,7 @@ uv run fox --trust-project --memory --interactive
 provider_level = mapping.get(level, level)
 ```
 
-因此映射中没有 `max` 时，通用级别 `max` 仍会原值传递为 `max`；`xhigh: max` 表示把两种通用等级折叠到同一个 provider 等级。`off` 在会话状态中转成 `None`。`thinkingFormat: deepseek` 会生成 `thinking.type` 与可选的 `reasoning_effort`；默认 `openai` 格式使用顶层 `reasoning_effort`。
+`max` 可以作为 provider 原生映射值，例如 `xhigh: max`，但不是 CLI 可选的通用思考等级。`off` 在会话状态中转成 `None`。`thinkingFormat: deepseek` 会生成 `thinking.type` 与可选的 `reasoning_effort`；默认 `openai` 格式使用顶层 `reasoning_effort`。
 
 当前实现没有读取 `requiresReasoningContentOnAssistantMessages`，把它写在 `compat` 中不会改变请求，可以删除。`compat` 是 provider 逃生口，不应为了“兼容”而复制未被代码消费的字段。
 
@@ -879,9 +934,9 @@ provider_level = mapping.get(level, level)
 | AGENTS | 用户 `~/.foxcode/AGENTS.md`，再从文件系统祖先到 cwd 的 `AGENTS.md` | 全部加入；项目链要求 trusted |
 | Skill | 用户 `.foxcode/skills` → 项目 `.foxcode/skills` → ResourceProvider | Runtime 中同名后者覆盖；无 read 工具时不自动展示目录 |
 | Prompt | 用户 `.foxcode/prompts` → 项目 `.foxcode/prompts` → ResourceProvider | 同名后者覆盖；只在显式调用时注入 |
-| Extension | settings 路径 → CLI 路径 → SDK factory | Python 代码在加载时执行；项目 settings 在 untrusted 时不加载 |
+| Extension | settings 路径 → SDK 显式路径 → SDK factory | Python 代码在加载时执行；项目 settings 在 untrusted 时不加载 |
 
-Prompt 模板虽然在 untrusted 项目也可被发现，但它只做 `$ARGUMENTS` 字面替换，必须由用户显式调用。CLI `--extension` 是用户的显式加载行为，不会因为目标项目 untrusted 就把 Python 代码变成沙箱执行。
+Prompt 模板虽然在 untrusted 项目也可被发现，但它只做 `$ARGUMENTS` 字面替换，必须由用户显式调用。SDK `extension_paths` 是调用方的显式加载行为，不会因为目标项目 untrusted 就把 Python 代码变成沙箱执行。
 
 ### 11.4 CLI 参数
 
@@ -891,21 +946,16 @@ Prompt 模板虽然在 untrusted 项目也可被发现，但它只做 `$ARGUMENT
 | `--interactive` | 进入纯文本多轮会话；TTY 且没有其他动作时自动进入 |
 | `--resume [FILE]` | 恢复指定 Session；省略文件时恢复当前项目最近会话 |
 | `--cwd DIR` / `--user-dir DIR` | 指定项目目录或用户配置目录 |
-| `--model ID` / `--provider ID` | 选择目录模型；也可结合自定义 endpoint |
-| `--base-url URL` / `--api API` | 构造未登记模型，必须与 `--model` 配合 |
-| `--api-key-env NAME` | 从指定环境变量取密钥 |
-| `--max-tokens N` | 覆盖单次输出上限，必须为正数 |
+| `--model ID` | 临时选择 `models.json` 中的模型 |
 | `--thinking LEVEL` | 设置初始 thinking level |
-| `--tools a,b` | 选择工具；空字符串禁用全部工具 |
-| `--extension FILE` | 加载扩展，可重复 |
-| `--memory` | 为本次进程启用长期记忆扩展 |
+| `--permission MODE` | 临时覆盖 `settings.json` 的三档工具权限 |
 | `--trust-project` / `--no-trust-project` | 记录项目信任决定 |
 | `--compact` | 执行任务前手动压缩 |
 | `--skill NAME` / `--template NAME` / `--command NAME` | 三种互斥的显式动作 |
 | `--list-models` | 列出目录模型，不创建 Session |
 | `--json` | stdout 使用逐行 JSON；诊断和普通扩展 print 走 stderr |
 
-当前 `--thinking` 的 argparse 选项是 `off|minimal|low|medium|high|xhigh`，而 `AgentSession.set_thinking_level()` 和交互 `/thinking` 还接受 `max`。这是当前 CLI 表面不一致：交互模式可使用 `max`，命令行初始参数暂时不能使用。若统一它，应同时修改 `THINKING_LEVELS` 和相关测试，而不是只改文档。
+模型 endpoint、协议和能力写入 `models.json`；`api_key_env`、`stream_options`、`tools`、`extensions` 与 `memory` 写入 `settings.json`，CLI 不再解析这些配置项。`--thinking` 和交互 `/thinking` 接受 `off|minimal|low|medium|high|xhigh`。
 
 `--interactive` 不能与 `--json`、`-p`、`--command`、`--skill`、`--template`、`--list-models` 混用。`--list-models` 也不能和任务或 Session 动作混用。
 
@@ -915,9 +965,11 @@ Prompt 模板虽然在 untrusted 项目也可被发现，但它只做 `$ARGUMENT
 | --- | --- |
 | `/new` | 在当前 cwd 创建新 Session |
 | `/resume [FILE]` | 切换到指定或最近 Session |
+| `/fork [ENTRY_ID]` | 从当前叶节点或指定条目创建新的持久化 Session 并切换 |
 | `/cwd DIR` | 切换项目并创建独立 Session，重新计算 trust |
 | `/reload` | 事务式重载配置、模型、资源和扩展 |
 | `/trust`、`/untrust` | 更新信任决定并重建当前宿主 |
+| `/permission [MODE]` | 查看或临时切换三档工具权限 |
 | `/compact` | 手动生成摘要并持久化压缩点 |
 | `/usage` | 显示当前活动分支的 token 和费用汇总 |
 | `/export FILE` | 按 `.json` 或 `.md` 导出 |
@@ -926,7 +978,7 @@ Prompt 模板虽然在 untrusted 项目也可被发现，但它只做 `$ARGUMENT
 | `/thinking [level]` | 查看或切换思考强度 |
 | `/skill NAME [args]` | 显式注入 Skill 正文并开始一轮 |
 | `/prompt NAME [args]` | 渲染 Prompt 模板并开始一轮 |
-| `/memory ...` | 仅 `--memory` 启用后存在 |
+| `/memory ...` | 仅 `settings.json` 配置 `memory: true` 后存在 |
 | `/help`、`/exit` | 查看帮助或退出 |
 
 扩展注册的命令会动态加入 `/help`。保留命令名不能被扩展覆盖。
@@ -1047,8 +1099,8 @@ uv run --with pytest pytest -q tests/test_runtime.py -k reload
 | `A model is required` | `models.json` 是否存在，settings 的引用是否正确，或是否显式传了模型 |
 | 模型存在但认证失败 | `auth.json` provider 名是否一致；`api_key_env` 是否有值；endpoint 是否匹配 |
 | `Project is not trusted` | 使用 `--trust-project` 或 `/trust`；确认切换后的真实 cwd |
-| 新会话没有长期记忆 | 启动是否带 `--memory`；项目是否 trusted；`/memory list` 是否真的有条目 |
-| “我记住了”但目录为空 | 模型没有调用 `memory_save`；普通文本回复不会触发持久化 |
+| 新会话没有长期记忆 | 是否配置 `memory: true`；项目是否 trusted；权限是否允许；`/memory list` 是否真的有条目 |
+| “我记住了”但目录为空 | 模型没有调用 `memory_remember`；普通文本回复不会触发持久化 |
 | Skill/Prompt 找不到 | 检查目录、frontmatter、名称和 `/reload` 输出的 Resource diagnostics |
 | 扩展命令不存在 | 确认扩展路径、同步 `setup(api)` 和命令名是否与保留名冲突 |
 | `Harness is already processing` | 等待当前操作完成；不要从同一个事件 handler 重入 Runtime |

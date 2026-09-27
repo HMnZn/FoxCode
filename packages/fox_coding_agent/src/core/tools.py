@@ -80,6 +80,7 @@ class _FileTool:
 class ReadTool(_FileTool):
     name = "read"
     label = "Read file"
+    required_permission = "read-only"
     execution_mode = "parallel"
     description = "Read a UTF-8 text file, with optional 1-based offset and line limit."
     parameters = _schema({"path": {"type": "string", "minLength": 1},
@@ -105,6 +106,8 @@ class ReadTool(_FileTool):
 class WriteTool(_FileTool):
     name = "write"
     label = "Write file"
+    required_permission = "workspace-write"
+    permission_paths = ("path",)
     description = "Create or overwrite a UTF-8 text file. Creates parent directories."
     parameters = _schema({"path": {"type": "string", "minLength": 1},
                           "content": {"type": "string"}}, ["path", "content"])
@@ -119,6 +122,8 @@ class WriteTool(_FileTool):
 class EditTool(_FileTool):
     name = "edit"
     label = "Edit file"
+    required_permission = "workspace-write"
+    permission_paths = ("path",)
     description = "Replace exactly one occurrence of old_text with new_text. Fails if ambiguous or missing."
     parameters = _schema({"path": {"type": "string", "minLength": 1},
                           "old_text": {"type": "string", "minLength": 1},
@@ -138,6 +143,7 @@ class EditTool(_FileTool):
 class BashTool(_FileTool):
     name = "bash"
     label = "Run command"
+    required_permission = "full-access"
     description = "Run a bash command in the working directory. Output is capped at 20000 characters."
     parameters = _schema({"command": {"type": "string", "minLength": 1},
                           "timeout": {"type": "number", "exclusiveMinimum": 0, "maximum": 600}}, ["command"])
@@ -273,6 +279,7 @@ async def _walk_files(root, cancel_event):
 class LsTool(_FileTool):
     name = "ls"
     label = "List directory"
+    required_permission = "read-only"
     execution_mode = "parallel"
     description = "List immediate directory entries, including hidden files; directories end with /."
     parameters = _schema({"path": {"type": "string"},
@@ -298,6 +305,7 @@ class LsTool(_FileTool):
 class FindTool(_FileTool):
     name = "find"
     label = "Find files"
+    required_permission = "read-only"
     execution_mode = "parallel"
     description = "Find files by glob, respecting nested .gitignore; skips symlinks and agent/dependency directories."
     parameters = _schema({"pattern": {"type": "string", "minLength": 1}, "path": {"type": "string"},
@@ -322,6 +330,7 @@ class FindTool(_FileTool):
 class GrepTool(_FileTool):
     name = "grep"
     label = "Search contents"
+    required_permission = "read-only"
     execution_mode = "parallel"
     description = ("Search contents with path:line output. Regex uses ripgrep (rg); without rg, set literal=true. "
                    "Directory searches respect .gitignore. Output and match counts are capped.")

@@ -4,11 +4,10 @@
 
 现已增加可复用的 `AgentSessionRuntime`、`SettingsManager`、`ResourceLoader`，以及独立 `fox_coding_agent` CLI。分层设计、配置示例与恢复语义见 [架构指南·宿主运行时与 CLI](packages/fox_coding_agent/ARCHITECTURE_GUIDE.md#ch01)。
 
-在项目根目录运行 `uv sync` 安装 `fox`。用户级 `~/.foxcode/models.json` 保存模型目录，`~/.foxcode/auth.json` 只保存凭据；Windows 下对应 `C:\Users\Qin\.foxcode`。复制 [models.json](examples/models.json) 与 [auth.json](examples/auth.json) 后填写 key。这两个文件采用独立且唯一的结构，不能把 provider 和模型数据写进 `auth.json`。
+在项目根目录运行 `uv sync` 安装 `fox`。用户级 `~/.foxcode/models.json` 保存模型目录，`~/.foxcode/auth.json` 只保存凭据，`~/.foxcode/settings.json` 保存运行策略；Windows 下对应 `C:\Users\Qin\.foxcode`。可以复制 [models.json](examples/models.json)、[auth.json](examples/auth.json) 和 [settings.json](examples/settings.json) 后修改。这三个文件职责独立，不能把 provider、模型数据或运行策略写进 `auth.json`。
 
 ```powershell
-uv run fox --trust-project --interactive
-uv run fox --trust-project --memory --interactive
+uv run fox --trust-project --permission workspace-write --interactive
 uv run fox --list-models
 uv run fox --model deepseek/deepseek-v4-pro --thinking high -p "阅读 README.md，说明项目架构"
 uv run fox --resume -p "继续解释 Session"
@@ -20,7 +19,19 @@ uv run fox --resume --compact
 
 交互中用 `/model` 列出模型，`/model deepseek/deepseek-v4-pro` 切换；`/thinking` 查看当前强度，`/thinking high`、`/thinking xhigh` 或 `/thinking off` 设置。新会话默认选 models.json 中第一个模型、思考关闭；模型与思考级别会保存到 Session。`/cwd` 切换项目后继续从同一用户目录取凭据，密钥不会进入 Session。修改 models.json 或 auth.json 后使用 `/reload`；想应用已修改的模型元数据，再执行 `/model 名称`。
 
-设置文件只作为可选的运行策略覆盖。用户级 `settings.json` 可以只写 `{"model": "provider/model-id"}`；工具、压缩等未配置字段使用代码默认值。
+设置文件保存运行策略，避免在入口重复堆叠参数。用户级 `settings.json` 可以只写模型，也可以统一配置权限、Memory、工具、扩展与输出限制，例如：
+
+```json
+{
+  "model": "provider/model-id",
+  "permission_mode": "workspace-write",
+  "memory": true,
+  "stream_options": {"max_tokens": 8192},
+  "tools": ["read", "write", "edit", "grep", "find", "ls"]
+}
+```
+
+`permission_mode` 支持 `read-only`（只读工具）、`workspace-write`（只允许 `write`/`edit` 修改工作区，禁止 shell）和 `full-access`（全部工具）。命令行 `--permission` 只覆盖本次进程。
 
 面试准备先读内核的 13 章，再读编码宿主的 9 章，分别理解通用机制与项目策略。
 
@@ -44,13 +55,15 @@ fox CLI / Notebook
                     └── fox_ai  OpenAI / Anthropic / Faux 流式接口
 ```
 
-连续对话中支持 `/help`、`/new`、`/resume 文件`、`/cwd 目录`、`/reload`、`/trust`、`/untrust`、`/compact`、`/usage`、`/export`、`/tools`、`/model`、`/thinking`、`/skill 名称`、`/prompt 名称` 和扩展命令。`fox` 在交互终端无任务参数时也会进入连续对话。
+连续对话中支持 `/help`、`/new`、`/resume 文件`、`/fork [条目 ID]`、`/cwd 目录`、`/reload`、`/trust`、`/untrust`、`/permission`、`/compact`、`/usage`、`/export`、`/tools`、`/model`、`/thinking`、`/skill 名称`、`/prompt 名称` 和扩展命令。`/fork` 会创建新的持久化 Session 并切换过去；原 Session 不再被后续消息修改。
 
-扩展示例：[project_info.py](examples/extensions/project_info.py)。显式加载：`fox --extension examples/extensions/project_info.py --command project-info`（需先配置模型）。详细 API 与边界见[宿主指南·第六章](packages/fox_coding_agent/ARCHITECTURE_GUIDE.md#ch06)。
+扩展示例：[project_info.py](examples/extensions/project_info.py)。在 `settings.json` 的 `extensions` 数组中加入扩展路径后，可执行 `fox --command project-info`。详细 API 与边界见[宿主指南·第六章](packages/fox_coding_agent/ARCHITECTURE_GUIDE.md#ch06)。
 
-长期记忆作为 `fox_coding_agent` 的可选扩展提供，而不是写进通用 agent loop。使用 `--memory` 启用；模型可调用 `memory_save`、`memory_search`、`memory_list`、`memory_read` 和 `memory_delete`，交互终端可用 `/memory list`、`/memory search 关键词`、`/memory read 文件名`、`/memory delete 文件名` 与 `/memory dir`。记忆保存在用户目录的 `~/.foxcode/projects/<项目路径哈希>/memory/`，以 Markdown 条目为事实来源，`MEMORY.md` 是可重建索引。只有已信任项目能够读写和自动召回记忆。
+长期记忆作为 `fox_coding_agent` 的可选扩展提供，而不是写进通用 agent loop。在 `settings.json` 中设置 `"memory": true` 启用；模型侧只暴露对应用户意图的 `memory_remember`、`memory_recall` 和 `memory_forget` 三个工具。列举、完整读取和目录查看属于人工审计能力，继续由 `/memory list`、`/memory search 关键词`、`/memory read 文件名`、`/memory delete 文件名` 与 `/memory dir` 提供。记忆保存在用户目录的 `~/.foxcode/projects/<项目路径哈希>/memory/`，以 Markdown 条目为事实来源，`MEMORY.md` 是可重建索引。只有已信任项目能够读写和自动召回记忆。
 
 自动召回只修改发给模型的本次请求副本，不写入 Session JSONL。这样长期知识与对话历史拥有独立生命周期，关闭 Memory 扩展或删除条目后，旧 Session 不会继续携带隐藏的记忆文本。
+
+Memory v2 的受控写入、冲突版本、混合检索、预算化注入、50/120 golden set 和消融实验，见[循序教学文档](packages/fox_coding_agent/src/extensions/memory/MEMORY_TUTORIAL.md)与[设计说明](packages/fox_coding_agent/src/extensions/memory/MEMORY_DESIGN.md)。
 
 ## 运行离线示例
 
@@ -142,7 +155,7 @@ asyncio.run(main())
 | `ls` | `path?`, `limit?` | 列出目录，包含隐藏条目 |
 | `powershell` | `command`, `timeout?` | PowerShell 命令，支持超时、取消和输出上限 |
 
-Windows 上 `bash` 需要 Git Bash，或自行传入 `BashTool(cwd, shell=...)`。`cwd` 只用于解析相对路径，不是沙箱。需要限制工具权限时，在 `before_tool_call` 中返回 `{"block": True, "reason": "..."}`。文件工具限制单个文本文件 10 MiB，输出限制约 20000 字符。
+Windows 上 `bash` 需要 Git Bash，或自行传入 `BashTool(cwd, shell=...)`。单独使用工具类时，`cwd` 只用于解析相对路径，不是沙箱；通过 Runtime 使用时由 `permission_mode` 统一拦截。SDK 还可在 `before_tool_call` 中追加策略。文件工具限制单个文本文件 10 MiB，输出限制约 20000 字符。
 
 批次默认并行；只要存在标记为 `sequential` 的工具，整批串行。`write/edit/bash` 默认为串行，避免同批文件修改互相竞争。参数按 JSON Schema 校验，错误作为工具结果交给模型。
 

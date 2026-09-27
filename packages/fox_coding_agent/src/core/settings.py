@@ -35,6 +35,8 @@ class RuntimeSettings(BaseModel):
     compaction: CompactionSettings = Field(default_factory=CompactionSettings)
     tools: list[str] | None = None
     extensions: list[str] = Field(default_factory=list)
+    memory: bool = False
+    permission_mode: Literal["read-only", "workspace-write", "full-access"] = "full-access"
     max_turns: int = Field(default=100, gt=0)
     model_retry_attempts: int = Field(default=1, ge=0, le=5)
     tool_execution: Literal["parallel", "sequential"] = "parallel"

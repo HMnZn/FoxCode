@@ -251,14 +251,15 @@ class ExtensionTests(Workspace, unittest.IsolatedAsyncioTestCase):
 class CodingCliTests(Workspace, unittest.IsolatedAsyncioTestCase):
     def args(self, *extra):
         return build_parser().parse_args(["--cwd", str(self.project), "--user-dir", str(self.user),
-            "--model", "faux", "--provider", "faux", *extra])
+            "--model", "faux/faux", *extra])
 
     async def test_json_command_extension_output_is_on_stderr(self):
         path = self.root / "extension.py"
         write(path, 'print("loading")\ndef setup(api):\n    api.register_command("hello", lambda args, ctx: "hi " + args)\n')
+        write(self.user / "settings.json", json.dumps({"extensions": [str(path)]}))
         stdout, stderr = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-            result = await run(self.args("--extension", str(path), "--command", "hello", "-p", "Fox", "--json"))
+            result = await run(self.args("--command", "hello", "-p", "Fox", "--json"))
         self.assertEqual(result, 0)
         events = [json.loads(line) for line in stdout.getvalue().splitlines()]
         self.assertEqual(events[-1], {"type": "command_result", "name": "hello", "result": "hi Fox"})
@@ -275,6 +276,14 @@ class CodingCliTests(Workspace, unittest.IsolatedAsyncioTestCase):
         self.assertIn("思考强度: off", output.getvalue())
         self.assertEqual([tool.name for tool in stream.contexts[-1].tools], ["read"])
         self.assertEqual(len(stream.contexts[-1].messages), 3)
+
+    async def test_interactive_permission_and_fork(self):
+        with patch("builtins.input", side_effect=["/permission read-only", "/fork", "/exit"]), \
+             contextlib.redirect_stdout(io.StringIO()) as output, \
+             contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(await run(self.args("--interactive")), 0)
+        self.assertIn("权限: read-only", output.getvalue())
+        self.assertEqual(len(list((self.project / ".foxcode/sessions").glob("*.jsonl"))), 2)
 
     async def test_template_action(self):
         write(self.project / ".foxcode/prompts/review.md", "Review $ARGUMENTS")

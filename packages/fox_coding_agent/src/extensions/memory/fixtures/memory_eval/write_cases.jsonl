@@ -1,0 +1,12 @@
+{"id": "accept-project", "accepted": true, "name": "队列并发数", "description": "worker 并发配置", "type": "project", "content": "worker 并发数固定为 4。", "topic": "project.worker-count"}
+{"id": "accept-user", "accepted": true, "name": "输出格式", "description": "用户格式偏好", "type": "user", "content": "表格超过六列时改用分组列表。"}
+{"id": "accept-reference", "accepted": true, "name": "规范位置", "description": "公开文档地址", "type": "reference", "content": "公开规范位于 docs.example.test/rfc/12。"}
+{"id": "accept-env-name", "accepted": true, "name": "环境变量名", "description": "只保存变量名", "type": "project", "content": "认证从 FOX_API_KEY 环境变量读取，不保存变量值。"}
+{"id": "accept-placeholder", "accepted": true, "name": "配置示例", "description": "无真实凭据", "type": "reference", "content": "示例写作 api_key=<从环境变量读取>。"}
+{"id": "accept-expiring", "accepted": true, "name": "冻结窗口", "description": "有明确期限的事实", "type": "project", "content": "发布冻结持续到十月一日。", "expires_at": "2026-10-01T00:00:00+08:00"}
+{"id": "reject-openai-key", "accepted": false, "name": "服务密钥", "description": "不应保存", "type": "reference", "content": "api_key=sk-1234567890abcdefghijklmnop"}
+{"id": "reject-private-key", "accepted": false, "name": "SSH 私钥", "description": "不应保存", "type": "reference", "content": "-----BEGIN OPENSSH PRIVATE KEY-----\nabc"}
+{"id": "reject-github-token", "accepted": false, "name": "GitHub token", "description": "不应保存", "type": "reference", "content": "ghp_1234567890abcdefghijklmnopqrstuv"}
+{"id": "reject-aws-key", "accepted": false, "name": "AWS key", "description": "不应保存", "type": "reference", "content": "AKIA1234567890ABCDEF"}
+{"id": "reject-password", "accepted": false, "name": "数据库密码", "description": "不应保存", "type": "reference", "content": "password=correct-horse-battery-staple"}
+{"id": "reject-generic-secret", "accepted": false, "name": "webhook secret", "description": "不应保存", "type": "reference", "content": "secret: abcdefghijklmnopqrstuvwxyz"}

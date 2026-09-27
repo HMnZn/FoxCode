@@ -18,6 +18,7 @@ from .model_runtime import ModelRuntime
 from .tools import create_all_tools
 from .system_prompt import build_system_prompt
 from .extensions import ExtensionRunner, ExtensionContext
+from .permissions import PERMISSION_MODES, check_tool_permission
 
 
 class AgentSessionRuntime:
@@ -149,7 +150,13 @@ class AgentSessionRuntime:
     def _build(self, cwd, session, model, manager, resources, project_trusted):
         paths = [Path(p).expanduser() for p in manager.settings.extensions]
         paths = [p if p.is_absolute() else cwd / p for p in paths]
-        extensions = ExtensionRunner.load([*paths, *self._extension_paths], self._extension_factories)
+        factories = list(self._extension_factories)
+        if manager.settings.memory:
+            from ..extensions.memory import setup as memory_extension
+            factories.append(memory_extension)
+        extensions = ExtensionRunner.load(
+            [*paths, *self._extension_paths], tuple(dict.fromkeys(factories))
+        )
         try:
             return self._build_with_extensions(
                 cwd, session, model, manager, resources, extensions, project_trusted
@@ -163,6 +170,7 @@ class AgentSessionRuntime:
         settings = manager.settings
         had_tool_selection = "active_tools" in session.build_settings()
         tools = [*self._tool_factory(cwd), *extensions.api.tools]
+        tools_by_name = {tool.name: tool for tool in tools}
         available = {tool.name for tool in tools}
         if len(available) != len(tools):
             raise ValueError("Extension tool names must not collide with built-in/custom tools")
@@ -176,6 +184,12 @@ class AgentSessionRuntime:
                 return {"block": True, "reason": (
                     "Project is not trusted; restart with --trust-project before executing tools"
                 )}
+            call = data["tool_call"]
+            reason = check_tool_permission(
+                tools_by_name[call.name], data["args"], cwd, settings.permission_mode
+            )
+            if reason:
+                return {"block": True, "reason": reason}
             if self._before:
                 outcome = await maybe_await(self._before(data, cancel))
                 if outcome and outcome.get("block"):
@@ -194,7 +208,8 @@ class AgentSessionRuntime:
         def prompt_builder(active, skills, workdir):
             return build_system_prompt(cwd=workdir, tools=active, skills=skills, resources=resources,
                 custom_prompt=settings.system_prompt or resources.system_prompt_override,
-                append_prompt=settings.append_system_prompt, guidelines=extensions.api.guidelines)
+                append_prompt=settings.append_system_prompt, guidelines=extensions.api.guidelines,
+                permission_mode=settings.permission_mode)
 
         agent_session = AgentSession(AgentSessionConfig(
             model=model, cwd=cwd, session=session, tools=tools, skills=resources.skills,
@@ -211,6 +226,7 @@ class AgentSessionRuntime:
             agent_session=agent_session,
             user_dir=self.user_dir,
             project_trusted=project_trusted,
+            permission_mode=settings.permission_mode,
             services=extensions.api.services,
         )
         if settings.tools is not None and [t.name for t in agent_session.state.tools] != settings.tools:
@@ -259,6 +275,10 @@ class AgentSessionRuntime:
     @property
     def usage_totals(self):
         return self.session.usage_totals()
+
+    @property
+    def permission_mode(self):
+        return self.settings_manager.settings.permission_mode
 
     def export_session(self, path: str | Path, *, format: str | None = None) -> Path:
         """Export the current session tree as JSON or active transcript as Markdown."""
@@ -443,6 +463,38 @@ class AgentSessionRuntime:
     async def new_session(self, *, model: Model | None = None):
         await self._replace(model=model or self.state.model)
 
+    async def fork(self, from_id: str | None = None) -> Path:
+        """Fork the selected history path into a new durable session and switch to it."""
+        self._ensure_available()
+        self.agent_session.ensure_idle()
+        self._changing = True
+        candidate = None
+        try:
+            old = self.agent_session
+            forked = old.session.fork(from_id)
+            settings, loader, resources = self._prepare(self.cwd, self.project_trusted)
+            selected = self._model(None, forked, settings)
+            path = self._session_dir(self.cwd, settings) / f"{uuid4().hex}.jsonl"
+            candidate = self._build(
+                self.cwd, forked, selected, settings, resources, self.project_trusted
+            )
+            if self._extensions_started:
+                await old.extensions.emit(
+                    "session_shutdown", {"type": "session_shutdown", "reason": "fork"},
+                    old.extension_context,
+                )
+            self._persist_new(candidate, path)
+            self._install(
+                self.cwd, path, settings, loader, resources, candidate, self.project_trusted
+            )
+            return path
+        except BaseException:
+            if candidate is not None and candidate is not self.agent_session:
+                candidate.extensions.dispose()
+            raise
+        finally:
+            self._changing = False
+
     async def reload(self):
         """重读设置/资源并重建 cwd 绑定工具；保留当前模型、历史、队列。"""
         self._ensure_available()
@@ -458,6 +510,22 @@ class AgentSessionRuntime:
     async def set_project_trust(self, trusted: bool):
         """Rebuild cwd-bound services under a new trust decision."""
         await self._replace(reload=True, project_trusted=trusted)
+
+    async def set_permission_mode(self, mode: str):
+        """Apply a process-local permission override and rebuild the current session host."""
+        if mode not in PERMISSION_MODES:
+            raise ValueError(f"Permission must be one of: {', '.join(PERMISSION_MODES)}")
+        previous = self._overrides.get("permission_mode")
+        had_previous = "permission_mode" in self._overrides
+        self._overrides["permission_mode"] = mode
+        try:
+            await self._replace(reload=True)
+        except BaseException:
+            if had_previous:
+                self._overrides["permission_mode"] = previous
+            else:
+                self._overrides.pop("permission_mode", None)
+            raise
 
     async def close(self):
         if self._closed:
