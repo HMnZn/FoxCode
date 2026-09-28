@@ -69,6 +69,23 @@ export function pluralize(count: number, one: string, many = `${one}s`): string 
   return count === 1 ? one : many
 }
 
+/**
+ * 分叉会话的标题：`标题-分支`，再分叉一次就是 `标题-分支2`。
+ *
+ * 与宿主 `fox_serve/sessions.py::branch_label` 同一套规则（演示宿主也要给出同样的
+ * 结果，否则两种模式下列表看起来是两回事）。
+ */
+export function branchLabel(base: string, max = 120): string {
+  const text = (base || '').trim().replace(/\s+/g, ' ') || '新会话'
+  const match = /^(.*)-分支(\d*)$/.exec(text)
+  if (match) {
+    const root = match[1] || text
+    const count = Number(match[2] || 1) + 1
+    return `${root}-分支${count}`.slice(0, max)
+  }
+  return `${text}-分支`.slice(0, max)
+}
+
 /** Stable id generator — avoids crypto.randomUUID in non-secure contexts. */
 let counter = 0
 export function uid(prefix = 'id'): string {

@@ -24,7 +24,7 @@ def build_system_prompt(*, cwd, tools, skills=(), resources=None, custom_prompt=
              "Be concise, include relevant file paths, and do not claim unperformed work."]
     permission_rules = {
         "read-only": "Permission mode is read-only: inspect and explain, but do not modify files or run commands.",
-        "workspace-write": "Permission mode is workspace-write: modifications must remain inside the working directory; shell commands are unavailable.",
+        "workspace-modify": "Permission mode is workspace-modification: modify files and run shell commands from the working directory; do not intentionally change paths outside it.",
         "full-access": "Permission mode is full-access: use that access only when it is necessary for the user's request.",
     }
     rules.append(permission_rules[permission_mode])

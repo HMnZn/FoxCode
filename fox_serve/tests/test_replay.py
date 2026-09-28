@@ -1,7 +1,7 @@
 """历史回放的回归测试（`ServeHost._replay_current_session`）。
 
 真实会话里「一轮只有工具调用、没有正文」很常见（`memory_remember` 被
-workspace-write 拒绝就是这种回合）。UI 的会话视图只在工具帧
+workspace-modify 拒绝就是这种回合）。UI 的会话视图只在工具帧
 （`tool_execution_start/end`）到达时才建卡片，所以回放必须把助手消息的
 `toolCall` part 补成工具帧——否则用户看到的是「模型没有回复」。
 """
@@ -51,7 +51,7 @@ class ReplayTest(unittest.TestCase):
     def _host(self, entries: list[_Entry]) -> tuple[ServeHost, list[dict[str, Any]]]:
         host = ServeHost(cwd=".")
         host._runtime = _Runtime(entries)  # noqa: SLF001
-        host._policy = PermissionPolicy("workspace-write", cwd=Path.cwd())  # noqa: SLF001
+        host._policy = PermissionPolicy("workspace-modify", cwd=Path.cwd())  # noqa: SLF001
         frames: list[dict[str, Any]] = []
         host._send = lambda payload: frames.append(payload)  # noqa: SLF001
         return host, frames

@@ -1,7 +1,6 @@
 import { create } from 'zustand'
 
 export type View = 'chat' | 'sessions' | 'skills' | 'extensions' | 'usage' | 'settings'
-export type InspectorTab = 'context' | 'files' | 'usage'
 export type Theme = 'dark' | 'light'
 /** 聊天页的两个视角：会话（对话 + 思考）与轨迹（工具调用与压缩/重试事件）。 */
 export type ChatView = 'chat' | 'trace'
@@ -20,13 +19,17 @@ export const VIEW_LABEL: Record<View, string> = {
   settings: '设置',
 }
 
-const PREF_KEY = 'foxcode.ui.v1'
+// v2 adopts the Harness shell defaults: the conversation is the primary
+// surface and the right sidebar opens on demand instead of occupying a third
+// of every new window. v4 drops the inspector's own tab choice — the panel's
+// tabs (开始 / 文件 / 打开的文件 / 终端) live in `railStore` and are not a
+// preference worth persisting.
+const PREF_KEY = 'foxcode.ui.v4'
 
 interface Prefs {
   theme: Theme
   sidebarCollapsed: boolean
   inspectorOpen: boolean
-  inspectorTab: InspectorTab
   chatView: ChatView
 }
 
@@ -35,7 +38,6 @@ function loadPrefs(): Prefs {
     theme: 'dark',
     sidebarCollapsed: false,
     inspectorOpen: true,
-    inspectorTab: 'context',
     chatView: 'chat',
   }
   try {
@@ -63,7 +65,6 @@ interface UiStore extends Prefs {
   setPaletteOpen(open: boolean): void
   toggleSidebar(): void
   toggleInspector(open?: boolean): void
-  setInspectorTab(tab: InspectorTab): void
   setTheme(theme: Theme): void
   toggleTheme(): void
   /** Composer draft survives view switches; keyed per session file. */
@@ -76,8 +77,8 @@ const initial = loadPrefs()
 
 export const useUi = create<UiStore>((set, get) => {
   const persist = () => {
-    const { theme, sidebarCollapsed, inspectorOpen, inspectorTab, chatView } = get()
-    savePrefs({ theme, sidebarCollapsed, inspectorOpen, inspectorTab, chatView })
+    const { theme, sidebarCollapsed, inspectorOpen, chatView } = get()
+    savePrefs({ theme, sidebarCollapsed, inspectorOpen, chatView })
   }
 
   return {
@@ -99,10 +100,6 @@ export const useUi = create<UiStore>((set, get) => {
     },
     toggleInspector: (open) => {
       set((state) => ({ inspectorOpen: open ?? !state.inspectorOpen }))
-      persist()
-    },
-    setInspectorTab: (inspectorTab) => {
-      set({ inspectorTab, inspectorOpen: true })
       persist()
     },
     setTheme: (theme) => {

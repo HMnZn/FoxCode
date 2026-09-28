@@ -13,7 +13,7 @@
 - `--new-session`：强制开新会话（**默认是继续 cwd 下最近的会话**，因为桌面端
   每次启动都会拉起一个新 sidecar 进程，默认新建会让会话列表堆满空会话）
 - `--thinking LEVEL`：`off|minimal|low|medium|high|xhigh`
-- `--permission MODE`：`read-only|workspace-write|full-access`（默认沿用持仓设置）
+- `--permission MODE`：`read-only|workspace-modify|full-access`（默认沿用持仓设置）
 - `--prompt TEXT` / `--compact` / `--command NAME`：启动后立刻做一件事
 - `--list-models`：列出可切换模型后退出
 """

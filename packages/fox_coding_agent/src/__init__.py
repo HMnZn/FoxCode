@@ -24,6 +24,7 @@ from .core.session_manager import (
     SessionManager, SessionEntry, SessionStorage,
     InMemorySessionStorage, JsonlSessionStorage,
 )
+from .core.session_layout import SessionLayout, normalized_cwd, session_id_from_path
 from fox_agent_core.src.harness import (
     CompactionResult, CompactionSettings, calculate_context_tokens, compact,
     estimate_context_tokens, estimate_tokens, find_cut_point, generate_summary, should_compact,

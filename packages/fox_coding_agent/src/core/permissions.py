@@ -6,11 +6,11 @@ from pathlib import Path
 from typing import Literal
 
 
-PermissionMode = Literal["read-only", "workspace-write", "full-access"]
+PermissionMode = Literal["read-only", "workspace-modify", "full-access"]
 PermissionDomain = Literal["runtime", "extension-state"]
 ExtensionStateAction = Literal["read", "write", "delete", "admin"]
 PERMISSION_MODES: tuple[PermissionMode, ...] = (
-    "read-only", "workspace-write", "full-access",
+    "read-only", "workspace-modify", "full-access",
 )
 PERMISSION_DOMAINS: tuple[PermissionDomain, ...] = ("runtime", "extension-state")
 EXTENSION_STATE_ACTIONS: tuple[ExtensionStateAction, ...] = (
@@ -28,9 +28,11 @@ def check_tool_permission(tool, args: dict, cwd: str | Path,
     those operations are independent of workspace access modes. Project trust is
     still enforced by the runtime before this function is called.
 
-    A runtime-domain tool that declares ``workspace-write`` must also declare
+    A runtime-domain tool that declares ``workspace-modify`` must also declare
     every written path argument through ``permission_paths`` so resolved paths
-    (including symlinks) can be checked.
+    (including symlinks) can be checked. Shell tools explicitly marked with
+    ``workspace_shell`` are the exception: they start in the working directory
+    and are part of workspace-modification mode.
     """
     if mode not in _LEVEL:
         return f"Invalid permission mode: {mode}"
@@ -49,7 +51,10 @@ def check_tool_permission(tool, args: dict, cwd: str | Path,
         return f"Tool '{tool.name}' declares an invalid permission requirement: {required}"
     if _LEVEL[mode] < _LEVEL[required]:
         return f"Tool '{tool.name}' requires {required} permission (current: {mode})"
-    if mode != "workspace-write" or required != "workspace-write":
+    if mode != "workspace-modify" or required != "workspace-modify":
+        return None
+
+    if getattr(tool, "workspace_shell", False):
         return None
 
     root = Path(cwd).expanduser().resolve()
@@ -63,7 +68,7 @@ def check_tool_permission(tool, args: dict, cwd: str | Path,
         candidate = Path(value).expanduser()
         candidate = (root / candidate).resolve() if not candidate.is_absolute() else candidate.resolve()
         if not candidate.is_relative_to(root):
-            return f"Tool '{tool.name}' cannot modify outside the workspace in workspace-write mode: {candidate}"
+            return f"Tool '{tool.name}' cannot modify outside the workspace in workspace-modify mode: {candidate}"
     return None
 
 

@@ -6,6 +6,7 @@ import asyncio
 import io
 import json
 import sys
+import threading
 import unittest
 from pathlib import Path
 from typing import Any
@@ -115,6 +116,49 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(frames[0]["type"], "agent_end")
         # c2 必须比 c1 先返回（否则说明是串行处理，真实场景会死锁）。
         self.assertLess(ids.index("c2"), ids.index("c1"))
+
+    async def test_stdout_backpressure_does_not_block_abort_dispatch(self) -> None:
+        """A full parent pipe must never freeze the stdin/control plane."""
+
+        class BlockingOutput(io.StringIO):
+            def __init__(self) -> None:
+                super().__init__()
+                self.release = threading.Event()
+                self.blocked_once = False
+                self.timed_out = False
+
+            def write(self, value: str) -> int:
+                if not self.blocked_once:
+                    self.blocked_once = True
+                    if not self.release.wait(2.0):
+                        self.timed_out = True
+                return super().write(value)
+
+        stdout = BlockingOutput()
+
+        class AbortHost(FakeHost):
+            async def handle(self, method: str, params: dict[str, Any]) -> Any:
+                if method == "abort":
+                    self.calls.append((method, params))
+                    stdout.release.set()
+                    return {"aborted": True}
+                return await super().handle(method, params)
+
+        stdin = io.StringIO(json.dumps({"id": "stop", "method": "abort"}) + "\n")
+        holder: dict[str, AbortHost] = {}
+
+        def factory(send):
+            host = AbortHost(send)
+            holder["host"] = host
+            return host
+
+        server = NdjsonServer(factory, stdin=stdin, stdout=stdout, log=lambda message: None)
+        self.assertEqual(await server.run(), 0)
+
+        self.assertFalse(stdout.timed_out, "stdout write blocked the asyncio event loop")
+        self.assertIn(("abort", {}), holder["host"].calls)
+        response = next(item for item in _parse_lines(stdout.getvalue()) if item.get("id") == "stop")
+        self.assertEqual(response["result"], {"aborted": True})
 
     async def test_missing_method_is_logged_not_crashing(self) -> None:
         stdin = io.StringIO(json.dumps({"id": "c1"}) + "\n")

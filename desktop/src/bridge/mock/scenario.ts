@@ -25,7 +25,7 @@ export interface ScriptStep {
     /** Emit this many progressive updates while running. */
     updates?: number
     permission?: {
-      required: 'read-only' | 'workspace-write' | 'full-access'
+      required: 'read-only' | 'workspace-modify' | 'full-access'
       reason: 'mode-insufficient' | 'outside-workspace' | 'policy' | 'always-ask'
       summary: string
       preview?: PermissionPreview
@@ -137,7 +137,7 @@ export const SCRIPT: ScriptStep[] = [
       permission: {
         required: 'full-access',
         reason: 'mode-insufficient',
-        summary: '执行 shell 命令（full-access），当前模式为 workspace-write',
+        summary: '执行 shell 命令（full-access），当前模式为 workspace-modify',
         preview: {
           kind: 'command',
           command: 'git log --oneline -8 -- packages/fox_coding_agent/src/core/runtime.py',

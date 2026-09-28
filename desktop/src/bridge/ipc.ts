@@ -1,4 +1,9 @@
 import type { FoxBridge, TransportStatus, WindowControls } from '@/bridge/types'
+import {
+  nativeTerminalDriver,
+  type TerminalApi,
+  type TerminalDriver,
+} from '@/bridge/terminal'
 import type {
   HostCommand,
   HostFrame,
@@ -22,6 +27,8 @@ export interface FoxcodeApi {
   pickDirectory(): Promise<string | null>
   openExternal(url: string): Promise<void>
   revealPath(path: string): Promise<boolean>
+  openTerminal(path: string): Promise<boolean>
+  terminal: TerminalApi
   themeFlash(): void
 }
 
@@ -56,9 +63,12 @@ export class IpcBridge implements FoxBridge {
   readonly kind = 'ipc' as const
   readonly platform: string
   readonly window: WindowControls
+  /** The embedded terminal is main-process machinery, so it is always native. */
+  readonly terminal: TerminalDriver
 
   constructor(private readonly api: FoxcodeApi) {
     this.platform = api.platform
+    this.terminal = nativeTerminalDriver(api.terminal)
     this.window = {
       minimize: () => api.window.minimize(),
       toggleMaximize: () => api.window.toggleMaximize(),
@@ -107,6 +117,10 @@ export class IpcBridge implements FoxBridge {
 
   reveal(path: string): Promise<boolean> {
     return this.api.revealPath(path)
+  }
+
+  openTerminal(path: string): Promise<boolean> {
+    return this.api.openTerminal(path)
   }
 
   themeFlash(): void {

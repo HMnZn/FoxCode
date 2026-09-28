@@ -78,7 +78,8 @@ export interface SessionStore {
   changeCwd(cwd: string): Promise<void>
   openSession(id: string): Promise<void>
   newSession(): Promise<void>
-  forkSession(): Promise<void>
+  renameSession(id: string, title: string): Promise<void>
+  forkSession(fromId?: string): Promise<void>
   deleteSession(id: string): Promise<void>
   setExtension(id: string, enabled: boolean, scope?: ExtensionScope): Promise<void>
   runCommand(name: string, args?: string): Promise<void>
@@ -131,6 +132,10 @@ export function isBusy(timeline: TimelineState): boolean {
 
 function describe(command: HostCommand): string {
   return command.method
+}
+
+function normalizedSessionPath(value: string | null | undefined): string {
+  return (value ?? '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
 }
 
 export const useSession = create<SessionStore>((set, get) => {
@@ -432,12 +437,17 @@ export const useSession = create<SessionStore>((set, get) => {
 
     abort: async () => {
       idleStrikes = 0
+      // Give immediate feedback.  Previously this only changed *after* the
+      // host reply, so a congested pipe made the button look completely dead.
+      set((state) => ({
+        timeline: { ...state.timeline, activity: '正在中止…', stalled: false },
+      }))
       try {
         await get().send({ method: 'abort' }, { silent: true })
-        set((state) => ({
-          timeline: { ...state.timeline, activity: '正在中止…' },
-        }))
       } catch (error) {
+        set((state) => ({
+          timeline: { ...state.timeline, activity: '中止请求未确认', stalled: true },
+        }))
         fail(error, '中止运行')
       }
     },
@@ -496,6 +506,15 @@ export const useSession = create<SessionStore>((set, get) => {
     },
 
     openSession: async (id) => {
+      const state = get()
+      const selected = state.sessions.find((session) => session.id === id || session.file === id)
+      const hostFile = normalizedSessionPath(state.host?.sessionFile)
+      const selectedFile = normalizedSessionPath(selected?.file ?? id)
+      // Reopening the active row used to reach runtime.switch_session(), whose
+      // replacement semantics abort the current run. Clicking the current
+      // conversation is navigation, not a request to restart its backend.
+      const current = selected?.live === true || (hostFile !== '' && selectedFile === hostFile)
+      if (current) return
       await get().send({ method: 'sessions.open', params: { id } })
       // 宿主已经把「当前会话」换成打开的这条，标题栏/检查器/上下文占用都读
       // host.info，所以必须重新拉一次，否则页面还在显示上一条会话的文件名。
@@ -509,9 +528,37 @@ export const useSession = create<SessionStore>((set, get) => {
       await get().refreshSessions()
     },
 
-    forkSession: async () => {
-      await get().send({ method: 'sessions.fork', params: {} })
-      await get().refreshSessions()
+    renameSession: async (id, title) => {
+      const clean = title.trim()
+      try {
+        // 标题的事实来源是会话文件头部的 `_meta._label`（见 fox_serve/sessions.py），
+        // 所以改名必须落到宿主，不能只改本地列表 —— 否则刷新一次就变回去了。
+        await get().send({ method: 'sessions.rename', params: { id, title: clean } })
+        await get().refreshSessions()
+      } catch (error) {
+        fail(error, '重命名会话')
+        throw error
+      }
+    },
+
+    forkSession: async (fromId) => {
+      try {
+        // 宿主的 `sessions.fork` 只作用于**当前** runtime，所以对列表里别的会话
+        // 分叉 = 先切过去再 fork。切不过去（正在跑、cwd 不同）时直接抛出，让调用方
+        // 看到失败而不是静默复制了另一条会话。
+        if (fromId) {
+          const target = get().sessions.find((session) => session.id === fromId || session.file === fromId)
+          if (!target) throw new Error(`找不到会话：${fromId}`)
+          if (target.live !== true) await get().openSession(target.id)
+        }
+        await get().send({ method: 'sessions.fork', params: {} })
+        await get().refreshHost()
+        await get().refreshSessions()
+        toast.success({ title: '已创建分支会话' })
+      } catch (error) {
+        fail(error, '分叉会话')
+        throw error
+      }
     },
 
     deleteSession: async (id) => {

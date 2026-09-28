@@ -3,7 +3,6 @@ import {
   AlertTriangle,
   ArrowUp,
   Copy,
-  CornerDownLeft,
   FolderOpen,
   FolderTree,
   ListPlus,
@@ -14,7 +13,6 @@ import {
 } from 'lucide-react'
 import {
   Button,
-  Chip,
   IconButton,
   Kbd,
   Menu,
@@ -51,6 +49,7 @@ const MAX_HEIGHT = 260
 export interface ComposerProps {
   draftKey: string
   className?: string
+  hero?: boolean
 }
 
 /**
@@ -60,7 +59,7 @@ export interface ComposerProps {
  * flight, so a busy composer switches to `steer` (delivered to the running
  * loop) or `follow_up` (queued behind it) instead of failing.
  */
-export function Composer({ draftKey, className }: ComposerProps) {
+export function Composer({ draftKey, className, hero = false }: ComposerProps) {
   const draft = useUi((s) => s.drafts[draftKey] ?? '')
   const setDraft = useUi((s) => s.setDraft)
   const host = useSession((s) => s.host)
@@ -176,7 +175,7 @@ export function Composer({ draftKey, className }: ComposerProps) {
   const approxTokens = value.length > 400 ? Math.ceil(value.length / 3.4) : 0
 
   return (
-    <div className={cn('relative flex flex-col gap-1.5', className)}>
+    <div className={cn('relative flex flex-col', className)}>
       {picker !== null && matches.length ? (
         <div className="absolute bottom-full left-0 z-20 mb-2 w-full overflow-hidden surface-pop">
           {matches.map((command, index) => (
@@ -215,9 +214,9 @@ export function Composer({ draftKey, className }: ComposerProps) {
 
       <div
         className={cn(
-          'flex flex-col rounded-panel border bg-surface transition-colors',
-          busy ? 'border-accent/40' : 'border-line hover:border-line-strong',
-          'focus-within:border-line-strong',
+          'flex flex-col rounded-panel border-0 bg-input shadow-soft transition-shadow',
+          busy ? 'ring-1 ring-info/35' : 'hover:shadow-prominent',
+          'focus-within:shadow-prominent',
         )}
       >
         {/*
@@ -241,19 +240,25 @@ export function Composer({ draftKey, className }: ComposerProps) {
           spellCheck={false}
           onChange={(event) => setDraft(draftKey, event.target.value)}
           onKeyDown={onKeyDown}
-          placeholder={busy ? '运行中 — Enter 插入消息，Shift + Enter 换行' : '描述任务，/ 唤起命令，Shift + Enter 换行'}
+          placeholder={busy
+            ? '运行中 — Enter 插入消息，Shift + Enter 换行'
+            : hero
+              ? '描述你想要构建的内容，/ 调用指令，@ 文件或对话'
+              : '描述任务，/ 唤起命令，Shift + Enter 换行'}
           className={cn(
-            'scroll-quiet w-full resize-none bg-transparent px-4 pt-3 pb-1 text-[13.5px] leading-6',
+            'scroll-quiet min-h-11 w-full resize-none bg-transparent px-4 pt-3 pb-1 text-[14px] leading-6',
+            hero && 'min-h-[84px] pt-4',
             'text-fg outline-none placeholder:text-fg-subtle',
           )}
         />
 
-        <div className="flex items-center gap-1.5 px-2.5 pt-0.5 pb-2">
+        <div className="flex min-w-0 flex-wrap items-center gap-2 px-2 pt-0.5 pb-2">
           <Tooltip content="插入命令前缀" side="top">
             <IconButton
               label="插入命令前缀"
-              variant="ghost"
+              variant="soft"
               size="sm"
+              className="rounded-full"
               onClick={() => {
                 if (!value.startsWith('/')) setDraft(draftKey, `/${value}`)
                 area.current?.focus()
@@ -267,7 +272,7 @@ export function Composer({ draftKey, className }: ComposerProps) {
             placement="top"
             align="start"
             label="调用技能"
-            triggerClassName="gap-1 rounded-md border-transparent bg-transparent px-2 text-[10.5px] hover:border-transparent hover:bg-surface-2"
+            triggerClassName="gap-1 rounded-sm border-transparent bg-transparent px-2 text-[12px] hover:border-transparent hover:bg-interactive"
             trigger={
               <>
                 <Sparkles size={13} />
@@ -297,7 +302,7 @@ export function Composer({ draftKey, className }: ComposerProps) {
               placement="top"
               align="start"
               label="工作区"
-              triggerClassName="max-w-[200px] gap-1.5 rounded-md border-transparent bg-transparent px-2 text-[10.5px] hover:border-transparent hover:bg-surface-2"
+              triggerClassName="max-w-[200px] gap-1.5 rounded-sm border-transparent bg-transparent px-2 text-[12px] hover:border-transparent hover:bg-interactive"
               trigger={
                 <>
                   <FolderTree size={12} aria-hidden="true" />
@@ -371,7 +376,7 @@ export function Composer({ draftKey, className }: ComposerProps) {
               placement="top"
               align="end"
               label="排队方式"
-              triggerClassName="gap-1 rounded-md border-transparent bg-transparent px-2 text-[10.5px] hover:border-transparent hover:bg-surface-2"
+              triggerClassName="gap-1 rounded-sm border-transparent bg-transparent px-2 text-[12px] hover:border-transparent hover:bg-interactive"
               trigger={
                 <>
                   <ListPlus size={13} />
@@ -399,7 +404,7 @@ export function Composer({ draftKey, className }: ComposerProps) {
               placement="top"
               align="end"
               label="思考等级"
-              triggerClassName="rounded-md border-transparent bg-transparent px-2 text-[10.5px] hover:border-transparent hover:bg-surface-2"
+              triggerClassName="rounded-sm border-transparent bg-transparent px-2 text-[12px] hover:border-transparent hover:bg-interactive"
               trigger={host ? THINKING_LABEL[host.thinkingLevel] : '思考 —'}
             >
               {THINKING_LEVELS.map((level) => (
@@ -417,7 +422,7 @@ export function Composer({ draftKey, className }: ComposerProps) {
               align="end"
               label="权限模式"
               triggerClassName={cn(
-                'rounded-md border-transparent bg-transparent px-2 text-[10.5px] hover:border-transparent hover:bg-surface-2',
+                'rounded-sm border-transparent bg-transparent px-2 text-[12px] hover:border-transparent hover:bg-interactive',
                 host?.permissionMode === 'full-access' && 'text-warn',
               )}
               trigger={host ? PERMISSION_LABEL[host.permissionMode] : '权限 —'}
@@ -437,7 +442,7 @@ export function Composer({ draftKey, className }: ComposerProps) {
               placement="top"
               align="end"
               label="切换模型"
-              triggerClassName="max-w-[160px] rounded-md border-transparent bg-transparent px-2 font-mono text-[10.5px] hover:border-transparent hover:bg-surface-2"
+              triggerClassName="max-w-[180px] rounded-sm border-transparent bg-transparent px-2 text-[12px] hover:border-transparent hover:bg-interactive"
               trigger={<span className="truncate">{host?.model?.displayName ?? '模型 —'}</span>}
             >
               {(host?.availableModels ?? []).map((model) => (
@@ -456,34 +461,23 @@ export function Composer({ draftKey, className }: ComposerProps) {
             <Button
               variant="danger"
               size="sm"
+              aria-label="中止本轮"
+              className="size-8 rounded-full px-0"
               iconLeft={<Square size={12} />}
               onClick={() => void abort()}
-            >
-              中止
-            </Button>
+            />
           ) : null}
 
           <Button
             variant="primary"
             size="sm"
+            aria-label="发送"
+            className="size-8 rounded-full px-0"
             disabled={!value.trim()}
-            iconLeft={<ArrowUp size={13} />}
+            iconLeft={<ArrowUp size={15} />}
             onClick={submit}
-          >
-            发送
-          </Button>
+          />
         </div>
-      </div>
-
-      <div className="flex items-center gap-2 px-2 text-2xs text-fg-subtle">
-        <CornerDownLeft size={11} />
-        <span>Enter 发送 · Shift + Enter 换行</span>
-        {host?.projectTrusted === false ? (
-          <Chip size="xs" tone="warn">
-            项目未受信任
-          </Chip>
-        ) : null}
-        <span className="ml-auto font-mono">{host?.sessionFile?.split(/[\\/]/).pop() ?? ''}</span>
       </div>
     </div>
   )

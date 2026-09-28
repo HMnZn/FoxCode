@@ -6,8 +6,7 @@ Chat Completions 协议（覆盖 OpenAI 及大量兼容厂商）。
 核心机制（务必与上游一致）：
 1. ``AsyncOpenAI`` 客户端，``max_retries=0``（重试是外层关注点）。
 2. **工具调用累加**：按 ``delta.index`` 和 ``delta.id`` 双索引，原始参数 JSON
-   字符串拼接进 ``partial_args``，**每个增量重新解析**（用 ``json-repair``
-   容忍不完整 JSON）。
+   字符串拼接进 ``partial_args``，用有界预览解析处理不完整 JSON，结束时严格解析。
 3. **文本/思考是单槽位**：同一时间只有一个激活的 text 块和一个 thinking 块。
 4. **usage 在 chunk 级别**提取（``stream_options={"include_usage": True}``）。
 5. **错误不内联重试**：编码为 error 事件（``stopReason="error"`` + ``errorMessage``）。
@@ -37,6 +36,7 @@ from ..constrained_sampling import (
     resolve_json_schema_strict_sampling,
 )
 from ..event_stream import EventStream
+from ..partial_json import parse_partial_json as _parse_streaming_json, parse_tool_arguments
 from ..events import (
     AssistantMessageEvent,
     DoneEvent,
@@ -500,23 +500,6 @@ def _convert_messages(
     return out, None
 
 
-def _parse_streaming_json(s: str) -> dict[str, Any]:
-    """容错解析不完整的 JSON 字符串。对应上游 ``parseStreamingJson``。"""
-    if not s:
-        return {}
-    try:
-        result: dict[str, Any] = json.loads(s)
-        return result
-    except Exception:
-        pass
-    try:
-        from json_repair import repair_json
-
-        repaired = repair_json(s, return_objects=True)
-        return repaired if isinstance(repaired, dict) else {}
-    except Exception:
-        return {}
-
 #核心
 def _run_openai_stream(
     model: Model,
@@ -677,6 +660,9 @@ def _run_openai_stream(
                 cancel_event=options.cancel_event if options else None,
             )
             async for chunk in stream_obj:
+                # SDK iterators may return buffered chunks without yielding.
+                # Keep stdin, cancellation and timers runnable during a burst.
+                await asyncio.sleep(0)
                 # usage（chunk 级）
                 if chunk.usage:
                     output.usage = _parse_chunk_usage(chunk.usage, model)
@@ -809,6 +795,8 @@ def _run_openai_stream(
                     )
                 )
             for block in tool_blocks_by_index.values():
+                if block.partial_args and output.stop_reason not in ("length", "aborted", "error"):
+                    block.tool_call.arguments = parse_tool_arguments(block.partial_args)
                 if block.custom_input_property and block.custom_input_buffer:
                     input_value = str(block.tool_call.arguments[block.custom_input_property])
                     closing_delta = append_grammar_tool_input_json_delta(

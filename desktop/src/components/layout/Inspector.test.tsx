@@ -1,5 +1,5 @@
 /**
- * 检查器「文件」页签：改动清单 → 差异 → 原文 → 返回。
+ * 右侧工作台：标签、文件列表、以及每个文件的预览。
  *
  * 走的是真实链路：组件拿 `MockHost` 当宿主（`files.changes` / `files.diff` /
  * `files.read` 三个命令都有演示数据），所以这里断言的是用户真会看到的文字。
@@ -8,7 +8,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import { fireEvent, render, screen, within } from '@testing-library/react'
 import { Inspector } from '@/components/layout/Inspector'
 import { useFiles } from '@/store/filesStore'
-import { useUi } from '@/store/uiStore'
+import { FILES_TAB, HOME_TAB, useRail } from '@/store/railStore'
 import { useSession } from '@/store/sessionStore'
 import { EMPTY_TIMELINE } from '@/store/timeline'
 
@@ -36,7 +36,7 @@ function touchedTimeline() {
   }
 }
 
-describe('Inspector · 文件页签', () => {
+describe('Inspector · 文件标签', () => {
   // 行内路径被拆成「目录 + 文件名」两个 span（目录先截断、文件名永远完整），
   // getByText 只看直接文本子节点，所以按 textContent 全等匹配整行。
   const pathRow = (path: string) => (_content: string, element: Element | null) =>
@@ -48,9 +48,10 @@ describe('Inspector · 文件页签', () => {
       loading: false,
       error: null,
       fetchedAt: null,
-      preview: null,
+      previews: {},
     })
-    useUi.setState({ inspectorTab: 'files' })
+    // 面板默认停在「开始」；这些用例关心的是文件列表与预览，所以直接开「文件」。
+    useRail.setState({ tabs: [HOME_TAB, FILES_TAB], activeId: FILES_TAB.id })
     useSession.setState({ timeline: EMPTY_TIMELINE })
   })
 
@@ -64,8 +65,38 @@ describe('Inspector · 文件页签', () => {
     expect(screen.getByText(pathRow('fox_serve/workspace_files.py'))).toBeTruthy()
     expect(screen.getByText('+128')).toBeTruthy()
     expect(screen.getByText('−24')).toBeTruthy()
-    expect(screen.getByText('二进制')).toBeTruthy()
+    // 两行二进制（图片 + PDF）各有一个「二进制」标记
+    expect(screen.getAllByText('二进制').length).toBe(2)
     expect(screen.getByText('工作区改动')).toBeTruthy()
+  })
+
+  it('browses workspace directories and opens files by their kind', async () => {
+    render(<Inspector />)
+    fireEvent.click(await screen.findByRole('button', { name: 'desktop' }))
+    expect(await screen.findByRole('button', { name: '返回上级目录' })).toBeTruthy()
+    // package.json 有「渲染」这一面：点开先看渲染出来的样子，原文是一个页签。
+    fireEvent.click(await screen.findByRole('button', { name: 'package.json' }))
+    expect(await screen.findByRole('tab', { name: '渲染' })).toBeTruthy()
+    // JSON 树把字符串值连引号一起画出来（JsonViewer 的既有风格）。
+    expect(await screen.findByText('"foxcode-desktop"')).toBeTruthy()
+    fireEvent.click(screen.getByRole('tab', { name: '原文' }))
+    expect(useFiles.getState().previews['desktop/package.json']).toMatchObject({
+      path: 'desktop/package.json',
+      mode: 'source',
+    })
+    // 没有「渲染」这一面的文件（这里是 main.py）还是直接给原文。
+    fireEvent.click(screen.getByLabelText('返回文件列表'))
+    fireEvent.click(await screen.findByRole('button', { name: '返回上级目录' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'main.py' }))
+    expect(useFiles.getState().previews['main.py']).toMatchObject({
+      path: 'main.py',
+      mode: 'source',
+    })
+    // 没有「渲染」这一面的文件（这里是 main.py）还是直接给原文。前面打开的
+    // package.json 仍然挂在那里（只是藏起来了），所以断言要落在当前那个标签上。
+    const panels = document.querySelectorAll('[role="tabpanel"]')
+    const active = panels[panels.length - 1] as HTMLElement
+    expect(within(active).queryByRole('tab', { name: '渲染' })).toBeNull()
   })
 
   it('opens a diff preview when a changed file is clicked', async () => {
@@ -85,8 +116,8 @@ describe('Inspector · 文件页签', () => {
     expect(
       screen.getByText('// 打开页签、每次工具调用结束后都重新拉一次清单'),
     ).toBeTruthy()
-    // 检查器在预览时变宽
-    expect(screen.getByLabelText('检查器').className).toContain('w-[420px]')
+    // 工作台在有文件打开时变宽
+    expect(screen.getByLabelText('工作区面板').className).toContain('w-[520px]')
   })
 
   it('switches to the raw file and back to the list', async () => {
@@ -101,7 +132,7 @@ describe('Inspector · 文件页签', () => {
 
     fireEvent.click(screen.getByLabelText('返回文件列表'))
     expect(screen.getByText(pathRow('fox_serve/workspace_files.py'))).toBeTruthy()
-    expect(screen.getByLabelText('检查器').className).toContain('w-[300px]')
+    expect(screen.getByLabelText('工作区面板').className).toContain('w-[360px]')
   })
 
   it('lists the files this session touched and previews them as source', async () => {
@@ -112,7 +143,7 @@ describe('Inspector · 文件页签', () => {
     // 列表里显示的是缩短后的路径，用 title（完整路径）定位那一行。
     fireEvent.click(screen.getByTitle('packages/fox_coding_agent/src/core/runtime.py'))
     expect(await screen.findByRole('tab', { name: '原文' })).toBeTruthy()
-    const panel = screen.getByLabelText('检查器')
+    const panel = screen.getByLabelText('工作区面板')
     // 高亮会把一行拆成多个 token span，所以按 textContent 全等匹配那一行。
     expect(
       within(panel).getByText(
@@ -121,14 +152,25 @@ describe('Inspector · 文件页签', () => {
     ).toBeTruthy()
   })
 
-  it('renders a binary file as a fact instead of a preview', async () => {
+  it('renders an image instead of reporting it as a binary blob', async () => {
     render(<Inspector />)
     fireEvent.click(
       (await screen.findByText(
         pathRow('desktop/artifacts/dsh-workbench-dark.png'),
       )) as HTMLElement,
     )
+    // 图片直接画出来：宿主给的 base64 塞进 <img>，差异/原文这两个页签对图片没有意义。
+    const image = await screen.findByRole('img', { name: 'desktop/artifacts/dsh-workbench-dark.png' })
+    expect(image.getAttribute('src')).toMatch(/^data:image\/png;base64,/)
+    expect(screen.queryByRole('tab', { name: '差异' })).toBeNull()
+    expect(screen.getByText('PNG · 1 KB')).toBeTruthy()
+  })
+
+  it('renders a non-image binary file as a fact instead of a preview', async () => {
+    render(<Inspector />)
+    fireEvent.click((await screen.findByText(pathRow('docs/handbook.pdf'))) as HTMLElement)
     expect(await screen.findByText('二进制文件，无法预览差异')).toBeTruthy()
-    expect(screen.getByText('看原文')).toBeTruthy()
+    fireEvent.click(screen.getByText('看原文'))
+    expect(await screen.findByText('二进制文件，不能当文本预览。')).toBeTruthy()
   })
 })

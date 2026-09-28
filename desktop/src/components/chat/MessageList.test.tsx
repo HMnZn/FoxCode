@@ -39,6 +39,17 @@ describe('MessageList tool group', () => {
     expect(screen.queryByText(/packages\/fox_agent_core\/README\.md/)).toBeNull()
   })
 
+  it('shows a one-line ls result even while the tool group is collapsed', () => {
+    const ls = call('ls', 'c1')
+    ls.result = '.foxcode/\nmain.py'
+    renderBlocks([toolsBlock([ls])])
+
+    expect(screen.getByText('1 项工具调用').closest('button')?.textContent).toContain(
+      'ls · .foxcode/',
+    )
+    expect(screen.getByText('展开')).toBeTruthy()
+  })
+
   it('opens itself while a call waits for approval, and flags failures', () => {
     renderBlocks([toolsBlock([call('bash', 'c1', 'awaiting-approval')])])
 

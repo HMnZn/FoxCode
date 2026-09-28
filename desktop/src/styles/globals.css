@@ -29,6 +29,9 @@
   --color-surface-3: #2c2c2e;
   --color-surface-4: #353638;
   --color-overlay: #2c2c2e;
+  --color-input: #2c2c2e;
+  --color-button-elevated: #43454a;
+  --color-button-elevated-hover: #353638;
   --color-bubble: #2c2c2e;
   --color-bubble-hi: #43454a;
   /* Hairlines are alpha, never solid: l1/l2/l3 in DSH terms. */
@@ -51,8 +54,8 @@
   --color-brand-primary: #f9fafb;
   --color-brand-primary-hover: #ebeef2;
   --color-on-brand: #0f1115;
-  --color-focus: #7aaaff;
-  --color-link: #7aaaff;
+  --color-focus: #679efe;
+  --color-link: #679efe;
 
   /* DSH paints tooltips on their own opaque elevated surface in both themes,
    * so light mode gets white-on-dark ink instead of a light card. */
@@ -70,16 +73,16 @@
   --color-fox-dark: #3c2413;
   --color-fox-glow: rgb(249 118 43 / 0.22);
 
-  /* `accent` is the fox orange: brand marks, the wordmark and the mascot
-   * halo. Interactive chrome uses brand-primary / focus instead. */
-  --color-accent: #ff8a3d;
-  --color-accent-hi: #ffa25c;
-  --color-accent-lo: #e2722a;
-  --color-accent-soft: rgb(255 138 61 / 0.14);
-  --color-accent-ring: rgb(255 138 61 / 0.38);
+  /* Harness uses business blue for selected/active UI. Fox orange remains
+   * exclusively in the independent --color-fox-* brand ramp above. */
+  --color-accent: #679efe;
+  --color-accent-hi: #7aaaff;
+  --color-accent-lo: #5686fe;
+  --color-accent-soft: rgb(122 170 255 / 0.14);
+  --color-accent-ring: rgb(122 170 255 / 0.38);
 
-  --color-info: #7aaaff;
-  --color-info-soft: rgb(122 170 255 / 0.14);
+  --color-info: #679efe;
+  --color-info-soft: rgb(103 158 254 / 0.14);
   --color-success: #22c55e;
   --color-success-soft: rgb(34 197 94 / 0.14);
   --color-warn: #f59e0b;
@@ -89,7 +92,7 @@
   --color-think: #a78bfa;
   --color-think-soft: rgb(167 139 250 / 0.14);
 
-  --color-on-accent: #201308;
+  --color-on-accent: #0f1115;
 
   --radius-xs: 4px;
   --radius-sm: 8px;
@@ -140,6 +143,9 @@
   --color-surface-3: #ebeef2;
   --color-surface-4: #e1e5ee;
   --color-overlay: #ffffff;
+  --color-input: #ffffff;
+  --color-button-elevated: #ffffff;
+  --color-button-elevated-hover: #f1f3f5;
   --color-bubble: #edf3fe;
   --color-bubble-hi: #d3e2ff;
   --color-line: rgb(0 0 0 / 0.039);
@@ -166,11 +172,11 @@
   --color-scrollbar: #e5e5e5;
   --color-scrollbar-hover: #d4d4d4;
 
-  --color-accent: #d9691a;
-  --color-accent-hi: #ec7d2c;
-  --color-accent-lo: #b95a12;
-  --color-accent-soft: rgb(217 105 26 / 0.12);
-  --color-accent-ring: rgb(217 105 26 / 0.32);
+  --color-accent: #4176e6;
+  --color-accent-hi: #5686fe;
+  --color-accent-lo: #345fbe;
+  --color-accent-soft: rgb(65 118 230 / 0.1);
+  --color-accent-ring: rgb(65 118 230 / 0.32);
 
   --color-fox: #e2681d;
   --color-fox-hi: #f68a3f;
@@ -189,7 +195,7 @@
   --color-danger-soft: rgb(236 19 19 / 0.08);
   --color-think: #6d4dd4;
 
-  --color-on-accent: #2a1608;
+  --color-on-accent: #ffffff;
 
   --shadow-panel: 0 0 0 0.5px var(--color-line), 0 3px 8px 0 rgb(0 0 0 / 0.031),
     0 0 16px 0 rgb(0 0 0 / 0.02);
@@ -366,8 +372,8 @@
 @utility fox-tile {
   display: grid;
   place-items: center;
-  background-color: var(--color-accent-soft);
-  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--color-accent) 28%, transparent);
+  background-color: var(--color-fox-glow);
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--color-fox) 28%, transparent);
   border-radius: var(--radius-md);
 }
 

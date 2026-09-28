@@ -35,26 +35,26 @@ class PolicyTests(unittest.TestCase):
 
     def test_read_only_mode_blocks_write_without_prompt(self) -> None:
         policy = PermissionPolicy("read-only", cwd=self.cwd)
-        decision = policy.evaluate(tool_name="write", required="workspace-write", args={"path": "a.txt"})
+        decision = policy.evaluate(tool_name="write", required="workspace-modify", args={"path": "a.txt"})
         self.assertEqual(decision.action, "block")
         self.assertEqual(decision.reason, "mode-insufficient")
         self.assertIn("只读", decision.detail)
 
-    def test_workspace_write_allows_inside_write(self) -> None:
-        policy = PermissionPolicy("workspace-write", cwd=self.cwd)
+    def test_workspace_modify_allows_inside_write(self) -> None:
+        policy = PermissionPolicy("workspace-modify", cwd=self.cwd)
         decision = policy.evaluate(
             tool_name="write",
-            required="workspace-write",
+            required="workspace-modify",
             args={"path": str(self.cwd / "notes.md")},
             permission_paths=("path",),
         )
         self.assertEqual(decision.action, "allow")
 
-    def test_workspace_write_asks_for_outside_write(self) -> None:
-        policy = PermissionPolicy("workspace-write", cwd=self.cwd)
+    def test_workspace_modify_asks_for_outside_write(self) -> None:
+        policy = PermissionPolicy("workspace-modify", cwd=self.cwd)
         decision = policy.evaluate(
             tool_name="write",
-            required="workspace-write",
+            required="workspace-modify",
             args={"path": str(self.cwd.parent / "elsewhere.md")},
             permission_paths=("path",),
         )
@@ -62,13 +62,13 @@ class PolicyTests(unittest.TestCase):
         self.assertEqual(decision.reason, "outside-workspace")
         self.assertEqual(decision.path, str(self.cwd.parent / "elsewhere.md"))
 
-    def test_workspace_write_asks_for_shell(self) -> None:
-        policy = PermissionPolicy("workspace-write", cwd=self.cwd)
+    def test_workspace_modify_allows_shell_without_prompt(self) -> None:
+        policy = PermissionPolicy("workspace-modify", cwd=self.cwd)
         decision = policy.evaluate(
             tool_name="bash", required="full-access", args={"command": "git log --oneline"}
         )
-        self.assertEqual(decision.action, "ask")
-        self.assertEqual(decision.reason, "mode-insufficient")
+        self.assertEqual(decision.action, "allow")
+        self.assertEqual(decision.reason, "policy")
 
     def test_full_access_mode_allows_everything(self) -> None:
         policy = PermissionPolicy("full-access", cwd=self.cwd)
@@ -76,19 +76,19 @@ class PolicyTests(unittest.TestCase):
         self.assertEqual(decision.action, "allow")
 
     def test_session_allowlist_skips_next_prompt(self) -> None:
-        policy = PermissionPolicy("workspace-write", cwd=self.cwd)
+        policy = PermissionPolicy("workspace-modify", cwd=self.cwd)
         policy.allow_tool("bash")
         decision = policy.evaluate(tool_name="bash", required="full-access", args={})
         self.assertEqual(decision.action, "allow")
 
     def test_set_mode_validates(self) -> None:
-        policy = PermissionPolicy("workspace-write", cwd=self.cwd)
+        policy = PermissionPolicy("workspace-modify", cwd=self.cwd)
         self.assertEqual(policy.set_mode("full-access"), "full-access")
         with self.assertRaises(ValueError):
             policy.set_mode("yolo")
 
     def test_unknown_required_permission_defaults_to_full_access(self) -> None:
-        policy = PermissionPolicy("workspace-write", cwd=self.cwd)
+        policy = PermissionPolicy("workspace-modify", cwd=self.cwd)
         decision = policy.evaluate(tool_name="mystery", required="nonsense", args={})
         self.assertEqual(decision.action, "ask")
 
@@ -108,7 +108,7 @@ class SummaryAndPreviewTests(unittest.TestCase):
         shell = build_summary("bash", "full-access", [], {"command": "ls -la\n"})
         self.assertIn("执行 shell 命令", shell)
         self.assertIn("ls -la", shell)
-        write = build_summary("write", "workspace-write", ["C:/tmp/a.md"], {"path": "C:/tmp/a.md"})
+        write = build_summary("write", "workspace-modify", ["C:/tmp/a.md"], {"path": "C:/tmp/a.md"})
         self.assertEqual(write, "写入 C:/tmp/a.md")
 
     def test_preview_command_path_and_diff(self) -> None:
@@ -117,11 +117,11 @@ class SummaryAndPreviewTests(unittest.TestCase):
             {"kind": "command", "command": "echo hi"},
         )
         self.assertEqual(
-            build_preview("write", {"path": "a.md"}, "workspace-write", ["a.md"]),
+            build_preview("write", {"path": "a.md"}, "workspace-modify", ["a.md"]),
             {"kind": "path", "paths": ["a.md"]},
         )
         diff = build_preview(
-            "edit", {"old_string": "a\n", "new_string": "b\n"}, "workspace-write", ["a.md"]
+            "edit", {"old_string": "a\n", "new_string": "b\n"}, "workspace-modify", ["a.md"]
         )
         assert diff is not None
         self.assertEqual(diff["kind"], "diff")
@@ -132,7 +132,7 @@ class SummaryAndPreviewTests(unittest.TestCase):
 class ApprovalBrokerTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self._tmp = temp_dir_obj()
-        self.policy = PermissionPolicy("workspace-write", cwd=Path(self._tmp.name))
+        self.policy = PermissionPolicy("workspace-modify", cwd=Path(self._tmp.name))
         self.requests: list[dict] = []
         self.broker = ApprovalBroker(
             policy=self.policy, on_request=self.requests.append, timeout=5.0
@@ -170,7 +170,7 @@ class ApprovalBrokerTests(unittest.IsolatedAsyncioTestCase):
         request = self.requests[0]
         for key in ("id", "ts", "tool_call_id", "tool_name", "args", "required", "mode", "cwd", "summary", "reason"):
             self.assertIn(key, request)
-        self.assertEqual(request["mode"], "workspace-write")
+        self.assertEqual(request["mode"], "workspace-modify")
         self.assertIn(request["reason"], ("mode-insufficient", "outside-workspace", "policy", "always-ask"))
         self.broker.answer(request["id"], "deny")
         self.assertEqual(await task, "deny")

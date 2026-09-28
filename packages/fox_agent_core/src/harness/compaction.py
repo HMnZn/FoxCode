@@ -32,7 +32,7 @@ from fox_ai.src import (
     ImageContent,
     stream_simple,
 )
-from fox_agent_core.src._async import cancellable, check_cancelled
+from fox_agent_core.src._async import cancellable, check_cancelled, maybe_await
 
 #: ASCII 文本约 4 字符/token；非 ASCII 字符另按 1 字符/token 粗估。
 _CHARS_PER_TOKEN = 4
@@ -204,6 +204,7 @@ async def generate_summary(
 
     ctx = Context(system_prompt=SUMMARIZATION_SYSTEM_PROMPT, messages=[ctx_msg])
     stream_fn = options.pop("stream_fn", None) or stream_simple
+    on_update = options.pop("on_update", None)
     cancel_event = options.get("cancel_event")
     check_cancelled(cancel_event)
     isolated_options = {
@@ -215,6 +216,23 @@ async def generate_summary(
     opts = SimpleStreamOptions(**isolated_options)
     response = stream_fn(model, ctx, opts)
     try:
+        # Consume the summary stream instead of only awaiting its final result.
+        # This both bounds EventStream's queue and lets the backend publish live
+        # compaction-token snapshots while the summary is being generated.
+        iterator = response.__aiter__()
+        while True:
+            try:
+                event = await cancellable(anext(iterator), cancel_event)
+            except StopAsyncIteration:
+                break
+            if on_update is not None and getattr(event, "type", None) not in (
+                "start",
+                "done",
+                "error",
+            ):
+                partial = getattr(event, "partial", None)
+                if partial is not None:
+                    await maybe_await(on_update(partial))
         result = await cancellable(response.result(), cancel_event)
     finally:
         await response.aclose()

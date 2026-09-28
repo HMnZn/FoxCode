@@ -226,11 +226,31 @@ async def _stream_assistant_response(context, config, cancel_event, emit, stream
             config.model, llm_context, SimpleStreamOptions(**opts)
         )
         iterator = response.__aiter__()
+        # An HTTP connection can stay open forever without yielding another
+        # SSE chunk.  Provider timeouts are not enough for custom StreamFn
+        # implementations, and historically this left a run stuck immediately
+        # after a fast tool such as `ls`.  Treat timeout_ms as a per-event idle
+        # deadline as well as the provider request timeout.
+        idle_timeout_ms = opts.get("timeout_ms")
         while True:
+            # A buffered iterator can complete anext() in the same tick as the
+            # cancellation waiter. cancellable() deliberately prefers completed
+            # operations (important for writes), so check explicitly between
+            # model events instead of draining the whole backlog after abort.
+            check_cancelled(cancel_event)
             try:
-                event = await cancellable(anext(iterator), cancel_event)
+                if idle_timeout_ms is not None:
+                    async with asyncio.timeout(float(idle_timeout_ms) / 1000):
+                        event = await cancellable(anext(iterator), cancel_event)
+                else:
+                    event = await cancellable(anext(iterator), cancel_event)
             except StopAsyncIteration:
                 break
+            except TimeoutError:
+                raise RuntimeError(
+                    f"Model stream timeout: produced no event for "
+                    f"{float(idle_timeout_ms) / 1000:g}s"
+                ) from None
             if event.type in ("done", "error"):
                 break
             partial = event.partial.model_copy(deep=True)

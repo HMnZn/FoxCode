@@ -12,10 +12,12 @@ import {
   RefreshCw,
   Search,
   Sparkles,
+  SquareTerminal,
   Wand2,
 } from 'lucide-react'
 import { Chip, Kbd } from '@/components/ui'
 import { useSession } from '@/store/sessionStore'
+import { useRail } from '@/store/railStore'
 import { useWorkspace, samePath, workspaceName } from '@/store/workspaceStore'
 import { useUi, VIEW_LABEL } from '@/store/uiStore'
 import { formatRelative, shortPath } from '@/lib/format'
@@ -38,7 +40,8 @@ export function CommandPalette() {
   const toggleTheme = useUi((s) => s.toggleTheme)
   const toggleSidebar = useUi((s) => s.toggleSidebar)
   const toggleInspector = useUi((s) => s.toggleInspector)
-  const setInspectorTab = useUi((s) => s.setInspectorTab)
+  const openFilesTab = useRail((s) => s.openFiles)
+  const openTerminalTab = useRail((s) => s.openTerminal)
 
   const host = useSession((s) => s.host)
   const sessions = useSession((s) => s.sessions)
@@ -167,18 +170,46 @@ export function CommandPalette() {
         run: () => toggleInspector(),
       },
       {
+        id: 'ui:terminal',
+        group: '界面',
+        label: '打开 / 收起终端',
+        hint: 'Ctrl + `',
+        icon: <SquareTerminal size={13} />,
+        keywords: 'terminal shell console ctrl+`',
+        run: () => {
+          setView('chat')
+          useRail.getState().toggleTerminal()
+        },
+      },
+      {
         id: 'ui:inspector-usage',
         group: '界面',
-        label: '检查器：用量',
+        label: '用量',
         keywords: 'usage tokens cost',
-        run: () => setInspectorTab('usage'),
+        run: () => setView('usage'),
       },
       {
         id: 'ui:inspector-files',
         group: '界面',
-        label: '检查器：文件',
-        keywords: 'files touched',
-        run: () => setInspectorTab('files'),
+        label: '工作区文件',
+        hint: 'Ctrl + Alt + P',
+        icon: <FolderTree size={13} />,
+        keywords: 'files touched workspace',
+        run: () => {
+          setView('chat')
+          openFilesTab()
+        },
+      },
+      {
+        id: 'ui:inspector-terminal',
+        group: '界面',
+        label: '新建终端',
+        icon: <SquareTerminal size={13} />,
+        keywords: 'terminal tab new shell',
+        run: () => {
+          setView('chat')
+          openTerminalTab()
+        },
       },
       ...(host?.commands ?? []).map((command) => ({
         id: `command:${command.name}`,
@@ -248,6 +279,8 @@ export function CommandPalette() {
     host?.skills,
     invokeSkill,
     newSession,
+    openFilesTab,
+    openTerminalTab,
     openSession,
     openWorkspace,
     pickWorkspace,
@@ -255,7 +288,6 @@ export function CommandPalette() {
     refreshHost,
     runCommand,
     sessions,
-    setInspectorTab,
     setView,
     toggleInspector,
     toggleSidebar,

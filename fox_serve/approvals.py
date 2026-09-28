@@ -13,8 +13,9 @@
 2. 真正的权限档位由本模块的 :class:`PermissionPolicy` 持有（UI 看到的就是它），
    `permission.set` 改的是它，而不是宿主的静态检查。
 
-于是 `read-only`（只读工具放行、其余直接拒绝）／`workspace-write`（工作区内写入
-放行、shell 与越界写入弹审批）／`full-access`（全部放行）三档语义都能工作，
+于是 `read-only`（只读工具放行、其余直接拒绝）／`workspace-modify`（界面显示为
+“工作区修改”，工作区内写入和 shell 放行、越界文件写入弹审批）／
+`full-access`（全部放行）三档语义都能工作，
 并且「本会话总是允许」有地方可记。
 """
 
@@ -28,8 +29,8 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Literal
 
 #: 权限档位（与 `packages/fox_coding_agent/src/core/permissions.py:9-12` 一致）。
-PermissionMode = Literal["read-only", "workspace-write", "full-access"]
-PERMISSION_MODES: tuple[PermissionMode, ...] = ("read-only", "workspace-write", "full-access")
+PermissionMode = Literal["read-only", "workspace-modify", "full-access"]
+PERMISSION_MODES: tuple[PermissionMode, ...] = ("read-only", "workspace-modify", "full-access")
 
 #: 审批决定（与前端 `PermissionDecision` 一致）。
 PermissionDecision = Literal["allow-once", "allow-session", "deny"]
@@ -37,7 +38,7 @@ PermissionDecision = Literal["allow-once", "allow-session", "deny"]
 #: 前端 `PermissionRequest.reason` 是联合字面量，不能自由发挥。
 PermissionReason = Literal["mode-insufficient", "outside-workspace", "policy", "always-ask"]
 
-_RANK: dict[str, int] = {"read-only": 0, "workspace-write": 1, "full-access": 2}
+_RANK: dict[str, int] = {"read-only": 0, "workspace-modify": 1, "full-access": 2}
 
 #: 这些工具会执行命令，工作区内的路径检查对它们没意义。
 _SHELL_TOOLS = frozenset({"bash", "powershell", "sh", "zsh", "cmd", "terminal"})
@@ -129,12 +130,12 @@ class PermissionPolicy:
     规则（对齐 DSH 桌面端的审批语义）::
 
         read-only 档位：只读工具放行；其余**拒绝**（不能靠审批提权）
-        workspace-write：只读工具放行；工作区内写入放行；
-                         shell / 越界写入 → 弹审批
+        workspace-modify：只读工具、工作区内写入和 shell 放行；
+                         越界文件写入 → 弹审批
         full-access：全部放行（钩子仍可以拒绝，但默认不拦）
     """
 
-    def __init__(self, mode: PermissionMode = "workspace-write", *, cwd: str | Path = ".") -> None:
+    def __init__(self, mode: PermissionMode = "workspace-modify", *, cwd: str | Path = ".") -> None:
         self._mode: PermissionMode = mode
         self.cwd = Path(cwd).absolute()
         #: 「本会话总是允许」的记忆：工具名 → 允许。
@@ -186,7 +187,7 @@ class PermissionPolicy:
         need = _RANK[required]
         mode = _RANK[self._mode]
         paths = extract_paths(args, permission_paths)
-        is_shell = tool_name in _SHELL_TOOLS or required == "full-access"
+        is_shell = tool_name in _SHELL_TOOLS
 
         # 1. 只读工具（read/grep/find/ls…）永远放行。
         if need == 0:
@@ -205,16 +206,15 @@ class PermissionPolicy:
         if mode == _RANK["full-access"]:
             return PolicyDecision("allow", "policy", "完全访问档位")
 
-        # 4. workspace-write 档位。
+        # 4. workspace-modify 档位。
         if self.is_allowed(tool_name):
             return PolicyDecision("allow", "policy", f"本会话已允许 {tool_name}")
 
         if is_shell:
             return PolicyDecision(
-                "ask",
-                "mode-insufficient",
-                f"{tool_name} 需要 {required} 权限，当前档位为工作区可写",
-                path=None,
+                "allow",
+                "policy",
+                f"工作区修改模式允许从当前工作区执行 {tool_name}",
             )
 
         outside = [path for path in paths if not inside_workspace(path, self.cwd)]
@@ -382,7 +382,7 @@ def _shorten(value: Any, limit: int = 160) -> str:
 def build_summary(tool_name: str, required: str, paths: list[str], args: Any) -> str:
     """给审批卡写一句人话（前端直接显示 `summary`）。"""
 
-    requirement = {"read-only": "只读", "workspace-write": "工作区可写", "full-access": "完全访问"}.get(
+    requirement = {"read-only": "只读", "workspace-modify": "工作区修改", "full-access": "完全访问"}.get(
         required, required
     )
     if tool_name in _SHELL_TOOLS:

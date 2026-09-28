@@ -13,7 +13,7 @@ from fox_agent_core.src import (
     Agent, AgentOptions, AgentState
 )
 from fox_coding_agent.src import (
-    AgentSession, AgentSessionConfig, SessionManager, CompactionSettings, ReadTool, WriteTool, EditTool, BashTool, LoadSkillsOptions, load_skills, generate_summary
+    AgentSession, AgentSessionConfig, SessionManager, CompactionSettings, ReadTool, WriteTool, EditTool, BashTool, LoadSkillsOptions, check_tool_permission, load_skills, generate_summary
 )
 
 
@@ -49,6 +49,17 @@ class ToolTests(unittest.IsolatedAsyncioTestCase):
         cancel.set()
         with self.assertRaisesRegex(Exception, "aborted"):
             await asyncio.wait_for(task, 3)
+
+    def test_bash_uses_workspace_modification_permission(self):
+        bash = BashTool(self.path)
+        self.assertEqual(bash.required_permission, "workspace-modify")
+        self.assertIsNone(
+            check_tool_permission(bash, {"command": "echo ok"}, self.path, "workspace-modify")
+        )
+        self.assertIn(
+            "requires workspace-modify",
+            check_tool_permission(bash, {"command": "echo no"}, self.path, "read-only"),
+        )
 
     @unittest.skipUnless(os.name == "posix" and shutil.which("bash"), "POSIX process groups required")
     async def test_bash_kills_child_process(self):

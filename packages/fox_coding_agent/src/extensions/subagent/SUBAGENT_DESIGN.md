@@ -23,9 +23,10 @@ Built-in profiles are:
 - `plan`: the same read-only capabilities with a planning prompt.
 - `general`: every currently enabled parent tool except `agent`, so delegation cannot recurse.
 
-The parent's permission mode is checked again for every child tool call. A `general` child
-therefore cannot turn a read-only parent into a writer or obtain a shell in workspace-write
-mode.
+Every child tool call goes through the parent's permission hook. A `general` child therefore
+has exactly the same effective permission as the main agent: it cannot turn a read-only parent
+into a writer, while a desktop parent in workspace-modification mode may use its enabled shell
+tools without an extra delegation-specific elevation.
 
 ## Custom profiles
 

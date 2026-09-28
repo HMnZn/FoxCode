@@ -25,8 +25,10 @@ class _StubRuntime:
 
     def __init__(self, cwd: str) -> None:
         self.cwd = cwd
+        self.change_calls = 0
 
     async def change_cwd(self, cwd: str) -> None:  # pragma: no cover - 失败分支走不到
+        self.change_calls += 1
         self.cwd = cwd
 
 
@@ -78,3 +80,23 @@ class CwdChangeFailureTests(unittest.IsolatedAsyncioTestCase):
         message = str(caught.exception)
         self.assertIn("切换工作区失败", message)
         self.assertIn("PermissionError", message)
+
+    async def test_same_working_directory_does_not_replace_runtime(self) -> None:
+        with temp_dir_obj("cwd-test-") as raw:
+            runtime = _StubRuntime(str(Path(raw).resolve()))
+            host = _bare_host(runtime)
+            result = await host._cmd_cwd_change({"cwd": raw})
+
+        self.assertEqual(result["unchanged"], True)
+        self.assertEqual(runtime.change_calls, 0)
+
+    async def test_refuses_a_workspace_switch_while_any_session_is_running(self) -> None:
+        with temp_dir_obj("cwd-test-") as current, temp_dir_obj("cwd-test-") as target:
+            runtime = _StubRuntime(str(Path(current).resolve()))
+            host = _bare_host(runtime)
+            host._running_runtimes = {id(runtime)}
+            with self.assertRaises(HostError) as caught:
+                await host._cmd_cwd_change({"cwd": target})
+
+        self.assertIn("仍有会话正在运行", str(caught.exception))
+        self.assertEqual(runtime.change_calls, 0)

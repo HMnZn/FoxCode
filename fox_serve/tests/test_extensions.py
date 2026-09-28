@@ -194,7 +194,7 @@ class HostExtensionsSetTests(unittest.IsolatedAsyncioTestCase):
         self.runtime = _FakeRuntime(self.cwd, self.user_dir, self.manager)
         self.host = ServeHost(cwd=self.cwd, user_dir=self.user_dir)
         self.host._runtime = self.runtime  # noqa: SLF001
-        self.host._policy = PermissionPolicy("workspace-write", cwd=self.cwd)  # noqa: SLF001
+        self.host._policy = PermissionPolicy("workspace-modify", cwd=self.cwd)  # noqa: SLF001
         self.host._sessions = SessionIndex(cwd=self.cwd, user_dir=self.user_dir)  # noqa: SLF001
         self.frames: list[dict[str, Any]] = []
         self.host._send = lambda payload: self.frames.append(payload)  # noqa: SLF001
@@ -305,7 +305,7 @@ class HostInfoExtensionTests(unittest.IsolatedAsyncioTestCase):
         self.runtime = _FakeRuntime(self.cwd, self.user_dir, self.manager)
         self.host = ServeHost(cwd=self.cwd, user_dir=self.user_dir)
         self.host._runtime = self.runtime  # noqa: SLF001
-        self.host._policy = PermissionPolicy("workspace-write", cwd=self.cwd)  # noqa: SLF001
+        self.host._policy = PermissionPolicy("workspace-modify", cwd=self.cwd)  # noqa: SLF001
         self.host._sessions = SessionIndex(cwd=self.cwd, user_dir=self.user_dir)  # noqa: SLF001
         self.host._send = lambda payload: None  # noqa: SLF001
 

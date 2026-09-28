@@ -240,7 +240,7 @@ class MemoryExtensionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_memory_mutations_are_independent_of_workspace_permission_mode(self):
         store = MemoryStore(self.user, self.project)
-        for mode in ("read-only", "workspace-write", "full-access"):
+        for mode in ("read-only", "workspace-modify", "full-access"):
             doomed = store.save(
                 name=f"delete in {mode}", description="permission regression fixture",
                 type="project", content=f"remove this memory in {mode}",

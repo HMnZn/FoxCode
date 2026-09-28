@@ -1,15 +1,17 @@
 import { useMemo } from 'react'
-import { AlertTriangle, GitFork, Plus, RotateCcw, ShieldCheck } from 'lucide-react'
-import { Button, Chip, SegmentedControl, StatusDot, Tooltip } from '@/components/ui'
+import { AlertTriangle, Folder, GitFork, RotateCcw, ShieldCheck } from 'lucide-react'
+import { Button, Chip, IconButton, Tooltip } from '@/components/ui'
 import { MessageList } from '@/components/chat/MessageList'
 import { TraceList } from '@/components/chat/TraceList'
 import { Composer } from '@/components/chat/Composer'
+import { SessionStatusBar } from '@/components/chat/SessionStatusBar'
 import { PermissionPrompt } from '@/components/chat/PermissionPrompt'
 import { useSession } from '@/store/sessionStore'
 import { CHAT_VIEW_LABEL, useUi, type ChatView } from '@/store/uiStore'
 import { useWorkspace } from '@/store/workspaceStore'
 import { basename, shortPath } from '@/lib/format'
 import { cn } from '@/lib/cn'
+import { FoxMark } from '@/components/brand/Fox'
 
 const CHAT_VIEWS: ReadonlyArray<{ value: ChatView; label: string }> = [
   { value: 'chat', label: CHAT_VIEW_LABEL.chat },
@@ -25,9 +27,7 @@ function headerTitle(blocks: ReturnType<typeof useSession.getState>['timeline'][
 export function ChatPage() {
   const host = useSession((s) => s.host)
   const timeline = useSession((s) => s.timeline)
-  const transport = useSession((s) => s.transport)
   const answerPermission = useSession((s) => s.answerPermission)
-  const newSession = useSession((s) => s.newSession)
   const forkSession = useSession((s) => s.forkSession)
   const compact = useSession((s) => s.compact)
   const setTrust = useSession((s) => s.setTrust)
@@ -51,74 +51,66 @@ export function ChatPage() {
     timeline.blocks,
     host?.sessionFile ? basename(host.sessionFile).replace(/\.jsonl$/, '') : '新会话',
   )
+  const hasConversation = timeline.blocks.some(
+    (block) => block.kind !== 'notice' || block.title !== '会话已打开',
+  )
+  const emptySession = chatView === 'chat' && !hasConversation
 
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-canvas">
-      <header className="flex h-[52px] shrink-0 items-center gap-2 border-b border-line px-4">
-        <div className="flex min-w-0 flex-col">
-          <h1 className="truncate text-[13.5px] font-medium text-fg">{title}</h1>
-          <span className="flex items-center gap-1.5 text-2xs text-fg-subtle">
-            <StatusDot
-              tone={
-                transport.state === 'ready'
-                  ? 'success'
-                  : transport.state === 'connecting' || transport.state === 'degraded'
-                    ? 'warn'
-                    : 'danger'
-              }
-              pulse={transport.state === 'connecting'}
-            />
-            <span className="truncate">
-              {transport.state === 'ready'
-                ? 'Python sidecar 已连接'
-                : transport.state === 'connecting'
-                  ? '正在连接 sidecar…'
-                  : transport.state === 'degraded'
-                    ? `sidecar 降级${transport.detail ? `：${transport.detail}` : ''}`
-                    : '演示宿主（未连接 Python）'}
-            </span>
+      {!emptySession ? <header className="grid h-[76px] shrink-0 grid-rows-[40px_36px] border-b border-line px-5 pt-2">
+        <div className="flex min-w-0 items-center gap-2">
+          <div className="flex min-w-0 flex-1 items-center gap-2">
+            <h1 className="max-w-[420px] truncate text-[14px] font-medium text-fg">{title}</h1>
             {host?.cwd ? (
               <>
-                <span className="opacity-40">·</span>
-                <span className="truncate font-mono">{host.cwd}</span>
+                <span className="text-fg-caption">/</span>
+                <Tooltip content={host.cwd} side="bottom">
+                  <span className="max-w-[260px] truncate text-[12px] text-fg-subtle">
+                    {shortPath(host.cwd, 32)}
+                  </span>
+                </Tooltip>
               </>
             ) : null}
-          </span>
-        </div>
+          </div>
 
-        <div className="ml-auto flex items-center gap-1.5">
-          <SegmentedControl
-            aria-label="会话与轨迹切换"
-            size="xs"
-            value={chatView}
-            options={CHAT_VIEWS}
-            onChange={(next) => setChatView(next)}
-          />
-          {timeline.status === 'error' ? (
-            <Chip size="xs" tone="danger">
-              运行出错
-            </Chip>
-          ) : null}
+          {timeline.status === 'error' ? <Chip size="xs" tone="danger">运行出错</Chip> : null}
           {timeline.totals.turns > 0 ? (
-            <Chip size="xs">
+            <span className="hidden text-[11px] text-fg-caption xl:inline">
               {timeline.totals.turns} 回合 · {timeline.totals.toolCalls} 工具
-            </Chip>
+            </span>
           ) : null}
           <Tooltip content="压缩上下文" side="bottom">
-            <Button variant="ghost" size="xs" iconLeft={<RotateCcw size={12} />} onClick={() => void compact()}>
-              压缩
-            </Button>
+            <IconButton label="压缩上下文" size="sm" onClick={() => void compact()}>
+              <RotateCcw size={14} />
+            </IconButton>
           </Tooltip>
-          <Tooltip content="分叉当前会话（保留历史，另存新文件）" side="bottom">
-            <Button variant="ghost" size="xs" iconLeft={<GitFork size={12} />} onClick={() => void forkSession()}>
-              分叉
-            </Button>
+          <Tooltip content="分叉当前会话" side="bottom">
+            <IconButton label="分叉当前会话" size="sm" onClick={() => void forkSession()}>
+              <GitFork size={14} />
+            </IconButton>
           </Tooltip>
-          <Button variant="secondary" size="xs" iconLeft={<Plus size={12} />} onClick={() => void newSession()}>
-            新会话
-          </Button>
         </div>
-      </header>
+
+        <div role="group" aria-label="会话与轨迹切换" className="flex items-end gap-8 pl-2">
+          {CHAT_VIEWS.map((option) => (
+            <button
+              key={option.value}
+              type="button"
+              aria-pressed={chatView === option.value}
+              onClick={() => setChatView(option.value)}
+              className={cn(
+                'relative h-8 border-0 bg-transparent px-0 text-[13px] font-medium transition-colors',
+                chatView === option.value ? 'text-info' : 'text-fg-subtle hover:text-fg',
+                'after:absolute after:right-0 after:bottom-[-1px] after:left-0 after:h-0.5 after:rounded-full after:content-[\'\']',
+                chatView === option.value ? 'after:bg-info' : 'after:bg-transparent',
+              )}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+      </header> : null}
 
       {host?.projectTrusted === false ? (
         <div className="flex items-center gap-2 border-b border-warn/25 bg-warn-soft/50 px-4 py-1.5 text-2xs text-fg">
@@ -165,6 +157,24 @@ export function ChatPage() {
 
       {chatView === 'trace' ? (
         <TraceList blocks={timeline.blocks} status={timeline.status} />
+      ) : emptySession ? (
+        <div className="scroll-quiet flex min-h-0 flex-1 overflow-y-auto px-6">
+          <div className="mx-auto flex min-h-full w-full max-w-[1120px] flex-col justify-center pb-[10vh]">
+            <div className="mb-8 flex flex-wrap items-center justify-center gap-3 text-center">
+              <FoxMark size={34} tone="outline" label="FoxCode 灵狐" />
+              <h2 className="text-[30px] leading-9 font-medium tracking-[-0.025em] text-fg">
+                FoxCode
+              </h2>
+              <span className="rounded-full bg-info-soft px-2 py-0.5 text-[11px] text-info">预览版</span>
+            </div>
+            <div className="mb-3 flex items-center justify-center gap-7 px-4 text-[13px] text-fg-muted">
+              <span className="inline-flex items-center gap-1.5 font-medium text-fg">
+                <Folder size={15} /> {host?.cwd ? basename(host.cwd) : '工作区'}
+              </span>
+            </div>
+            <Composer draftKey={draftKey} hero />
+          </div>
+        </div>
       ) : (
         <MessageList
           blocks={timeline.blocks}
@@ -173,9 +183,14 @@ export function ChatPage() {
         />
       )}
 
-      <div className={cn('relative z-10 shrink-0 px-4 pb-3', 'bg-canvas')}>
+      {!emptySession ? <div
+        className={cn(
+          'relative z-10 -mt-9 shrink-0 px-4 pt-9 pb-3',
+          'bg-[linear-gradient(180deg,transparent_0px,var(--color-canvas)_36px)]',
+        )}
+      >
         {pending.length > 0 ? (
-          <div className="mx-auto mb-2 flex max-w-[920px] flex-col gap-2">
+          <div className="mx-auto mb-2 flex max-w-[952px] flex-col gap-2">
             {pending.map((request) => (
               <PermissionPrompt
                 key={request.id}
@@ -187,10 +202,11 @@ export function ChatPage() {
           </div>
         ) : null}
 
-        <div className="mx-auto w-full max-w-[920px]">
+        <div className="mx-auto w-full max-w-[952px]">
           <Composer draftKey={draftKey} />
         </div>
-      </div>
+      </div> : null}
+      {!emptySession ? <SessionStatusBar /> : null}
     </div>
   )
 }

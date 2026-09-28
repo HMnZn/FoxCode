@@ -11,8 +11,10 @@
  */
 const path = require('node:path')
 const fs = require('node:fs')
+const { spawn } = require('node:child_process')
 const { app, BrowserWindow, ipcMain, dialog, shell, nativeTheme } = require('electron')
 const { Sidecar } = require('./sidecar')
+const { TerminalSessions } = require('./terminal')
 
 const DEV_URL = process.env.VITE_DEV_SERVER_URL
 const SHOT_PATH = process.env.FOXCODE_SHOT
@@ -32,6 +34,8 @@ const WINDOW_ICON =
 let win = null
 /** @type {Sidecar | null} */
 let sidecar = null
+/** Embedded terminals (pipes, no PTY) owned by this process. */
+const terminals = new TerminalSessions()
 /** @type {Promise<void> | null} resolved when the FOXCODE_SHOT_CLICK sequence is done */
 let shotDriver = null
 
@@ -101,6 +105,9 @@ function createWindow() {
   win.on('maximize', () => send('window:maximized', true))
   win.on('unmaximize', () => send('window:maximized', false))
   win.on('closed', () => {
+    // The renderer that owns the terminals is gone: their output would have
+    // nowhere to go, and an orphaned shell keeps a handle on the workspace.
+    terminals.dispose()
     win = null
   })
 
@@ -258,6 +265,94 @@ ipcMain.handle('shell:show-item', async (_event, target) => {
   return true
 })
 
+ipcMain.handle('terminal:open', async (_event, target) => {
+  const cwd = path.resolve(String(target || process.cwd()))
+  if (!fs.existsSync(cwd) || !fs.statSync(cwd).isDirectory()) {
+    throw new Error(`终端目录不存在：${cwd}`)
+  }
+  let command
+  let args
+  if (process.platform === 'win32') {
+    const shell = process.env.ComSpec || 'cmd.exe'
+    if (/powershell/i.test(shell)) {
+      // PowerShell 没有 `start` 内建，直接开一个带 -NoExit 的窗口。
+      command = shell
+      args = ['-NoExit']
+    } else {
+      // 关键：`cmd /K` 自己不会申请新控制台 —— GUI 进程（Electron）派生的控制台子进程
+      // 默认共享/没有控制台，于是"终端"启动了却没有任何窗口。`start` 是 cmd 内建，
+      // 由它去要一个新控制台窗口，窗口的工作目录继承下面的 `cwd`。
+      command = shell
+      args = ['/c', 'start', '', 'cmd.exe', '/K']
+    }
+  } else if (process.platform === 'darwin') {
+    command = 'open'
+    args = ['-a', 'Terminal', cwd]
+  } else {
+    // 各发行版的默认终端各不相同，逐个试，全失败才报错。
+    const candidates = [
+      ['x-terminal-emulator', []],
+      ['gnome-terminal', []],
+      ['konsole', []],
+      ['xfce4-terminal', []],
+      ['alacritty', []],
+      ['xterm', []],
+    ]
+    for (const [name, extra] of candidates) {
+      try {
+        const child = spawn(name, extra, { cwd, detached: true, stdio: 'ignore' })
+        await new Promise((resolve, reject) => {
+          child.once('spawn', resolve)
+          child.once('error', reject)
+        })
+        child.unref()
+        return true
+      } catch {
+        // 装下一个
+      }
+    }
+    throw new Error('找不到可用的终端程序（试过 x-terminal-emulator / gnome-terminal / konsole / xterm）')
+  }
+  const child = spawn(command, args, {
+    cwd,
+    detached: true,
+    stdio: 'ignore',
+    windowsHide: false,
+  })
+  await new Promise((resolve, reject) => {
+    child.once('spawn', resolve)
+    child.once('error', reject)
+  })
+  child.unref()
+  return true
+})
+
+/* ------------------------------------------------------------------ */
+/* Embedded terminal                                                   */
+/* ------------------------------------------------------------------ */
+
+// Output is pushed, not polled: a command can print for minutes (a dev server)
+// and the renderer must not have to ask for it. `id` routes the chunk to the
+// panel that owns that shell.
+terminals.on('data', (payload) => send('terminal:data', payload))
+terminals.on('exit', (payload) => send('terminal:exit', payload))
+
+ipcMain.handle('terminal:start', (_event, options = {}) => {
+  const cwd = path.resolve(String(options.cwd || process.cwd()))
+  if (!fs.existsSync(cwd) || !fs.statSync(cwd).isDirectory()) {
+    throw new Error(`终端目录不存在：${cwd}`)
+  }
+  return terminals.start({ cwd })
+})
+
+ipcMain.handle('terminal:write', (_event, payload = {}) => {
+  const id = String(payload.id || '')
+  if (!id) throw new Error('terminal:write 需要一个终端 id')
+  return terminals.write(id, String(payload.data ?? ''))
+})
+
+ipcMain.handle('terminal:kill', (_event, id) => terminals.kill(String(id || '')))
+
 ipcMain.handle('app:theme-flash', () => {
   // Brief native attention pulse when a run finishes off-screen.
   if (!win || win.isDestroyed()) return false
@@ -336,6 +431,7 @@ if (!app.requestSingleInstanceLock()) {
   })
 
   app.on('before-quit', () => {
+    terminals.dispose()
     sidecar?.stop()
     sidecar = null
   })

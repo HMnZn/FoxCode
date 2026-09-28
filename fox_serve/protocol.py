@@ -197,6 +197,15 @@ def stream_event_payload(event: Any) -> Any:
 
     if event is None:
         return None
+    # Real provider events contain ``partial`` (the entire growing message).
+    # Exclude it before serialization, not afterwards: otherwise each token
+    # re-encodes the entire HTML file and saturates the desktop pipe.
+    if hasattr(event, "partial"):
+        fields = ("type", "content_index", "delta", "content", "tool_call")
+        return {
+            name: to_jsonable(getattr(event, name), alias=False)
+            for name in fields if hasattr(event, name)
+        }
     return to_jsonable(event, alias=False)
 
 
@@ -213,13 +222,16 @@ def event_payload(event: Any) -> dict[str, Any] | None:
     if etype == "message_start":
         return {"type": etype, "message": message_payload(getattr(event, "message", None))}
     if etype == "message_update":
-        return {
+        payload = {
             "type": etype,
-            "message": message_payload(getattr(event, "message", None)),
             "assistant_message_event": stream_event_payload(
                 getattr(event, "assistant_message_event", None)
             ),
         }
+        usage = getattr(event, "context_usage", None)
+        if usage is not None:
+            payload["context_usage"] = to_jsonable(usage, alias=False)
+        return payload
     if etype == "message_end":
         return {"type": etype, "message": message_payload(getattr(event, "message", None))}
     if etype == "turn_end":
@@ -258,8 +270,39 @@ def event_payload(event: Any) -> dict[str, Any] | None:
             "result": tool_result_text(getattr(event, "result", None)),
             "is_error": bool(getattr(event, "is_error", False)),
         }
-    if etype in ("compaction_start", "compaction_end", "compaction_error"):
-        return to_jsonable(event, alias=True)
+    if etype in (
+        "compaction_start",
+        "compaction_update",
+        "compaction_end",
+        "compaction_error",
+    ):
+        payload = {
+            "type": etype,
+            "automatic": bool(getattr(event, "automatic", False)),
+        }
+        for source, target in (
+            ("pre_tokens", "preTokens"),
+            ("post_tokens", "postTokens"),
+            ("summary_tokens", "summaryTokens"),
+        ):
+            value = getattr(event, source, None)
+            if isinstance(value, int):
+                payload[target] = value
+        error = getattr(event, "error", None)
+        if error:
+            payload["error"] = str(error)
+        result = getattr(event, "result", None)
+        if result is not None:
+            summary = getattr(result, "summary", None)
+            if isinstance(summary, str) and summary:
+                payload["summary"] = summary[:4000]
+            removed = getattr(result, "removed_count", None)
+            if isinstance(removed, int):
+                payload["removedCount"] = removed
+            retained = getattr(result, "retained_tail", None)
+            if isinstance(retained, list):
+                payload["retainedCount"] = len(retained)
+        return payload
     if etype in ("context_overflow_retry", "model_retry"):
         return to_jsonable(event, alias=True)
     if etype == "session_start":

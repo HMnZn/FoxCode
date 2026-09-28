@@ -42,6 +42,9 @@ const SLOW_METHODS = new Set([
   'invoke_skill',
 ])
 
+/** Abort is interactive control traffic; waiting the generic 30s is useless. */
+const FAST_METHOD_TIMEOUTS = new Map([['abort', 5_000]])
+
 class Sidecar extends EventEmitter {
   /**
    * @param {string} command
@@ -57,6 +60,7 @@ class Sidecar extends EventEmitter {
     this.extraEnv = extraEnv
     this.seq = 0
     this.pending = new Map()
+    this.expired = new Set()
     this.buffer = ''
     this.child = null
     this.stopping = false
@@ -113,6 +117,7 @@ class Sidecar extends EventEmitter {
         since: Date.now(),
       })
       for (const [, pending] of this.pending) {
+        clearTimeout(pending.timer)
         pending.reject(new Error('sidecar exited before responding'))
       }
       this.pending.clear()
@@ -160,10 +165,14 @@ class Sidecar extends EventEmitter {
     if (payload.id && this.pending.has(payload.id)) {
       const pending = this.pending.get(payload.id)
       this.pending.delete(payload.id)
+      clearTimeout(pending.timer)
       if (payload.error) pending.reject(new Error(String(payload.error)))
       else pending.resolve(payload.result)
       return
     }
+    // A response may arrive after its caller timed out.  It is not an unknown
+    // protocol message and should not flood the log with misleading warnings.
+    if (payload.id && this.expired.delete(payload.id)) return
     this.emit('stderr', `未识别的宿主消息：${line.slice(0, 400)}`)
   }
 
@@ -174,25 +183,32 @@ class Sidecar extends EventEmitter {
     if (DEBUG) this.emit('stderr', `-> ${line.trimEnd().slice(0, 300)}`)
     // `prompt` 在 fox_serve 里是「入队后立刻返回」，进度由帧驱动，所以默认
     // 30s 足够；但压缩/重载/换会话/导出这些同步命令可能跑很久，给它们放宽。
-    const timeout = SLOW_METHODS.has(method) ? 300_000 : 30_000
+    const timeout = FAST_METHOD_TIMEOUTS.get(method) ?? (SLOW_METHODS.has(method) ? 300_000 : 30_000)
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject })
+      const pending = { resolve, reject, timer: null }
+      this.pending.set(id, pending)
+      pending.timer = setTimeout(() => {
+        if (!this.pending.has(id)) return
+        this.pending.delete(id)
+        this.expired.add(id)
+        // Bound the diagnostic set if a broken child never sends late replies.
+        if (this.expired.size > 1_000) this.expired.delete(this.expired.values().next().value)
+        reject(new Error(`${method} 超时（${Math.round(timeout / 1000)}s）`))
+      }, timeout)
+      pending.timer.unref?.()
       this.child.stdin.write(line, 'utf8', (error) => {
         if (!error) return
         this.pending.delete(id)
+        clearTimeout(pending.timer)
         reject(error)
       })
-      setTimeout(() => {
-        if (!this.pending.has(id)) return
-        this.pending.delete(id)
-        reject(new Error(`${method} 超时（${Math.round(timeout / 1000)}s）`))
-      }, timeout).unref?.()
     })
   }
 
   stop() {
     this.stopping = true
     if (!this.child) return
+    for (const [, pending] of this.pending) clearTimeout(pending.timer)
     this.child.stdin.end()
     this.child.kill()
     this.child = null

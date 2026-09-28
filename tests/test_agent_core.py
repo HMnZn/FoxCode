@@ -151,6 +151,27 @@ class AgentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(stream.options[1].reasoning, "high")
         self.assertEqual(agent.state.thinking_level, "high")
 
+    async def test_silent_model_stream_times_out_and_closes(self):
+        closed = asyncio.Event()
+
+        def stalled_stream(model, context, options):
+            stream = EventStream()
+
+            async def wait_forever():
+                try:
+                    await asyncio.Event().wait()
+                finally:
+                    closed.set()
+
+            stream.set_producer(asyncio.create_task(wait_forever()))
+            return stream
+
+        agent = make_agent(stalled_stream, stream_options={"timeout_ms": 10})
+        await agent.prompt("do not hang")
+        self.assertTrue(closed.is_set())
+        self.assertEqual(agent.state.messages[-1].stop_reason, "error")
+        self.assertIn("produced no event", agent.state.messages[-1].error_message)
+
     async def test_abort_model_closes_producer(self):
         started, closed = asyncio.Event(), asyncio.Event()
 
@@ -369,6 +390,106 @@ class SessionAndHarnessTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(events.count("compaction_end"), 1)
         self.assertTrue(any(e.type == "compaction" for e in session.get_entries()))
         self.assertEqual(harness.state.messages, session.build_context())
+
+    async def test_backend_attaches_live_context_usage_to_stream_updates(self):
+        harness = AgentSession(
+            AgentSessionConfig(
+                model=FAUX_MODEL,
+                tools=[],
+                skills=[],
+                stream_fn=scripted(FauxScript(text="streaming token accounting")),
+            )
+        )
+        snapshots = []
+        harness.subscribe(
+            lambda event, cancel: snapshots.append(event.context_usage)
+            if event.type == "message_update" and event.context_usage is not None
+            else None
+        )
+        await harness.prompt("count in backend")
+        self.assertTrue(snapshots)
+        self.assertTrue(all(snapshot.estimated for snapshot in snapshots))
+        self.assertGreater(snapshots[-1].context_tokens, 0)
+        self.assertGreater(snapshots[-1].output_tokens, 0)
+
+    async def test_compaction_streams_progress_from_backend(self):
+        session = SessionManager()
+        for _ in range(4):
+            session.append_message(UserMessage(content="old context " * 300))
+            session.append_message(
+                AssistantMessage(content=[TextContent(text="old answer")], stop_reason="stop")
+            )
+        stream = scripted(
+            FauxScript(text="incremental summary"),
+            FauxScript(text="done"),
+        )
+        harness = AgentSession(
+            AgentSessionConfig(
+                model=FAUX_MODEL.model_copy(
+                    update={"context_window": 1800, "max_tokens": 50}
+                ),
+                session=session,
+                tools=[],
+                skills=[],
+                stream_fn=stream,
+                compaction=CompactionSettings(
+                    reserve_tokens=300, keep_recent_tokens=80
+                ),
+            )
+        )
+        progress = []
+        harness.subscribe(
+            lambda event, cancel: progress.append(event.summary_tokens)
+            if event.type == "compaction_update"
+            else None
+        )
+        await harness.prompt("continue")
+        self.assertTrue(progress)
+        self.assertGreater(progress[-1], 0)
+
+    async def test_auto_compaction_runs_between_tool_turns(self):
+        async def large_result(call_id, args, cancel, update):
+            return AgentToolResult([TextContent(text="x" * 3000)])
+
+        tool = tool_fixture(
+            "large",
+            "Return a large result",
+            {"type": "object", "properties": {}, "additionalProperties": False},
+            large_result,
+        )
+        summarized = []
+
+        async def summary(model, messages, **options):
+            summarized.extend(messages)
+            return "Earlier tool task"
+
+        stream = scripted(
+            FauxScript(tool_calls=[ToolCall(id="big", name="large", arguments={})]),
+            FauxScript(text="done after compact"),
+        )
+        harness = AgentSession(
+            AgentSessionConfig(
+                model=FAUX_MODEL.model_copy(
+                    update={"context_window": 1200, "max_tokens": 50}
+                ),
+                tools=[tool],
+                skills=[],
+                stream_fn=stream,
+                summary_fn=summary,
+                compaction=CompactionSettings(
+                    reserve_tokens=400, keep_recent_tokens=80
+                ),
+            )
+        )
+        events = []
+        harness.subscribe(lambda event, cancel: events.append(event.type))
+        await harness.prompt("run tool")
+        self.assertEqual(len(stream.contexts), 2)
+        self.assertTrue(summarized)
+        self.assertLess(
+            events.index("tool_execution_end"), events.index("compaction_start")
+        )
+        self.assertLess(events.index("compaction_end"), events.index("agent_end"))
 
     async def test_failed_summary_preserves_context(self):
         async def summary(model, messages, **options):

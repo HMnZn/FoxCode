@@ -11,6 +11,7 @@ import { SettingsPage } from '@/pages/SettingsPage'
 import { SkillsPage } from '@/pages/SkillsPage'
 import { UsagePage } from '@/pages/UsagePage'
 import { useSession } from '@/store/sessionStore'
+import { useRail } from '@/store/railStore'
 import { useUi } from '@/store/uiStore'
 import { useWorkspace } from '@/store/workspaceStore'
 import { WorkspacePicker } from '@/components/workspace/WorkspacePicker'
@@ -21,7 +22,7 @@ export function App() {
   const init = useSession((s) => s.init)
   const abort = useSession((s) => s.abort)
   const newSession = useSession((s) => s.newSession)
-  const host = useSession((s) => s.host)
+  const hostCwd = useSession((s) => s.host?.cwd)
   const workspace = useWorkspace((s) => s.current)
   const syncWorkspace = useWorkspace((s) => s.syncHost)
 
@@ -29,21 +30,39 @@ export function App() {
     void init()
   }, [init])
 
-  // 每 4 秒和宿主对账一次：界面还锁着、宿主却已经没有在跑的一轮时自己解锁（结束帧
-  // 丢了就永远「生成中」），以及长时间没有新帧时提示「可能卡住」。
-  // 放在 App 而不是 ChatPage：切到「用量」页时同样需要有人盯着。
+  // 每 4 秒和宿主对账，并刷新左侧会话树。后台 runtime 完成时当前页面
+  // 不一定订阅它的正文帧，但 sessions.list 会更新「运行中」圆点和时间。
   useEffect(() => {
+    let polling = false
+    let disposed = false
+    const poll = async () => {
+      // A slow sidecar must not accumulate a new pair of 30s requests every
+      // four seconds.  One in-flight reconciliation cycle is enough.
+      if (polling || disposed) return
+      polling = true
+      try {
+        await Promise.allSettled([
+          useSession.getState().reconcile(),
+          useSession.getState().refreshSessions(),
+        ])
+      } finally {
+        polling = false
+      }
+    }
     const timer = window.setInterval(() => {
-      void useSession.getState().reconcile()
+      void poll()
     }, 4000)
-    return () => window.clearInterval(timer)
+    return () => {
+      disposed = true
+      window.clearInterval(timer)
+    }
   }, [])
 
   // The workspace is remembered in the renderer, so once the host introduces
   // itself we push the remembered folder back into it.
   useEffect(() => {
     void syncWorkspace()
-  }, [syncWorkspace, host, workspace])
+  }, [syncWorkspace, hostCwd, workspace])
 
   const onKeyDown = useCallback(
     (event: KeyboardEvent) => {
@@ -75,6 +94,19 @@ export function App() {
       if (mod && event.code === 'KeyJ') {
         event.preventDefault()
         useUi.getState().toggleInspector()
+        return
+      }
+      if (mod && event.code === 'Backquote') {
+        event.preventDefault()
+        // Ctrl+` used to launch an OS terminal window; the terminal now lives
+        // inside the window as a tab of the right-hand workbench (same key,
+        // same promise: a shell at the workspace).
+        useRail.getState().toggleTerminal()
+        return
+      }
+      if (mod && event.altKey && event.code === 'KeyP') {
+        event.preventDefault()
+        useRail.getState().openFiles()
         return
       }
       if (event.key === 'Escape' && !inField) {
@@ -109,9 +141,10 @@ export function App() {
     )
   }
 
-  // DSH frame: a sidebar-filled strip on top (drag region), then a single row
-  // of columns. Only the first content column is rounded, so the strip reads as
-  // the window chrome around the workbench.
+  // DSH frame: the sidebar and caption share one fill while the complete
+  // workbench (conversation + optional details) is one rounded document.
+  // Keeping the inspector inside this document is important: when it opens it
+  // should split the workspace, not look like a second app bolted to its edge.
   return (
     <div className="flex h-full min-h-0 flex-col bg-surface text-fg">
       <TitleBar />
@@ -119,16 +152,18 @@ export function App() {
       <div className="flex min-h-0 flex-1 gap-0 bg-surface">
         <Sidebar />
 
-        <main className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-tl-[16px] bg-canvas [corner-shape:round]">
-          {view === 'chat' ? <ChatPage /> : null}
-          {view === 'sessions' ? <SessionsPage /> : null}
-          {view === 'skills' ? <SkillsPage /> : null}
-          {view === 'extensions' ? <ExtensionsPage /> : null}
-          {view === 'usage' ? <UsagePage /> : null}
-          {view === 'settings' ? <SettingsPage /> : null}
-        </main>
+        <section className="flex min-w-0 flex-1 overflow-hidden rounded-tl-[16px] bg-canvas [corner-shape:round]">
+          <main className="flex min-w-0 flex-1 flex-col overflow-hidden bg-canvas">
+            {view === 'chat' ? <ChatPage /> : null}
+            {view === 'sessions' ? <SessionsPage /> : null}
+            {view === 'skills' ? <SkillsPage /> : null}
+            {view === 'extensions' ? <ExtensionsPage /> : null}
+            {view === 'usage' ? <UsagePage /> : null}
+            {view === 'settings' ? <SettingsPage /> : null}
+          </main>
 
-        {view === 'chat' && inspectorOpen ? <Inspector /> : null}
+          {view === 'chat' && inspectorOpen ? <Inspector /> : null}
+        </section>
       </div>
 
       <CommandPalette />

@@ -1,5 +1,4 @@
 import { formatTokens, uid } from '@/lib/format'
-import { estimateTokens } from '@/lib/tokens'
 import type {
   AssistantMessage,
   HostFrame,
@@ -98,11 +97,9 @@ export interface ContextUsage {
   limit: number
   source: 'none' | 'usage' | 'compaction' | 'host'
   /**
-   * 本轮**已经在流、但还没拿到 usage** 的部分（按字符估算）。
+   * 兼容旧宿主的流式增量字段；新宿主直接回传完整后端快照，因此为 0。
    *
-   * 只到 `message_end` 才更新「已用」会让人以为卡住了：一整轮思考 + 回答可能跑一分钟
-   * 以上，期间数字一动不动。这里把流式文字的估算量单独存着，UI 显示 used + live，
-   * 拿到权威 usage 后再把它清零归位。
+   * token 估算由 Python coding backend 负责，前端不再重复分词/按字符计数。
    */
   live?: number
   updatedAt?: number
@@ -253,22 +250,26 @@ function compactionText(frame: {
   return parts.length > 0 ? parts.join(' · ') : undefined
 }
 
-/**
- * 流式过程中把「已经在流、但还没有 usage」的部分记进 `context.live`。
- *
- * 只算当前这条流式块：`message_end` 拿到权威 usage 时 `contextFromUsage` 会把 live
- * 归零，所以 UI 上 `used + live` 不会把同一段文字重复计算。
- */
-function withLiveTokens(context: ContextUsage, ...parts: string[]): ContextUsage {
-  let live = 0
-  for (const part of parts) live += estimateTokens(part)
-  return { ...context, live }
+/** Apply the Python backend's live estimate; the renderer never counts text. */
+function contextFromBackend(
+  context: ContextUsage,
+  snapshot: { context_tokens: number; output_tokens: number },
+  ts: number,
+): ContextUsage {
+  return {
+    ...context,
+    used: Math.max(0, snapshot.context_tokens),
+    output: Math.max(0, snapshot.output_tokens),
+    source: 'host',
+    live: 0,
+    updatedAt: ts,
+  }
 }
 
 /**
- * 用宿主 `host.info.contextTokens` 的估算**补上**上下文占用。
+ * 用后端通过 `host.info.contextTokens` 返回的估算**补上**上下文占用。
  *
- * 只在还没有更权威的数字时生效：已经拿过最近一次请求的 usage 或压缩事件时，宿主的粗估
+ * 只在还没有更权威的数字时生效：已经拿过最近一次请求的 usage 或压缩事件时，后端的粗估
  * （按字符数除以 4 得出的量级）不应该反过来盖掉它 —— 那会让进度条看起来在自己的数字上跳。
  */
 export function applyHostContext(
@@ -450,7 +451,18 @@ function foldFrame(state: TimelineState, frame: HostFrame): TimelineState {
 
     case 'message_update': {
       const event = frame.assistant_message_event
+      const backendContext = frame.context_usage
+        ? contextFromBackend(state.context, frame.context_usage, ts)
+        : state.context
       switch (event.type) {
+        case 'toolcall_start':
+        case 'toolcall_delta':
+        case 'toolcall_end':
+          return {
+            ...state,
+            activity: event.type === 'toolcall_end' ? '工具参数已就绪' : '正在生成工具参数…',
+            context: backendContext,
+          }
         case 'thinking_start':
         case 'text_start': {
           const { state: next, block } = streamingAssistant(state, ts)
@@ -462,6 +474,7 @@ function foldFrame(state: TimelineState, frame: HostFrame): TimelineState {
               thinkingStreaming: event.type === 'thinking_start',
               textStreaming: event.type === 'text_start',
             }),
+            context: backendContext,
           }
         }
         case 'thinking_delta': {
@@ -474,8 +487,7 @@ function foldFrame(state: TimelineState, frame: HostFrame): TimelineState {
               thinkingStreaming: true,
             }),
             activity: '思考中',
-            // 本轮还没拿到 usage，但上下文确实在长：显示 used + live，别让人以为卡住。
-            context: withLiveTokens(next.context, thinking, block.text),
+            context: backendContext,
           }
         }
         case 'text_delta': {
@@ -490,7 +502,7 @@ function foldFrame(state: TimelineState, frame: HostFrame): TimelineState {
               thinkingMs: block.thinkingMs ?? (block.thinking ? ts - block.startedAt : undefined),
             }),
             activity: '生成回答中',
-            context: withLiveTokens(next.context, block.thinking, text),
+            context: backendContext,
           }
         }
         case 'text_end':
@@ -502,6 +514,7 @@ function foldFrame(state: TimelineState, frame: HostFrame): TimelineState {
               textStreaming: false,
               thinkingStreaming: false,
             }),
+            context: backendContext,
           }
         }
         case 'error':
@@ -689,6 +702,10 @@ function foldFrame(state: TimelineState, frame: HostFrame): TimelineState {
         ...state,
         status: 'compacting',
         activity: '压缩上下文中',
+        context:
+          typeof frame.preTokens === 'number'
+            ? { ...state.context, used: frame.preTokens, live: 0, source: 'host', updatedAt: ts }
+            : state.context,
         blocks: [
           ...state.blocks,
           {
@@ -700,6 +717,16 @@ function foldFrame(state: TimelineState, frame: HostFrame): TimelineState {
             description: '历史消息将被摘要替换，最近若干条原文保留',
           },
         ],
+      }
+
+    case 'compaction_update':
+      return {
+        ...state,
+        status: 'compacting',
+        activity:
+          typeof frame.summaryTokens === 'number'
+            ? `压缩上下文中 · 摘要 ${formatTokens(frame.summaryTokens)} tokens`
+            : '压缩上下文中',
       }
 
     case 'compaction_end': {

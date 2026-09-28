@@ -147,9 +147,9 @@ export function SettingsPage() {
 
   return (
     <div ref={scrollRef} className="scroll-quiet flex h-full flex-col overflow-y-auto bg-canvas">
-      <div className="mx-auto flex w-full max-w-[1000px] flex-col gap-5 p-6">
+      <div className="mx-auto flex w-full max-w-[960px] flex-col gap-6 px-8 py-9 lg:px-12">
         <header className="flex flex-wrap items-center gap-2">
-          <h1 className="text-[20px] leading-[28px] font-medium text-fg">设置</h1>
+          <h1 className="text-[26px] leading-8 font-medium tracking-[-0.02em] text-fg">设置</h1>
           <Chip size="sm" mono>
             {host?.transport ?? '未连接'}
           </Chip>

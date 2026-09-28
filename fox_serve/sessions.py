@@ -1,33 +1,61 @@
-"""会话索引：把 `.foxcode/sessions/*.jsonl` 读成前端要的 `SessionSummary`。
+"""会话索引：把用户级 session 目录读成前端的 `SessionSummary`。
 
 刻意只做**轻量解析**（不 import 宿主的 SessionManager）：JSONL 的第一行是
 meta、之后每行一个条目（`packages/fox_coding_agent/src/core/session_manager.py:121-151`），
 列表页只关心标题/条数/用量，没必要把整棵树反序列化成 pydantic 模型。
 
-会话目录规则见 `packages/fox_coding_agent/src/core/runtime.py:106-112`：
-project 作用域 → `<cwd>/.foxcode/sessions`；user 作用域 →
-`<user_dir>/sessions/<sha256(normcase(cwd))[:16]>`。这里两个都扫，保证「最近会话」
-不会漏。
+这里只扫描 `<user_dir>/sessions/--<normalized-cwd>--/session-*/session.jsonl`。
+旧的项目级 `.foxcode/sessions` 不迁移、不回退，也不进入应用列表。
 """
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
+import re
+import shutil
+import tempfile
 import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable
 
+from fox_coding_agent.src.core.session_layout import SessionLayout, session_id_from_path
+
 #: 列表页最多返回多少个会话。
 DEFAULT_LIMIT = 50
 
+#: 手动改名允许的最大长度（前端输入框限制同一个值）。
+MAX_LABEL_LENGTH = 120
 
-def _user_scope_dir(user_dir: Path, cwd: Path) -> Path:
-    key = hashlib.sha256(os.path.normcase(str(cwd.resolve())).encode("utf-8")).hexdigest()[:16]
-    return user_dir / "sessions" / key
+#: 分叉会话标题的后缀（前端 `lib/format.ts::branchLabel` 用同一套规则）。
+BRANCH_SUFFIX = "-分支"
+
+_BRANCH_PATTERN = re.compile(r"^(?P<root>.+?)-分支(?P<count>\d*)$")
+
+
+def branch_label(base: str) -> str:
+    """分叉出来的会话叫什么：`标题-分支`，再分叉一次就是 `标题-分支2`。
+
+    `标题` 取自分叉前的标题（手动改过就用那个，否则是首条用户消息），所以连着分叉
+    不会叠成一串 `-分支-分支`。
+
+    截断的是**原题**而不是整个结果：后缀说明这是一条分叉，裁掉它就只剩一个和原会话
+    同名的标题，列表里根本分不出来。
+    """
+
+    text = " ".join(str(base or "").split()) or "新会话"
+    match = _BRANCH_PATTERN.match(text)
+    if match is not None:
+        return _fit_branch(str(match.group("root")), f"{BRANCH_SUFFIX}{int(match.group('count') or 1) + 1}")
+    return _fit_branch(text, BRANCH_SUFFIX)
+
+
+def _fit_branch(root: str, suffix: str) -> str:
+    """把 `root + suffix` 塞进 `MAX_LABEL_LENGTH`，优先保住后缀。"""
+
+    return f"{root[: max(1, MAX_LABEL_LENGTH - len(suffix))]}{suffix}"
 
 
 def _first_text(parts: Any) -> str:
@@ -185,7 +213,7 @@ def read_session_file(path: Path, *, live: bool = False) -> SessionFile | None:
 
     return SessionFile(
         path=path,
-        session_id=path.stem,
+        session_id=session_id_from_path(path),
         cwd=cwd,
         created_at=created_at or _iso(mtime),
         updated_at=mtime,
@@ -197,27 +225,82 @@ def read_session_file(path: Path, *, live: bool = False) -> SessionFile | None:
     )
 
 
+def set_session_label(path: Path, label: str | None) -> None:
+    """只改会话文件第一行的 `_meta._label`，其余条目原样抄过去。
+
+    标题的事实来源就是这里（`read_session_file` 先读 `_meta._label`，为空才退回首条
+    用户消息），所以改名不必重写整棵会话树。写临时文件 + `os.replace` 与
+    `JsonlSessionStorage._save()` 保持一致：中途失败不会留下半个会话文件。
+
+    Windows 上必须先关掉源文件再 `os.replace`：替换一个还开着的文件会得到
+    `PermissionError: [WinError 5]`。
+    """
+
+    temp_name = ""
+    try:
+        with path.open("r", encoding="utf-8") as source:
+            first = source.readline()
+            try:
+                meta_obj = json.loads(first)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"会话文件头不是合法 JSON：{path}") from exc
+            if not isinstance(meta_obj, dict):
+                raise ValueError(f"会话文件头不是对象：{path}")
+            meta = meta_obj.get("_meta")
+            if not isinstance(meta, dict):
+                meta = {}
+                meta_obj["_meta"] = meta
+            if label:
+                meta["_label"] = label
+            else:
+                meta.pop("_label", None)
+            handle = tempfile.NamedTemporaryFile(
+                "w",
+                encoding="utf-8",
+                dir=str(path.parent),
+                prefix=".label-",
+                suffix=".tmp",
+                delete=False,
+            )
+            temp_name = handle.name
+            with handle:
+                handle.write(json.dumps(meta_obj, ensure_ascii=False) + "\n")
+                shutil.copyfileobj(source, handle)
+                handle.flush()
+                os.fsync(handle.fileno())
+        os.replace(temp_name, path)
+    except BaseException:
+        if temp_name:
+            try:
+                os.unlink(temp_name)
+            except OSError:
+                pass
+        raise
+
+
 class SessionIndex:
     """按目录扫会话文件，供 `sessions.list` / `sessions.open` 使用。"""
 
     def __init__(self, *, cwd: str | Path, user_dir: str | Path, limit: int = DEFAULT_LIMIT) -> None:
         self.cwd = Path(cwd).absolute()
         self.user_dir = Path(user_dir).expanduser()
+        self.layout = SessionLayout(self.user_dir / "sessions")
         self.limit = limit
 
     # ---- 目录 ----
 
     def directories(self) -> list[Path]:
-        return [self.cwd / ".foxcode" / "sessions", _user_scope_dir(self.user_dir, self.cwd)]
+        if not self.layout.root.is_dir():
+            return [self.layout.workspace_dir(self.cwd)]
+        return [path for path in self.layout.root.glob("--*--") if path.is_dir()]
 
     def files(self) -> list[Path]:
-        seen: dict[Path, None] = {}
-        for directory in self.directories():
-            if not directory.is_dir():
-                continue
-            for path in sorted(directory.glob("*.jsonl")):
-                seen.setdefault(path, None)
-        return list(seen)
+        return self.layout.files(self.cwd)
+
+    def all_files(self) -> list[Path]:
+        """Sessions for every workspace, used by the desktop workspace tree."""
+
+        return self.layout.all_files()
 
     # ---- 查询 ----
 
@@ -226,13 +309,19 @@ class SessionIndex:
 
         if not session_id:
             return None
-        candidate = Path(session_id)
-        if candidate.is_file():
-            return candidate
-        for path in self.files():
-            if path.stem == session_id or path.name == session_id:
+        candidate = Path(session_id).expanduser()
+        try:
+            candidate_key = str(candidate.resolve()).casefold()
+        except OSError:
+            candidate_key = ""
+        for path in self.all_files():
+            try:
+                same_file = candidate_key != "" and str(path.resolve()).casefold() == candidate_key
+            except OSError:  # pragma: no cover
+                same_file = False
+            if same_file or session_id_from_path(path) == session_id or path.name == session_id:
                 return path
-        return Path(session_id) if candidate.suffix == ".jsonl" else None
+        return None
 
     def latest(self) -> Path | None:
         files = self.files()
@@ -248,14 +337,36 @@ class SessionIndex:
     ) -> list[dict[str, Any]]:
         """新→旧返回会话摘要。
 
-        宿主每次启动都会新建一个会话文件（`AgentSessionRuntime` 的默认行为），
-        所以磁盘上很容易堆一批 0 条消息的空会话。列表默认把它们过滤掉，
-        只保留真正聊过的会话 + 当前 live 的那一个（`include_empty=True` 可关闭过滤）。
+        空白草稿不会落盘，因此这里通常只会遇到真正提交过消息的会话。
         """
 
         live_path = Path(live_file).resolve() if live_file else None
         summaries: list[SessionFile] = []
         for path in self.files():
+            try:
+                is_live = live_path is not None and path.resolve() == live_path
+            except OSError:  # pragma: no cover
+                is_live = False
+            session = read_session_file(path, live=is_live)
+            if session is None:
+                continue
+            if not include_empty and session.message_count == 0 and not is_live:
+                continue
+            summaries.append(session)
+        summaries.sort(key=lambda item: item.updated_at, reverse=True)
+        return [item.to_summary() for item in summaries[: self.limit]]
+
+    def list_all(
+        self,
+        *,
+        live_file: str | Path | None = None,
+        include_empty: bool = False,
+    ) -> list[dict[str, Any]]:
+        """Return recent sessions across all user-level workspace buckets."""
+
+        live_path = Path(live_file).resolve() if live_file else None
+        summaries: list[SessionFile] = []
+        for path in self.all_files():
             try:
                 is_live = live_path is not None and path.resolve() == live_path
             except OSError:  # pragma: no cover
@@ -281,6 +392,29 @@ class SessionIndex:
         「正在使用的会话」由宿主判断，这里不做业务判断。
         """
 
+        path = self._owned(session_id)
+        path.unlink()
+        try:
+            path.parent.rmdir()
+        except OSError:
+            pass
+        return path
+
+    def rename(self, session_id: str, label: str | None) -> Path:
+        """给一个历史会话改名（写 `_meta._label`），返回会话文件路径。
+
+        边界和 `delete` 一样，只碰自己会话目录里的文件。**正在被 runtime 打开的
+        会话不要走这里**：那个 storage 在内存里握着旧 label，下一次 append 触发的
+        整体重写会把这里的改动覆盖掉，得让宿主走它自己的 SessionManager。
+        """
+
+        path = self._owned(session_id)
+        set_session_label(path, label)
+        return path
+
+    def _owned(self, session_id: str) -> Path:
+        """把 id 解析成一个属于本会话目录的现存文件。"""
+
         path = self.find(session_id)
         if path is None or not path.is_file():
             raise FileNotFoundError(session_id)
@@ -289,9 +423,8 @@ class SessionIndex:
         except OSError as exc:  # pragma: no cover
             raise FileNotFoundError(session_id) from exc
         boundaries = [directory.resolve() for directory in self.directories() if directory.is_dir()]
-        if not any(resolved.parent == directory for directory in boundaries):
+        if not any(resolved.parent.parent == directory for directory in boundaries):
             raise PermissionError(f"会话文件不在会话目录内：{resolved}")
-        path.unlink()
         return path
 
 
@@ -316,9 +449,13 @@ def iter_message_dicts(path: Path) -> Iterable[dict[str, Any]]:
 
 
 __all__ = [
+    "BRANCH_SUFFIX",
     "DEFAULT_LIMIT",
+    "MAX_LABEL_LENGTH",
     "SessionFile",
     "SessionIndex",
+    "branch_label",
     "iter_message_dicts",
     "read_session_file",
+    "set_session_label",
 ]

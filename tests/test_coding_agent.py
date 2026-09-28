@@ -283,7 +283,10 @@ class CodingCliTests(Workspace, unittest.IsolatedAsyncioTestCase):
              contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(await run(self.args("--interactive")), 0)
         self.assertIn("权限: read-only", output.getvalue())
-        self.assertEqual(len(list((self.project / ".foxcode/sessions").glob("*.jsonl"))), 2)
+        # The untouched initial draft is memory-only; explicit /fork publishes
+        # exactly one user-level session directory.
+        self.assertEqual(len(list((self.user / "sessions").rglob("session.jsonl"))), 1)
+        self.assertFalse((self.project / ".foxcode/sessions").exists())
 
     async def test_template_action(self):
         write(self.project / ".foxcode/prompts/review.md", "Review $ARGUMENTS")

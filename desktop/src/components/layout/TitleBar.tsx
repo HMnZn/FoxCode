@@ -1,17 +1,9 @@
 import { useEffect, useState } from 'react'
 import { Command, Maximize2, Minus, Moon, PanelLeft, PanelRight, Sun, X } from 'lucide-react'
-import { Chip, IconButton, Kbd, StatusDot, Tooltip } from '@/components/ui'
-import { basename, shortPath } from '@/lib/format'
+import { IconButton, StatusDot, Tooltip } from '@/components/ui'
 import { useSession } from '@/store/sessionStore'
 import { useUi } from '@/store/uiStore'
 import { cn } from '@/lib/cn'
-
-const TRANSPORT_TONE: Record<string, 'success' | 'warn' | 'danger' | 'neutral'> = {
-  ready: 'success',
-  connecting: 'warn',
-  degraded: 'warn',
-  offline: 'danger',
-}
 
 const TRANSPORT_LABEL: Record<string, string> = {
   ready: '已连接',
@@ -55,7 +47,7 @@ export function TitleBar() {
   return (
     <header
       className={cn(
-        'drag-region relative flex h-10 shrink-0 items-center gap-2 bg-surface px-2',
+        'drag-region relative flex h-10 shrink-0 items-center bg-surface pl-3',
         isMac && 'pl-[76px]',
       )}
     >
@@ -65,41 +57,29 @@ export function TitleBar() {
         </IconButton>
       </Tooltip>
 
-      <span className="h-4 w-px shrink-0 bg-line" aria-hidden="true" />
+      <span className="pointer-events-none ml-3 truncate text-[12px] text-fg-caption">
+        FoxCode Desktop
+      </span>
 
-      <div className="no-drag flex min-w-0 items-center gap-2">
-        <span className="truncate text-[13px] text-fg" title={host?.sessionFile}>
-          {host?.sessionFile ? basename(host.sessionFile).replace(/\.jsonl$/, '') : '新会话'}
-        </span>
-        <Tooltip content={host?.cwd ?? '未知工作区'} side="bottom">
-          <span className="hidden max-w-[280px] truncate font-mono text-[11px] text-fg-caption lg:inline">
-            {host?.cwd ? shortPath(host.cwd, 48) : '—'}
+      <div className="no-drag ml-auto flex h-full items-center gap-1">
+        <Tooltip
+          content={`${TRANSPORT_LABEL[transport.state] ?? transport.state}${host ? ` · ${host.transport === 'mock' ? '演示宿主' : 'fox serve'}` : ''}${transport.detail ? `：${transport.detail}` : ''}`}
+          side="bottom"
+        >
+          <span
+            className="mr-1 inline-flex h-7 items-center gap-1.5 rounded-sm px-2 text-[11px] text-fg-subtle hover:bg-interactive hover:text-fg"
+            aria-label="宿主连接状态"
+          >
+            <StatusDot tone={dotTone} pulse={busy} />
+            <span className="hidden lg:inline">{TRANSPORT_LABEL[transport.state] ?? transport.state}</span>
           </span>
         </Tooltip>
-      </div>
 
-      <div className="no-drag ml-auto flex items-center gap-1.5">
-        <Tooltip content={transport.detail ?? '宿主连接状态'} side="bottom">
-          <Chip
-            size="sm"
-            tone={TRANSPORT_TONE[transport.state] ?? 'neutral'}
-            icon={<StatusDot tone={dotTone} pulse={busy} />}
-          >
-            {TRANSPORT_LABEL[transport.state] ?? transport.state}
-            {host ? ` · ${host.transport === 'mock' ? '演示宿主' : 'fox serve'}` : ''}
-          </Chip>
+        <Tooltip content="命令面板 (Ctrl+K)" side="bottom">
+          <IconButton label="打开命令面板" variant="ghost" size="sm" onClick={() => setPaletteOpen(true)}>
+            <Command size={14} />
+          </IconButton>
         </Tooltip>
-
-        <button
-          type="button"
-          onClick={() => setPaletteOpen(true)}
-          className="flex h-7 items-center gap-2 rounded-md border border-line bg-surface-2 px-2 text-[12px] text-fg-muted transition-colors hover:bg-interactive hover:text-fg"
-        >
-          <Command size={12} />
-          <span className="hidden sm:inline">命令</span>
-          <Kbd>Ctrl</Kbd>
-          <Kbd>K</Kbd>
-        </button>
 
         <Tooltip
           content={inspectorOpen ? '收起右侧面板 (Ctrl+J)' : '展开右侧面板 (Ctrl+J)'}
@@ -123,12 +103,12 @@ export function TitleBar() {
         </Tooltip>
 
         {!isMac ? (
-          <div className="ml-1 flex items-center">
+          <div className="ml-1 flex h-full items-center">
             <button
               type="button"
               aria-label="最小化"
               onClick={() => void bridge.window.minimize()}
-              className="grid h-10 w-11 place-items-center text-fg-muted transition-colors hover:bg-interactive hover:text-fg"
+              className="grid h-full w-11 place-items-center text-fg-muted transition-colors hover:bg-interactive hover:text-fg"
             >
               <Minus size={13} />
             </button>
@@ -136,7 +116,7 @@ export function TitleBar() {
               type="button"
               aria-label={maximized ? '还原' : '最大化'}
               onClick={() => void bridge.window.toggleMaximize()}
-              className="grid h-10 w-11 place-items-center text-fg-muted transition-colors hover:bg-interactive hover:text-fg"
+              className="grid h-full w-11 place-items-center text-fg-muted transition-colors hover:bg-interactive hover:text-fg"
             >
               <Maximize2 size={12} />
             </button>
@@ -144,7 +124,7 @@ export function TitleBar() {
               type="button"
               aria-label="关闭"
               onClick={() => void bridge.window.close()}
-              className="grid h-10 w-11 place-items-center text-fg-muted transition-colors hover:bg-danger hover:text-white"
+              className="grid h-full w-11 place-items-center text-fg-muted transition-colors hover:bg-danger hover:text-white"
             >
               <X size={14} />
             </button>

@@ -1,3 +1,4 @@
+import type { TerminalDriver } from '@/bridge/terminal'
 import type {
   HostCommand,
   HostFrame,
@@ -42,6 +43,14 @@ export interface FoxBridge {
   openExternal(url: string): Promise<void>
   /** Reveal a path in the OS file manager (no-op outside the Electron shell). */
   reveal(path: string): Promise<boolean>
+  /** Open a native terminal rooted at the workspace. */
+  openTerminal(path: string): Promise<boolean>
+  /**
+   * The embedded terminal: a shell owned by the Electron main process, driving
+   * the panel inside the window. Independent of the host, so the mock bridge
+   * forwards to it as well (`demoDriver()` when there is no shell at all).
+   */
+  readonly terminal: TerminalDriver
   /** Only available in the Electron shell; no-op for the mock. */
   themeFlash(): void
 }

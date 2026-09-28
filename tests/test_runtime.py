@@ -17,6 +17,7 @@ from fox_ai.src.providers.faux import FAUX_MODEL, FauxScript, clear_scripts
 from fox_coding_agent.src import (
     AgentSessionRuntime, JsonlSessionStorage, ResourceLoader, Resources, SessionManager, SettingsManager
 )
+from fox_coding_agent.src.core.session_layout import SessionLayout, normalized_cwd
 from fox_coding_agent.src.cli import build_parser, run
 from test_agent_core import scripted, tool_fixture
 
@@ -104,7 +105,8 @@ class SettingsTests(Workspace, unittest.TestCase):
     def test_invalid_configuration_keeps_previous_snapshot(self):
         manager = SettingsManager(self.project, user_dir=self.user)
         manager.update({"max_turns": 8})
-        for invalid in ({"max_turns": 0}, {"max_truns": 9}, {"memory": True}, {"tools": [10]},
+        for invalid in ({"max_turns": 0}, {"max_truns": 9}, {"memory": True},
+                        {"session_scope": "project"}, {"tools": [10]},
                         {"compaction": {"reserve_tokens": -1}}):
             with self.subTest(invalid=invalid), self.assertRaises(ValueError):
                 manager.update(invalid)
@@ -155,16 +157,17 @@ class RuntimeTests(Workspace, unittest.IsolatedAsyncioTestCase):
         write(self.project / ".foxcode/settings.json", json.dumps({"tools": ["read", "read"]}))
         with self.assertRaises(ValueError):
             AgentSessionRuntime(self.project, user_dir=self.user, model=FAUX_MODEL)
-        self.assertFalse(list((self.project / ".foxcode/sessions").glob("*.jsonl")))
+        self.assertFalse(list((self.user / "sessions").rglob("*.jsonl")))
 
-    async def test_persistence_failure_keeps_original_session(self):
+    async def test_blank_session_is_lazy_and_persistence_failure_surfaces_on_prompt(self):
         runtime = self.make_runtime()
-        original = runtime.agent_session
+        self.assertFalse(runtime.session_file.exists())
+        await runtime.change_cwd(self.other)
+        self.assertFalse(runtime.session_file.exists())
         with patch("fox_coding_agent.src.core.session_manager.os.replace", side_effect=OSError("disk full")):
             with self.assertRaises(OSError):
-                await runtime.change_cwd(self.other)
-        self.assertIs(runtime.agent_session, original)
-        self.assertFalse(list((self.other / ".foxcode/sessions").glob("*.jsonl")))
+                await runtime.prompt("first durable message")
+        self.assertFalse(list((self.user / "sessions").rglob("*.jsonl")))
 
     async def test_switch_cwd_rebinds_tools_and_restores_saved_session(self):
         stream = scripted(FauxScript(tool_calls=[ToolCall(id="w1", name="write", arguments={
@@ -199,8 +202,6 @@ class RuntimeTests(Workspace, unittest.IsolatedAsyncioTestCase):
                 "path": "inside.txt", "content": "inside"})]), FauxScript(text="inside"),
             FauxScript(tool_calls=[ToolCall(id="outside", name="write", arguments={
                 "path": str(outside), "content": "outside"})]), FauxScript(text="outside blocked"),
-            FauxScript(tool_calls=[ToolCall(id="shell", name="bash", arguments={
-                "command": "echo should-not-run"})]), FauxScript(text="shell blocked"),
             FauxScript(tool_calls=[ToolCall(id="full", name="write", arguments={
                 "path": str(outside), "content": "full"})]), FauxScript(text="full access"),
         )
@@ -211,16 +212,13 @@ class RuntimeTests(Workspace, unittest.IsolatedAsyncioTestCase):
         self.assertFalse((self.project / "blocked.txt").exists())
         self.assertTrue(runtime.state.messages[-2].is_error)
 
-        await runtime.set_permission_mode("workspace-write")
+        await runtime.set_permission_mode("workspace-modify")
         await runtime.prompt("write inside")
         self.assertEqual((self.project / "inside.txt").read_text(), "inside")
         await runtime.prompt("write outside")
         self.assertFalse(outside.exists())
         self.assertTrue(runtime.state.messages[-2].is_error)
-        self.assertEqual(runtime.permission_mode, "workspace-write")
-        await runtime.prompt("try a shell")
-        self.assertTrue(runtime.state.messages[-2].is_error)
-
+        self.assertEqual(runtime.permission_mode, "workspace-modify")
         await runtime.set_permission_mode("full-access")
         await runtime.prompt("write outside with full access")
         self.assertEqual(outside.read_text(), "full")
@@ -327,24 +325,58 @@ class RuntimeTests(Workspace, unittest.IsolatedAsyncioTestCase):
         self.assertTrue(results[0].is_error)
         self.assertEqual(runtime.cwd, self.other)
 
+    async def test_reselecting_current_cwd_or_session_keeps_run_alive(self):
+        entered = asyncio.Event()
+
+        async def waiting(*args):
+            entered.set()
+            await asyncio.Event().wait()
+
+        factory = lambda cwd: [tool_fixture("wait", "Wait", {"type": "object"}, waiting)]
+        stream = scripted(FauxScript(tool_calls=[ToolCall(id="pending", name="wait", arguments={})]))
+        runtime = self.make_runtime(stream_fn=stream, tool_factory=factory)
+        running = asyncio.create_task(runtime.prompt("wait"))
+        await asyncio.wait_for(entered.wait(), 2)
+
+        await runtime.change_cwd(runtime.cwd)
+        await runtime.switch_session(runtime.session_file)
+
+        self.assertFalse(running.done())
+        runtime.abort()
+        await asyncio.wait_for(running, 2)
+
     async def test_user_sessions_are_project_scoped_and_close_is_final(self):
-        SettingsManager(self.project, user_dir=self.user).update({"session_scope": "user"}, scope="user")
-        runtime = self.make_runtime()
+        runtime = self.make_runtime(stream_fn=scripted(
+            FauxScript(text="project"), FauxScript(text="other"),
+        ))
         original = runtime.session_file
         self.assertTrue(original.is_relative_to(self.user / "sessions"))
+        self.assertEqual(original.name, "session.jsonl")
+        self.assertTrue(original.parent.name.startswith("session-"))
+        self.assertEqual(original.parent.parent.name, normalized_cwd(self.project))
+        self.assertFalse(original.exists())
+        await runtime.prompt("save project")
+        self.assertTrue(original.exists())
         await runtime.change_cwd(self.other)
-        self.assertNotEqual(original.parent, runtime.session_file.parent)
+        other = runtime.session_file
+        self.assertNotEqual(original.parent.parent, other.parent.parent)
+        self.assertFalse(other.exists())
+        await runtime.prompt("save other")
         self.assertEqual(AgentSessionRuntime.latest_session(self.project, user_dir=self.user), original)
         await runtime.close()
         with self.assertRaisesRegex(RuntimeError, "closed"):
             await runtime.prompt("cannot run")
 
+    def test_session_layout_requires_an_explicit_root(self):
+        with self.assertRaisesRegex(ValueError, "root is required"):
+            SessionLayout("")
+
 
 class CliTests(Workspace, unittest.IsolatedAsyncioTestCase):
     def test_parser_exposes_permission_and_removes_settings_options(self):
         parser = build_parser()
-        args = parser.parse_args(["--permission", "workspace-write", "--interactive"])
-        self.assertEqual(args.permission, "workspace-write")
+        args = parser.parse_args(["--permission", "workspace-modify", "--interactive"])
+        self.assertEqual(args.permission, "workspace-modify")
         options = {option for action in parser._actions for option in action.option_strings}
         self.assertIn("--permission", options)
         thinking = next(action for action in parser._actions if action.dest == "thinking")

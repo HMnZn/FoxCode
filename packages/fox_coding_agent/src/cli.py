@@ -123,7 +123,7 @@ async def _interactive(runtime):
             if command in ("exit", "quit"):
                 return
             if command == "help":
-                print("/new /resume FILE /fork [ENTRY_ID] /cwd DIR /reload /trust /untrust /permission [read-only|workspace-write|full-access] /compact /usage /export FILE /tools [names] /model [provider/id] /thinking [off|minimal|low|medium|high|xhigh] /skill NAME [args] /prompt NAME [args] /exit")
+                print("/new /resume FILE /fork [ENTRY_ID] /cwd DIR /reload /trust /untrust /permission [read-only|workspace-modify|full-access] /compact /usage /export FILE /tools [names] /model [provider/id] /thinking [off|minimal|low|medium|high|xhigh] /skill NAME [args] /prompt NAME [args] /exit")
                 for name, (_, description) in runtime.agent_session.extensions.api.commands.items():
                     print(f"/{name}: {description}")
             elif command == "new":

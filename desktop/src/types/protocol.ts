@@ -22,7 +22,7 @@
 
 export const PROTOCOL_VERSION = 1 as const
 
-export type PermissionMode = 'read-only' | 'workspace-write' | 'full-access'
+export type PermissionMode = 'read-only' | 'workspace-modify' | 'full-access'
 export type ThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
 export type StopReason = 'pending' | 'stop' | 'length' | 'toolUse' | 'error' | 'aborted'
 export type StreamEndReason = 'stop' | 'length' | 'toolUse'
@@ -31,24 +31,24 @@ export type ToolExecutionMode = 'parallel' | 'sequential'
 export type ShutdownReason = 'reload' | 'switch' | 'fork' | 'close'
 export type RecoveryKind = 'context_overflow_retry' | 'model_retry'
 
-export const PERMISSION_MODES: PermissionMode[] = ['read-only', 'workspace-write', 'full-access']
+export const PERMISSION_MODES: PermissionMode[] = ['read-only', 'workspace-modify', 'full-access']
 export const THINKING_LEVELS: ThinkingLevel[] = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh']
 
 export const PERMISSION_LEVEL: Record<PermissionMode, number> = {
   'read-only': 0,
-  'workspace-write': 1,
+  'workspace-modify': 1,
   'full-access': 2,
 }
 
 export const PERMISSION_LABEL: Record<PermissionMode, string> = {
   'read-only': '只读',
-  'workspace-write': '工作区可写',
+  'workspace-modify': '工作区修改',
   'full-access': '完全访问',
 }
 
 export const PERMISSION_HINT: Record<PermissionMode, string> = {
   'read-only': '只能读取文件与搜索，任何写入/执行都会被拒绝',
-  'workspace-write': '可写工作区内的文件；越界写入与 shell 执行被拒绝',
+  'workspace-modify': '可修改工作区文件并执行 shell；工作区外的直接文件写入需要确认',
   'full-access': '可执行 shell 并写入任意路径（钩子仍可拦截）',
 }
 
@@ -93,6 +93,13 @@ export interface Usage {
   reasoning?: number
   totalTokens: number
   cost: UsageCost
+}
+
+/** Live token accounting produced by the Python coding backend. */
+export interface ContextUsageSnapshot {
+  context_tokens: number
+  output_tokens: number
+  estimated: boolean
 }
 
 export const EMPTY_USAGE: Usage = {
@@ -168,7 +175,11 @@ export type HostEvent =
   | { type: 'turn_start' }
   | { type: 'turn_end'; message?: AssistantMessage; tool_results?: ToolResultMessage[] }
   | { type: 'message_start'; message?: Message }
-  | { type: 'message_update'; message?: AssistantMessage; assistant_message_event: AssistantStreamEvent }
+  | {
+      type: 'message_update'
+      assistant_message_event: AssistantStreamEvent
+      context_usage?: ContextUsageSnapshot
+    }
   | { type: 'message_end'; message: Message }
   | {
       type: 'tool_execution_start'
@@ -184,13 +195,20 @@ export type HostEvent =
       result: unknown
       is_error: boolean
     }
-  | { type: 'compaction_start' }
+  | { type: 'compaction_start'; automatic?: boolean; preTokens?: number }
+  | {
+      type: 'compaction_update'
+      automatic?: boolean
+      preTokens?: number
+      summaryTokens?: number
+    }
   | {
       type: 'compaction_end'
       automatic?: boolean
-      /** 压缩前后的上下文占用（`fox serve` 也会估算并补上这两个数字）。 */
+      /** 压缩前后的上下文占用（由 Python coding backend 计算）。 */
       preTokens?: number
       postTokens?: number
+      summaryTokens?: number
       removedCount?: number
       retainedCount?: number
       summary?: string
@@ -306,6 +324,8 @@ export interface SessionSummary {
   cost: number
   /** Present when the session is currently open in the runtime. */
   live?: boolean
+  /** The session still has a model/tool run alive in a background runtime. */
+  running?: boolean
 }
 
 export interface SkillInfo {
@@ -367,7 +387,7 @@ export interface HostInfo {
   projectTrusted: boolean
   /** True when a Python `fox serve` sidecar is reachable. */
   sidecarConnected: boolean
-  /** 当前上下文占用的量级估算（`fox serve` 提供；mock 不给）。 */
+  /** 当前上下文占用的后端估算（sidecar 只转发）。 */
   contextTokens?: number
   /**
    * 宿主侧「还有一轮在跑」的权威答案。
@@ -451,6 +471,22 @@ export interface WorkspaceChanges {
   error?: string | null
 }
 
+/** 右侧工作区浏览器中的一项。 */
+export interface WorkspaceEntry {
+  name: string
+  path: string
+  type: 'file' | 'directory'
+  size: number
+}
+
+/** `files.list` 的结果：当前目录的一层内容。 */
+export interface WorkspaceDirectory {
+  cwd: string
+  path: string
+  entries: WorkspaceEntry[]
+  truncated: boolean
+}
+
 /** `files.diff` 的结果：单个文件的统一差异。 */
 export interface FileDiff {
   path: string
@@ -473,6 +509,16 @@ export interface FileContent {
   binary: boolean
   size: number
   lines?: number
+  /**
+   * `text`（可当文本看）/ `binary`（只能报事实）/ `image`（宿主已经把 base64 放进
+   * `data`，可以直接 `<img>`）。
+   */
+  kind?: 'text' | 'binary' | 'image'
+  /** 图片的 MIME（宿主按后缀给出），只有 `kind === 'image'` 时才有。 */
+  mime?: string | null
+  /** 图片的 base64 内容；超过宿主上限时为 null，原因在 `error`。 */
+  data?: string | null
+  error?: string | null
 }
 
 export type HostCommand =
@@ -481,6 +527,7 @@ export type HostCommand =
   | { method: 'sessions.open'; params: { id: string } }
   | { method: 'sessions.new' }
   | { method: 'sessions.delete'; params: { id: string } }
+  | { method: 'sessions.rename'; params: { id: string; title: string } }
   | { method: 'sessions.fork'; params: { fromId?: string } }
   | { method: 'session.export'; params: { format: 'json' | 'markdown'; path: string } }
   | { method: 'prompt'; params: { message: string; options?: PromptOptions } }
@@ -497,6 +544,7 @@ export type HostCommand =
   | { method: 'cwd.change'; params: { cwd: string } }
   | { method: 'permission.answer'; params: PermissionAnswer }
   | { method: 'extensions.set'; params: { id: string; enabled: boolean; scope?: ExtensionScope } }
+  | { method: 'files.list'; params?: { path?: string; limit?: number } }
   | { method: 'files.changes'; params?: { limit?: number } }
   | { method: 'files.diff'; params: { path: string; context?: number } }
   | { method: 'files.read'; params: { path: string; maxBytes?: number } }

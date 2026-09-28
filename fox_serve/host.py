@@ -40,7 +40,8 @@ from .protocol import (
     message_payload,
     to_jsonable,
 )
-from .sessions import SessionIndex
+from fox_coding_agent.src.core.session_layout import session_id_from_path
+from .sessions import MAX_LABEL_LENGTH, SessionIndex, branch_label
 
 #: 默认的用户级目录（与 CLI 一致：`packages/fox_coding_agent/src/core/settings.py`）。
 DEFAULT_USER_DIR = Path.home() / ".foxcode"
@@ -143,10 +144,14 @@ class ServeHost:
         self._started_at = time.time()
         self._closed = False
         self._unsubscribe: Callable[[], None] | None = None
+        # A newly-created conversation must not tear down a run that is still
+        # producing output. The active runtime drives the visible workbench;
+        # older busy runtimes stay alive here until their own prompt finishes.
+        self._runtimes: dict[str, Any] = {}
+        self._runtime_unsubscribes: dict[int, Callable[[], None]] = {}
+        self._running_runtimes: set[int] = set()
         #: 后台任务（`prompt` 这类长耗时操作），退出时统一取消。
         self._tasks: set[asyncio.Task[Any]] = set()
-        #: `compaction_start` 时记下的上下文占用，用于给 `compaction_end` 补前后对比。
-        self._pre_compact_tokens: int | None = None
         #: 前端靠帧推进状态，所以「一轮到底还在不在跑」必须由宿主自己给出：
         #: 只在收到 `agent_start`/`agent_end`/`error` 时翻转（见 `_emit_frame`）。
         #: 少了这个信号，一轮如果在模型请求里静默卡住，前端会永远停在「生成中」。
@@ -189,7 +194,7 @@ class ServeHost:
         }
         self._policy.set_cwd(self._runtime.cwd)
         self._sessions = SessionIndex(cwd=self._runtime.cwd, user_dir=self.user_dir)
-        self._unsubscribe = self._runtime.subscribe(self._on_event)
+        self._register_runtime(self._runtime)
 
         if self.thinking:
             self._apply_thinking(self.thinking)
@@ -215,18 +220,23 @@ class ServeHost:
             self._tasks.clear()
         if self._broker is not None:
             self._broker.cancel_all("sidecar 正在退出")
-        if self._unsubscribe is not None:
+        for unsubscribe in list(self._runtime_unsubscribes.values()):
             try:
-                self._unsubscribe()
+                unsubscribe()
             except Exception:  # noqa: BLE001 - 收尾阶段不抛
                 pass
-            self._unsubscribe = None
-        runtime = self._runtime
-        if runtime is not None:
+        self._runtime_unsubscribes.clear()
+        runtimes = list({id(runtime): runtime for runtime in self._runtimes.values()}.values())
+        if self._runtime is not None and all(runtime is not self._runtime for runtime in runtimes):
+            runtimes.append(self._runtime)
+        for runtime in runtimes:
             try:
                 await runtime.close()
             except Exception as exc:  # noqa: BLE001
                 self._log(f"关闭 runtime 时出错：{type(exc).__name__}: {exc}")
+        self._runtimes.clear()
+        self._running_runtimes.clear()
+        self._unsubscribe = None
         self._runtime = None
 
     @property
@@ -292,6 +302,83 @@ class ServeHost:
     # 事件订阅
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _runtime_key(runtime: Any) -> str:
+        raw = str(getattr(runtime, "session_file", "") or "")
+        if not raw:
+            return f"runtime:{id(runtime)}"
+        try:
+            return str(Path(raw).expanduser().resolve()).casefold()
+        except OSError:
+            return str(Path(raw).expanduser().absolute()).casefold()
+
+    def _register_runtime(self, runtime: Any) -> None:
+        key = self._runtime_key(runtime)
+        self._runtimes[key] = runtime
+        marker = id(runtime)
+        if marker in self._runtime_unsubscribes:
+            return
+        subscribe = getattr(runtime, "subscribe", None)
+        if not callable(subscribe):
+            return
+        unsubscribe = subscribe(
+            lambda event, cancel=None, owner=runtime: self._on_runtime_event(owner, event, cancel)
+        )
+        self._runtime_unsubscribes[marker] = unsubscribe
+        if runtime is self._runtime:
+            self._unsubscribe = unsubscribe
+
+    def _activate_runtime(self, runtime: Any) -> None:
+        self._runtime = runtime
+        self._register_runtime(runtime)
+        self._unsubscribe = self._runtime_unsubscribes.get(id(runtime))
+        self._agent_running = id(runtime) in self._running_runtimes
+        self.cwd = Path(runtime.cwd)
+        self._tools = {
+            str(getattr(tool, "name", "")): tool
+            for tool in (getattr(runtime.state, "tools", None) or [])
+        }
+        if self._policy is not None:
+            self._policy.reset_allowlist()
+            self._policy.set_cwd(runtime.cwd)
+        self._sessions = SessionIndex(cwd=runtime.cwd, user_dir=self.user_dir)
+
+    def _build_runtime(
+        self,
+        *,
+        cwd: str | Path,
+        session_file: str | Path | None = None,
+        model: Any = None,
+    ) -> Any:
+        from fox_coding_agent.src import AgentSessionRuntime
+
+        runtime = AgentSessionRuntime(
+            cwd=str(cwd),
+            model=model,
+            session_file=str(session_file) if session_file is not None else None,
+            user_dir=str(self.user_dir),
+            settings_overrides={"permission_mode": "full-access"},
+            before_tool_call=self._before_tool_call,
+            project_trusted=bool(
+                getattr(self._runtime, "project_trusted", self.project_trusted)
+            ),
+        )
+        level = getattr(getattr(self._runtime, "state", None), "thinking_level", None)
+        if level is not None:
+            runtime.agent_session.set_thinking_level(level)
+        return runtime
+
+    def _on_runtime_event(self, runtime: Any, event: Any, cancel: Any = None) -> None:
+        kind = getattr(event, "type", None)
+        marker = id(runtime)
+        if kind == "agent_start":
+            self._running_runtimes.add(marker)
+        elif kind in ("agent_end", "error"):
+            self._running_runtimes.discard(marker)
+        if runtime is self._runtime:
+            self._agent_running = marker in self._running_runtimes
+            self._on_event(event, cancel)
+
     def _on_event(self, event: Any, _cancel: Any = None) -> None:
         """订阅回调：**必须快且不能抛**（抛异常会杀掉整轮，见 agent_loop.py:396）。"""
 
@@ -302,11 +389,6 @@ class ServeHost:
             kind = payload.get("type")
             if kind == "session_shutdown":
                 self._emit_transport("offline", str(payload.get("reason") or ""))
-            elif kind == "compaction_start":
-                # 压缩发生在轮次中间，先量一次占用，`compaction_end` 才有前后对比。
-                self._pre_compact_tokens = self._context_tokens()
-            elif kind == "compaction_end":
-                payload = self._compaction_payload(payload)
             self._emit_frame(payload)
         except Exception as exc:  # noqa: BLE001
             self._log(f"转发事件失败：{type(exc).__name__}: {exc}")
@@ -316,76 +398,18 @@ class ServeHost:
     # ------------------------------------------------------------------
 
     def _context_tokens(self) -> int | None:
-        """按当前分支的消息粗估上下文占用（token）。
-
-        `usage.totalTokens` 只有在一轮结束时才有值，而压缩事件发生在轮内，
-        所以这里用宿主自己的估算器
-        （`packages/fox_agent_core/src/harness/compaction.py:108 estimate_context_tokens`）
-        做量级估算，让 UI 在压缩后立刻能看到占用下降。
-        """
+        """Read the coding backend's context estimate; never count in serve."""
 
         runtime = self._runtime
-        session = getattr(getattr(runtime, "agent_session", None), "session", None)
-        if session is None:
+        agent_session = getattr(runtime, "agent_session", None)
+        counter = getattr(agent_session, "context_tokens", None)
+        if not callable(counter):
             return None
         try:
-            entries = list(session.get_branch())
+            return int(counter())
         except Exception as exc:  # noqa: BLE001
-            self._log(f"估算上下文失败（读取分支）：{type(exc).__name__}: {exc}")
+            self._log(f"读取后端 token 计数失败：{type(exc).__name__}: {exc}")
             return None
-        messages: list[Any] = []
-        for entry in entries:
-            if str(getattr(entry, "type", "")) != "message":
-                continue
-            data = getattr(entry, "data", None)
-            if data is not None and hasattr(data, "content"):
-                messages.append(data)
-        if not messages:
-            return 0
-        try:
-            from fox_agent_core.src.harness.compaction import estimate_context_tokens
-        except Exception as exc:  # noqa: BLE001
-            self._log(f"估算上下文失败（导入估算器）：{type(exc).__name__}: {exc}")
-            return None
-        try:
-            return int(estimate_context_tokens(messages))
-        except Exception as exc:  # noqa: BLE001
-            self._log(f"估算上下文失败：{type(exc).__name__}: {exc}")
-            return None
-
-    def _compaction_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """把宿主的 `compaction_end` 收成前端要的形状。
-
-        宿主原样发的是 `CompactionResult(summary, retained_tail, removed_count)`
-        （`packages/fox_coding_agent/src/core/agent_session.py:63`），其中
-        `retainedTail` 是保留下来的原始消息——整段塞进帧里又大又没用。前端只关心
-        「压缩前后占用多少、删了几条、摘要是什么」。
-        """
-
-        result = payload.get("result")
-        out: dict[str, Any] = {"type": "compaction_end"}
-        if "automatic" in payload:
-            out["automatic"] = bool(payload.get("automatic"))
-        pre = self._pre_compact_tokens
-        post = self._context_tokens()
-        self._pre_compact_tokens = None
-        if isinstance(pre, int):
-            out["preTokens"] = pre
-        if isinstance(post, int):
-            out["postTokens"] = post
-        if isinstance(result, str):
-            out["result"] = result[:4000]
-        elif isinstance(result, dict):
-            summary = result.get("summary")
-            if isinstance(summary, str):
-                out["summary"] = summary[:4000]
-            removed = result.get("removedCount", result.get("removed_count"))
-            if isinstance(removed, int):
-                out["removedCount"] = removed
-            tail = result.get("retainedTail", result.get("retained_tail"))
-            if isinstance(tail, list):
-                out["retainedCount"] = len(tail)
-        return out
 
     # ------------------------------------------------------------------
     # 审批钩子（= UI 的「等待你的授权」）
@@ -511,7 +535,34 @@ class ServeHost:
     async def _cmd_sessions_list(self, _params: dict[str, Any]) -> list[dict[str, Any]]:
         runtime = self._require_runtime()
         assert self._sessions is not None
-        return self._sessions.list(live_file=getattr(runtime, "session_file", None))
+        live_file = getattr(runtime, "session_file", None)
+        # Reading several transcripts is disk work.  Keeping it off the event
+        # loop also prevents host.info/sessions.list from timing out while an
+        # agent is streaming many frames.
+        rows = await asyncio.to_thread(self._sessions.list_all, live_file=live_file)
+        if live_file and not Path(live_file).is_file():
+            now = int(time.time() * 1000)
+            rows.insert(0, {
+                "id": session_id_from_path(live_file),
+                "file": str(live_file),
+                "title": "新会话",
+                "cwd": str(runtime.cwd),
+                "model": getattr(getattr(getattr(runtime, "state", None), "model", None), "id", None),
+                "createdAt": now,
+                "updatedAt": now,
+                "messageCount": 0,
+                "totalTokens": 0,
+                "cost": 0.0,
+                "live": True,
+            })
+        for row in rows:
+            try:
+                key = str(Path(str(row.get("file") or "")).expanduser().resolve()).casefold()
+            except OSError:
+                key = ""
+            owner = self._runtimes.get(key)
+            row["running"] = owner is not None and id(owner) in self._running_runtimes
+        return rows
 
     async def _cmd_sessions_open(self, params: dict[str, Any]) -> dict[str, Any]:
         runtime = self._require_runtime()
@@ -520,7 +571,55 @@ class ServeHost:
         path = self._sessions.find(identifier)
         if path is None or not Path(path).is_file():
             raise HostError(f"找不到会话：{identifier or '(空)'}")
+        current = getattr(runtime, "session_file", None)
+        try:
+            unchanged = current is not None and Path(path).resolve() == Path(current).resolve()
+        except OSError:
+            unchanged = False
+        if unchanged:
+            summary = self._sessions.summary_for(Path(path), live=True)
+            result = summary or {
+                "id": session_id_from_path(path),
+                "file": str(path),
+                "title": session_id_from_path(path),
+                "live": True,
+            }
+            # Opening the highlighted/live row during generation is a UI
+            # navigation operation. Do not emit session_start: it would erase
+            # the in-flight renderer view. When idle, replaying is still useful
+            # after a renderer reload, but it does not require replacing runtime.
+            if self._agent_running:
+                return result
+            self._emit_session_start()
+            replayed = self._replay_current_session()
+            self._log(f"重新回放当前会话 {path.name}，共 {replayed} 条消息")
+            return result
+        cached = self._runtimes.get(str(Path(path).resolve()).casefold())
+        if cached is not None:
+            self._activate_runtime(cached)
+            self._emit_session_start()
+            running = id(cached) in self._running_runtimes
+            if running:
+                self._emit_frame({"type": "agent_start"})
+            replayed = self._replay_current_session(settle=not running)
+            streaming = getattr(cached.state, "streaming_message", None)
+            if running and streaming is not None:
+                self._emit_frame({"type": "message_start", "message": message_payload(streaming)})
+            self._log(f"切回后台会话 {path.name}，回放 {replayed} 条消息")
+            summary = self._sessions.summary_for(Path(path), live=True)
+            return summary or {"id": session_id_from_path(path), "file": str(path), "title": session_id_from_path(path)}
+        if self._agent_running:
+            candidate = self._build_runtime(cwd=self.cwd, session_file=path)
+            self._activate_runtime(candidate)
+            self._emit_session_start()
+            replayed = self._replay_current_session()
+            self._log(f"后台保留原任务，打开会话 {path.name}，回放 {replayed} 条消息")
+            summary = self._sessions.summary_for(Path(path), live=True)
+            return summary or {"id": session_id_from_path(path), "file": str(path), "title": session_id_from_path(path)}
+        old_key = self._runtime_key(runtime)
         await runtime.switch_session(str(path))
+        self._runtimes.pop(old_key, None)
+        self._register_runtime(runtime)
         assert self._policy is not None
         self._policy.reset_allowlist()
         self._policy.set_cwd(runtime.cwd)
@@ -529,14 +628,25 @@ class ServeHost:
         replayed = self._replay_current_session()
         self._log(f"打开会话 {path.name}，回放 {replayed} 条消息")
         summary = self._sessions.summary_for(Path(path), live=True)
-        return summary or {"id": Path(path).stem, "file": str(path), "title": Path(path).stem}
+        return summary or {"id": session_id_from_path(path), "file": str(path), "title": session_id_from_path(path)}
 
     async def _cmd_sessions_new(self, _params: dict[str, Any]) -> dict[str, Any]:
         runtime = self._require_runtime()
         # `AgentSessionRuntime.new_session()` 没有返回值
         # （packages/fox_coding_agent/src/core/runtime.py:463-464 只 await 了 _replace），
         # 新会话的路径要从 runtime.session_file 读——以前这里写成 Path(None) 会直接崩。
-        await runtime.new_session()
+        if self._agent_running:
+            candidate = self._build_runtime(
+                cwd=runtime.cwd,
+                model=getattr(runtime.state, "model", None),
+            )
+            self._activate_runtime(candidate)
+            runtime = candidate
+        else:
+            old_key = self._runtime_key(runtime)
+            await runtime.new_session()
+            self._runtimes.pop(old_key, None)
+            self._register_runtime(runtime)
         path = self._current_session_path(runtime)
         assert self._policy is not None
         self._policy.reset_allowlist()
@@ -544,7 +654,13 @@ class ServeHost:
         self._emit_session_start()
         assert self._sessions is not None
         summary = self._sessions.summary_for(path, live=True)
-        return summary or {"id": path.stem, "file": str(path), "title": "新会话"}
+        return summary or {
+            "id": session_id_from_path(path),
+            "file": str(path),
+            "title": "新会话",
+            "cwd": str(runtime.cwd),
+            "live": True,
+        }
 
     @staticmethod
     def _current_session_path(runtime: Any) -> Path:
@@ -585,18 +701,90 @@ class ServeHost:
         except OSError as exc:
             raise HostError(f"删除会话失败：{exc}") from exc
         self._log(f"删除会话 {deleted.name}")
-        return {"id": deleted.stem, "file": str(deleted)}
+        return {"id": session_id_from_path(deleted), "file": str(deleted)}
+
+    async def _cmd_sessions_rename(self, params: dict[str, Any]) -> dict[str, Any]:
+        """给一个会话改名：标题写进会话文件头部的 `_meta._label`。
+
+        `sessions.list` 读的就是那个字段（`fox_serve/sessions.py::read_session_file`），
+        所以改完不需要重建索引。标题留空 = 恢复自动标题（首条用户消息）。
+
+        正在使用的会话不能直接改磁盘：它的 storage 在内存里握着旧标题，下一次
+        append 触发的整文件重写会把改动抹掉，得走那个 runtime 自己的 SessionManager。
+        """
+
+        assert self._sessions is not None
+        identifier = str(params.get("id") or params.get("sessionId") or params.get("file") or "")
+        if not identifier:
+            raise HostError("sessions.rename 需要一个 id")
+        label = " ".join(str(params.get("title") or "").split())[:MAX_LABEL_LENGTH]
+        path = self._sessions.find(identifier)
+        if path is None or not Path(path).is_file():
+            raise HostError(f"找不到会话：{identifier}")
+        try:
+            key = str(Path(path).resolve()).casefold()
+        except OSError:  # pragma: no cover
+            key = ""
+        owner = self._runtimes.get(key) if key else None
+        storage = getattr(getattr(owner, "session", None), "storage", None)
+        setter = getattr(storage, "set_label", None)
+        try:
+            if callable(setter):
+                setter(label or None)
+            else:
+                self._sessions.rename(identifier, label or None)
+        except PermissionError as exc:
+            raise HostError(str(exc)) from exc
+        except FileNotFoundError as exc:
+            raise HostError(f"找不到会话：{identifier}") from exc
+        except (OSError, ValueError) as exc:
+            raise HostError(f"重命名会话失败：{exc}") from exc
+        self._log(f"会话改名 → {label or '（自动标题）'}")
+        summary = self._sessions.summary_for(Path(path), live=owner is not None)
+        return summary or {
+            "id": session_id_from_path(path),
+            "file": str(path),
+            "title": label,
+        }
 
     async def _cmd_sessions_fork(self, params: dict[str, Any]) -> dict[str, Any]:
         runtime = self._require_runtime()
         from_id = params.get("fromId") or params.get("from_id")
+        old_key = self._runtime_key(runtime)
         path = await runtime.fork(str(from_id) if from_id else None)
+        self._runtimes.pop(old_key, None)
+        self._register_runtime(runtime)
         self._emit_session_start()
         replayed = self._replay_current_session()
         assert self._sessions is not None
-        self._log(f"分叉出新会话 {Path(path).name}，回放 {replayed} 条消息")
+        # 分叉出来的会话要换个名字：否则列表里两条一模一样的标题根本分不清谁是谁。
+        label = self._label_fork(path, runtime)
+        self._log(f"分叉出新会话 {Path(path).name}（{label}），回放 {replayed} 条消息")
         summary = self._sessions.summary_for(Path(path), live=True)
-        return summary or {"id": Path(path).stem, "file": str(path), "title": "分叉会话"}
+        return summary or {
+            "id": session_id_from_path(path),
+            "file": str(path),
+            "title": label,
+        }
+
+    def _label_fork(self, path: Path | str, runtime: Any) -> str:
+        """把刚分叉出来的会话改名成 `原标题-分支`，返回最终标题。
+
+        标题取自分叉之后、改名之前的那份摘要 —— 手动改过名就是那个名字，否则是首条
+        用户消息。新会话此刻还没有下一条消息，所以直接走它自己的 storage 落盘，内存
+        与磁盘不会打架（与 `sessions.rename` 对活动会话的处理一致）。
+        """
+
+        assert self._sessions is not None
+        current = self._sessions.summary_for(Path(path), live=True) or {}
+        label = branch_label(str(current.get("title") or ""))
+        storage = getattr(getattr(runtime, "session", None), "storage", None)
+        setter = getattr(storage, "set_label", None)
+        if callable(setter):
+            setter(label)
+        else:  # pragma: no cover - 兜底：storage 不可用时直接改文件头
+            self._sessions.rename(session_id_from_path(Path(path)), label)
+        return label
 
     async def _cmd_session_export(self, params: dict[str, Any]) -> dict[str, Any]:
         runtime = self._require_runtime()
@@ -610,7 +798,7 @@ class ServeHost:
         self._log(f"导出会话 → {path}")
         return {"path": str(path)}
 
-    def _replay_current_session(self) -> int:
+    def _replay_current_session(self, *, settle: bool = True) -> int:
         """把当前会话的历史消息按 `message_end` 帧回放给前端。
 
         前端 `sessions.open` 的约定（`desktop/src/bridge/mock/mockHost.ts`）：
@@ -673,7 +861,7 @@ class ServeHost:
                     }
                 )
             count += 1
-        if tool_frames:
+        if tool_frames and settle:
             self._emit_frame({"type": "agent_end"})
         return count
 
@@ -697,11 +885,14 @@ class ServeHost:
         # 所以这里立刻返回，把这一轮放到后台 task 里跑：进度/结束全部由帧
         # （agent_start / tool_execution_* / agent_end）驱动，和 UI 的模型一致。
         self._agent_running = True
-        self._spawn_task(self._run_prompt(message), name="prompt")
+        running = getattr(self, "_running_runtimes", None)
+        if running is not None:
+            running.add(id(runtime))
+        self._spawn_task(self._run_prompt(message, runtime=runtime), name="prompt")
         return {"queued": "prompt"}
 
-    async def _run_prompt(self, message: str) -> None:
-        runtime = self._runtime
+    async def _run_prompt(self, message: str, *, runtime: Any | None = None) -> None:
+        runtime = runtime or self._runtime
         if runtime is None:
             self._agent_running = False
             return
@@ -711,12 +902,17 @@ class ServeHost:
             raise
         except Exception as exc:  # noqa: BLE001 - 失败要变成错误帧，前端才会显示
             self._log(f"prompt 失败：{type(exc).__name__}: {exc}")
-            self._emit_frame({"type": "error", "error": f"{type(exc).__name__}: {exc}"})
+            if runtime is self._runtime:
+                self._emit_frame({"type": "error", "error": f"{type(exc).__name__}: {exc}"})
         finally:
             # `runtime.prompt()` 返回或抛错都代表这一轮真的结束了（它 await 的是
             # 整轮 agent loop），所以这里必须把忙碌标志放下：否则一轮异常收尾后
             # `host.info.busy` 会永远停在 true，前端只能一直显示「生成中」。
-            self._agent_running = False
+            running = getattr(self, "_running_runtimes", None)
+            if running is not None:
+                running.discard(id(runtime))
+            if runtime is self._runtime:
+                self._agent_running = False
 
     def _spawn_task(self, coro: Any, *, name: str) -> None:
         task = asyncio.ensure_future(coro)
@@ -879,6 +1075,16 @@ class ServeHost:
         target = Path(cwd).expanduser()
         if not target.is_dir():
             raise HostError(f"工作区不存在或不是目录：{target}")
+        try:
+            unchanged = target.resolve() == Path(runtime.cwd).expanduser().resolve()
+        except OSError:
+            unchanged = False
+        if unchanged:
+            # The renderer may spell a Windows path with the other separator.
+            # A no-op cwd sync must never replace and abort the active runtime.
+            return {"cwd": str(runtime.cwd), "unchanged": True}
+        if getattr(self, "_running_runtimes", set()):
+            raise HostError("仍有会话正在运行，请等待任务结束后再切换工作区")
         marker = target / ".foxcode"
         try:
             await asyncio.to_thread(marker.mkdir, parents=True, exist_ok=True)
@@ -886,10 +1092,13 @@ class ServeHost:
             raise HostError(
                 f"工作区不可写：无法创建 {marker}（{type(exc).__name__}: {exc}）"
             ) from exc
+        old_key = self._runtime_key(runtime)
         try:
             await runtime.change_cwd(str(target))
         except Exception as exc:  # noqa: BLE001 - 统一翻译成宿主错误，交给界面显示
             raise HostError(f"切换工作区失败：{type(exc).__name__}: {exc}") from exc
+        self._runtimes.pop(old_key, None)
+        self._register_runtime(runtime)
         assert self._policy is not None
         self._policy.reset_allowlist()
         self._policy.set_cwd(runtime.cwd)
@@ -915,6 +1124,17 @@ class ServeHost:
         limit = params.get("limit")
         count = int(limit) if isinstance(limit, int) and limit > 0 else 300
         return await workspace_files.changes(self._workspace_root(), limit=count)
+
+    async def _cmd_files_list(self, params: dict[str, Any]) -> dict[str, Any]:
+        path = str(params.get("path") or "").strip()
+        limit = params.get("limit")
+        count = int(limit) if isinstance(limit, int) and limit > 0 else 500
+        try:
+            return await workspace_files.directory(
+                self._workspace_root(), path, limit=count
+            )
+        except workspace_files.WorkspaceFileError as exc:
+            raise HostError(str(exc)) from exc
 
     async def _cmd_files_diff(self, params: dict[str, Any]) -> dict[str, Any]:
         path = str(params.get("path") or "").strip()
@@ -1079,8 +1299,8 @@ class ServeHost:
             if isinstance(mode, str) and mode:
                 return mode
         except Exception as exc:  # noqa: BLE001
-            self._log(f"读取 settings 失败，按 workspace-write 处理：{type(exc).__name__}: {exc}")
-        return "workspace-write"
+            self._log(f"读取 settings 失败，按 workspace-modify 处理：{type(exc).__name__}: {exc}")
+        return "workspace-modify"
 
     def _current_model_label(self) -> str:
         runtime = self._runtime

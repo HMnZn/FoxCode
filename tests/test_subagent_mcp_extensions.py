@@ -121,6 +121,8 @@ You are the project reviewer. Inspect evidence and report only findings.
             FauxScript(text="parent answer"),
         )
         runtime = self.runtime(stream)
+        events = []
+        runtime.subscribe(lambda event, _cancel: events.append(event))
         self.assertIn("agent", [tool.name for tool in runtime.state.tools])
         await runtime.prompt("delegate this review")
 
@@ -129,9 +131,54 @@ You are the project reviewer. Inspect evidence and report only findings.
         self.assertIn("project reviewer", stream.contexts[1].system_prompt)
         self.assertEqual([tool.name for tool in stream.contexts[1].tools], ["read", "grep"])
         self.assertEqual(len(stream.contexts[1].messages), 1)
+        self.assertNotEqual(stream.options[0].session_id, stream.options[1].session_id)
         result = next(message for message in runtime.state.messages if message.role == "toolResult")
         self.assertEqual(result.content[0].text, "child report")
         self.assertEqual(result.details["agent_type"], "reviewer")
+        progress = [
+            event for event in events
+            if event.type == "tool_execution_update" and event.tool_name == "agent"
+        ]
+        self.assertTrue(progress)
+        self.assertIn("子 Agent 运行中", progress[0].partial_result.content[0].text)
+
+    async def test_subagent_child_tools_use_parent_approval_hook(self):
+        write(self.user / "settings.json", {"extensions": [
+            "module:fox_coding_agent.src.extensions.subagent:setup",
+        ]})
+        approved = []
+
+        async def before_tool(data, _cancel):
+            approved.append(data["tool_call"].name)
+            return None
+
+        stream = scripted(
+            FauxScript(tool_calls=[ToolCall(id="delegate", name="agent", arguments={
+                "description": "write child artifact",
+                "prompt": "Create child.txt",
+                "type": "general",
+            })]),
+            FauxScript(tool_calls=[ToolCall(id="write", name="write", arguments={
+                "path": "child.txt",
+                "content": "made by child",
+            })]),
+            FauxScript(text="child completed"),
+            FauxScript(text="parent completed"),
+        )
+        runtime = AgentSessionRuntime(
+            self.project,
+            user_dir=self.user,
+            model=FAUX_MODEL,
+            stream_fn=stream,
+            before_tool_call=before_tool,
+            project_trusted=True,
+        )
+        self.addAsyncCleanup(runtime.close)
+
+        await runtime.prompt("delegate the write")
+
+        self.assertEqual(approved, ["agent", "write"])
+        self.assertEqual((self.project / "child.txt").read_text(encoding="utf-8"), "made by child")
 
     def test_untrusted_projects_do_not_load_project_agent_profiles(self):
         write(self.user / "agents/shared.md", """---

@@ -106,7 +106,7 @@ class ReadTool(_FileTool):
 class WriteTool(_FileTool):
     name = "write"
     label = "Write file"
-    required_permission = "workspace-write"
+    required_permission = "workspace-modify"
     permission_paths = ("path",)
     description = "Create or overwrite a UTF-8 text file. Creates parent directories."
     parameters = _schema({"path": {"type": "string", "minLength": 1},
@@ -122,7 +122,7 @@ class WriteTool(_FileTool):
 class EditTool(_FileTool):
     name = "edit"
     label = "Edit file"
-    required_permission = "workspace-write"
+    required_permission = "workspace-modify"
     permission_paths = ("path",)
     description = "Replace exactly one occurrence of old_text with new_text. Fails if ambiguous or missing."
     parameters = _schema({"path": {"type": "string", "minLength": 1},
@@ -143,7 +143,8 @@ class EditTool(_FileTool):
 class BashTool(_FileTool):
     name = "bash"
     label = "Run command"
-    required_permission = "full-access"
+    required_permission = "workspace-modify"
+    workspace_shell = True
     description = "Run a bash command in the working directory. Output is capped at 20000 characters."
     parameters = _schema({"command": {"type": "string", "minLength": 1},
                           "timeout": {"type": "number", "exclusiveMinimum": 0, "maximum": 600}}, ["command"])

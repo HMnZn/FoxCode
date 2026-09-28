@@ -128,6 +128,27 @@ describe('sessionStore recovery', () => {
     expect(timeline.activity).toContain('没有新输出')
   })
 
+  it('shows stop feedback before the host acknowledges abort', async () => {
+    let acknowledge!: () => void
+    const pending = new Promise<void>((resolve) => {
+      acknowledge = resolve
+    })
+    const send = vi.spyOn(bridge, 'send').mockImplementation(async (command) => {
+      if (command.method === 'abort') await pending
+      return null
+    })
+    useSession.setState({
+      timeline: { ...EMPTY_TIMELINE, status: 'streaming', activity: '模型生成中' },
+    })
+
+    const stopping = useSession.getState().abort()
+    expect(useSession.getState().timeline.activity).toBe('正在中止…')
+    expect(send.mock.calls.map(([command]) => command.method)).toEqual(['abort'])
+
+    acknowledge()
+    await stopping
+  })
+
   it('clears the streaming lock when the prompt never reached the host', async () => {
     // 桥断了的时候对账也叫不醒界面（同一座桥），所以发送失败必须自己收尾。
     const send = vi.spyOn(bridge, 'send').mockRejectedValue(new Error('sidecar 已退出'))
@@ -187,5 +208,19 @@ describe('sessionStore recovery', () => {
     await useSession.getState().deleteSession('old')
 
     expect(send.mock.calls.map(([command]) => command.method)).toEqual(['sessions.delete'])
+  })
+
+  it('does not reopen or interrupt the live session', async () => {
+    const send = vi.spyOn(bridge, 'send').mockResolvedValue(null)
+    useSession.setState({
+      host: await hostInfo({ sessionFile: 'C:\\work\\live.jsonl', busy: true }),
+      sessions: [{ ...session('live', true), file: 'C:/work/live.jsonl' }],
+      timeline: { ...EMPTY_TIMELINE, status: 'streaming' },
+    })
+
+    await useSession.getState().openSession('live')
+
+    expect(send).not.toHaveBeenCalled()
+    expect(useSession.getState().timeline.status).toBe('streaming')
   })
 })

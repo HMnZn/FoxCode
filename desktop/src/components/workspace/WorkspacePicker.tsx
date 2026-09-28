@@ -1,6 +1,6 @@
 import { Clock, FolderOpen, FolderPlus, X } from 'lucide-react'
 import { Button, Chip, IconButton, Tooltip } from '@/components/ui'
-import { FoxMascot } from '@/components/brand/Fox'
+import { FoxMark } from '@/components/brand/Fox'
 import { shortPath } from '@/lib/format'
 import { useSession } from '@/store/sessionStore'
 import { useWorkspace } from '@/store/workspaceStore'
@@ -25,24 +25,14 @@ export function WorkspacePicker() {
 
   return (
     <div className="flex min-h-0 flex-1 items-center justify-center overflow-y-auto px-6 py-10">
-      <div className="w-full max-w-[600px]">
-        <div className="mb-7 flex flex-col items-center text-center">
-          <div className="relative mb-5">
-            <div
-              aria-hidden="true"
-              className="absolute inset-0 -z-10 scale-[1.9] rounded-full bg-fox-glow blur-2xl"
-            />
-            <FoxMascot size={104} label="FoxCode 灵狐" />
-          </div>
-          <h1 className="text-[20px] leading-[28px] font-medium text-fg">选择一个工作区</h1>
-          <p className="mt-2 max-w-[470px] text-[13.5px] leading-relaxed text-fg-muted">
-            工作区是模型的根目录：读写、搜索、会话记录与信任判定都以它为准，
-            <span className="font-mono">fox serve</span> 也会把它当作进程的工作目录。
-          </p>
+      <div className="w-full max-w-[560px]">
+        <div className="mb-6 flex items-center justify-center gap-2.5 text-center">
+          <FoxMark size={34} tone="outline" label="FoxCode 灵狐" />
+          <h1 className="text-[26px] leading-8 font-medium tracking-[-0.02em] text-fg">选择一个工作区</h1>
         </div>
 
-        <div className="surface-card p-4">
-          <div className="flex flex-wrap items-center gap-2">
+        <div className="rounded-panel bg-surface-2 p-4 shadow-soft">
+          <div className="flex flex-wrap items-center gap-2 border-b border-line pb-4">
             <Button
               variant="primary"
               size="md"
@@ -74,7 +64,7 @@ export function WorkspacePicker() {
             ) : null}
           </div>
 
-          <div className="mt-4 border-t border-line pt-3">
+          <div className="pt-3">
             <div className="mb-2 flex items-center gap-1.5 text-[11.5px] text-fg-subtle">
               <Clock size={12} aria-hidden="true" />
               最近工作区
@@ -92,9 +82,9 @@ export function WorkspacePicker() {
                       type="button"
                       disabled={busy}
                       onClick={() => void open(path)}
-                      className="flex min-w-0 flex-1 items-center gap-2 rounded-sm px-2 py-1.5 text-left hover:bg-surface-2 disabled:opacity-50"
+                      className="flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-2 text-left hover:bg-interactive disabled:opacity-50"
                     >
-                      <FolderOpen size={14} aria-hidden="true" className="shrink-0 text-accent" />
+                      <FolderOpen size={14} aria-hidden="true" className="shrink-0 text-fg-subtle" />
                       <span className="min-w-0 flex-1">
                         <span className="block truncate text-[13px] text-fg">{path}</span>
                       </span>
@@ -117,8 +107,8 @@ export function WorkspacePicker() {
           </div>
         </div>
 
-        <p className="mt-4 text-center text-[12px] leading-relaxed text-fg-subtle">
-          选定后可以随时在输入框下方的工作区菜单、命令面板或设置页切换工作区。
+        <p className="mt-4 text-center text-[12px] leading-relaxed text-fg-caption">
+          FoxCode 只会在你选择的目录中工作
         </p>
       </div>
     </div>

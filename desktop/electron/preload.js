@@ -30,6 +30,10 @@ contextBridge.exposeInMainWorld('foxcode', {
       'dialog:save-file',
       'shell:open-external',
       'shell:show-item',
+      'terminal:open',
+      'terminal:start',
+      'terminal:write',
+      'terminal:kill',
       'app:theme-flash',
       'host:mode',
       'host:info',
@@ -40,7 +44,14 @@ contextBridge.exposeInMainWorld('foxcode', {
     return ipcRenderer.invoke(channel, payload)
   },
   on: (channel, listener) => {
-    const allowed = new Set(['host:frame', 'host:permission', 'host:transport', 'window:maximized'])
+    const allowed = new Set([
+      'host:frame',
+      'host:permission',
+      'host:transport',
+      'window:maximized',
+      'terminal:data',
+      'terminal:exit',
+    ])
     if (!allowed.has(channel)) return () => {}
     return subscribe(channel, listener)
   },
@@ -53,5 +64,15 @@ contextBridge.exposeInMainWorld('foxcode', {
   pickDirectory: () => ipcRenderer.invoke('dialog:pick-directory'),
   openExternal: (url) => ipcRenderer.invoke('shell:open-external', url),
   revealPath: (target) => ipcRenderer.invoke('shell:show-item', target),
+  openTerminal: (target) => ipcRenderer.invoke('terminal:open', target),
+  // The in-app terminal is a shell feature of the main process, not part of the
+  // `fox serve` sidecar, so it stays available in demo mode too.
+  terminal: {
+    start: (options) => ipcRenderer.invoke('terminal:start', options),
+    write: (id, data) => ipcRenderer.invoke('terminal:write', { id, data }),
+    kill: (id) => ipcRenderer.invoke('terminal:kill', id),
+    onData: (listener) => subscribe('terminal:data', listener),
+    onExit: (listener) => subscribe('terminal:exit', listener),
+  },
   themeFlash: () => ipcRenderer.invoke('app:theme-flash'),
 })

@@ -7,7 +7,7 @@
 在项目根目录运行 `uv sync` 安装 `fox`。用户级 `~/.foxcode/models.json` 保存模型目录，`~/.foxcode/auth.json` 只保存凭据，`~/.foxcode/settings.json` 保存运行策略；Windows 下对应 `C:\Users\Qin\.foxcode`。可以复制 [models.json](examples/models.json)、[auth.json](examples/auth.json) 和 [settings.json](examples/settings.json) 后修改。这三个文件职责独立，不能把 provider、模型数据或运行策略写进 `auth.json`。
 
 ```powershell
-uv run fox --trust-project --permission workspace-write --interactive
+uv run fox --trust-project --permission workspace-modify --interactive
 uv run fox --list-models
 uv run fox --model deepseek/deepseek-v4-pro --thinking high -p "阅读 README.md，说明项目架构"
 uv run fox --resume -p "继续解释 Session"
@@ -15,7 +15,7 @@ uv run fox -p "检查目录结构" --json
 uv run fox --resume --compact
 ```
 
-会话默认写入项目 `.foxcode/sessions/`；配置 `session_scope: "user"` 后写入用户 `.foxcode/sessions/<项目路径哈希>/`。`--resume <文件路径>` 支持指定历史会话，`--resume` 不带路径选取当前项目最近会话。正常输出在 stdout，会话路径和诊断在 stderr。
+会话统一写入用户目录 `.foxcode/sessions/--<normalized-cwd>--/session-<uuid>/session.jsonl`，项目目录不再保存或扫描会话。空白新会话只存在内存中，提交第一条消息后才落盘。`--resume <文件路径>` 支持指定历史会话，`--resume` 不带路径选取当前工作区最近会话。正常输出在 stdout，会话路径和诊断在 stderr。
 
 交互中用 `/model` 列出模型，`/model deepseek/deepseek-v4-pro` 切换；`/thinking` 查看当前强度，`/thinking high`、`/thinking xhigh` 或 `/thinking off` 设置。新会话默认选 models.json 中第一个模型、思考关闭；模型与思考级别会保存到 Session。`/cwd` 切换项目后继续从同一用户目录取凭据，密钥不会进入 Session。修改 models.json 或 auth.json 后使用 `/reload`；想应用已修改的模型元数据，再执行 `/model 名称`。
 
@@ -24,14 +24,14 @@ uv run fox --resume --compact
 ```json
 {
   "model": "provider/model-id",
-  "permission_mode": "workspace-write",
+  "permission_mode": "workspace-modify",
   "extensions": ["module:fox_coding_agent.src.extensions.memory:setup"],
   "stream_options": {"max_tokens": 8192},
   "tools": ["read", "write", "edit", "grep", "find", "ls"]
 }
 ```
 
-`permission_mode` 控制工作区与系统操作：`read-only` 禁止修改项目，`workspace-write` 只允许 `write`/`edit` 修改工作区并禁止 shell，`full-access` 允许全部运行时工具。扩展可以把自身管理的数据声明为 `extension-state`；这类状态操作不受三档工作区权限影响，但仍要求项目已信任。命令行 `--permission` 只覆盖本次进程。
+`permission_mode` 控制工作区与系统操作：`read-only` 禁止修改项目，`workspace-modify` 在界面中显示为“工作区修改”，允许修改工作区文件并从工作区执行 shell，`full-access` 允许写入任意路径。扩展可以把自身管理的数据声明为 `extension-state`；这类状态操作不受三档工作区权限影响，但仍要求项目已信任。命令行 `--permission` 只覆盖本次进程。
 
 面试准备先读内核的 13 章，再读编码宿主的 9 章，分别理解通用机制与项目策略。
 

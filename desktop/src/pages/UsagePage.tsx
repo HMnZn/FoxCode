@@ -59,9 +59,9 @@ export function UsagePage() {
   if (!hasData) {
     return (
       <div className="scroll-quiet flex h-full flex-col overflow-y-auto bg-canvas">
-        <div className="mx-auto flex w-full max-w-[1100px] flex-col gap-4 p-6">
+        <div className="mx-auto flex w-full max-w-[960px] flex-col gap-6 px-8 py-9 lg:px-12">
           <header className="flex flex-wrap items-center gap-2">
-            <h1 className="text-[20px] leading-[28px] font-medium text-fg">用量</h1>
+            <h1 className="text-[26px] leading-8 font-medium tracking-[-0.02em] text-fg">用量</h1>
             <Chip size="sm">0 轮</Chip>
             <span className="ml-auto text-2xs text-fg-subtle">
               模型 <span className="font-mono text-fg-muted">{host?.model.displayName ?? '—'}</span>
@@ -97,9 +97,9 @@ export function UsagePage() {
 
   return (
     <div className="scroll-quiet flex h-full flex-col overflow-y-auto bg-canvas">
-      <div className="mx-auto flex w-full max-w-[1100px] flex-col gap-4 p-6">
+      <div className="mx-auto flex w-full max-w-[960px] flex-col gap-6 px-8 py-9 lg:px-12">
         <header className="flex flex-wrap items-center gap-2">
-          <h1 className="text-[20px] leading-[28px] font-medium text-fg">用量</h1>
+          <h1 className="text-[26px] leading-8 font-medium tracking-[-0.02em] text-fg">用量</h1>
           <Chip size="sm" mono>
             {totals.turns} 轮
           </Chip>

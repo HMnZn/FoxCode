@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import asyncio
+import itertools
 import json
 import sys
 import traceback
@@ -63,7 +64,15 @@ class NdjsonServer:
         self._stdout = ensure_utf8(stdout) if stdout is not None else ensure_utf8(sys.stdout)
         self._log = log or (lambda message: print(message, file=sys.stderr, flush=True))
         self._on_ready = on_ready
-        self._out: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
+        # A model can produce thousands of tiny delta frames.  Control replies
+        # (especially ``abort``/``host.info``) must not wait behind that entire
+        # backlog, otherwise Electron times out even though the host handled the
+        # request.  The monotonically increasing sequence keeps equal-priority
+        # items stable and also makes every PriorityQueue tuple comparable.
+        self._out: asyncio.PriorityQueue[tuple[int, int, dict[str, Any] | None]] = (
+            asyncio.PriorityQueue()
+        )
+        self._out_seq = itertools.count()
         self._host: ServeHost | None = None
         self._writer: asyncio.Task[None] | None = None
         self._ready_task: asyncio.Task[None] | None = None
@@ -76,16 +85,28 @@ class NdjsonServer:
     def send(self, payload: dict[str, Any]) -> None:
         """线程/回调安全地排入一行输出（不阻塞）。"""
 
-        self._out.put_nowait(payload)
+        # Request responses are control-plane traffic; frames are data-plane
+        # traffic.  Let responses overtake queued stream deltas, while retaining
+        # FIFO order inside each class.
+        priority = 0 if "id" in payload else 10
+        self._out.put_nowait((priority, next(self._out_seq), payload))
+
+    def _write_payload(self, payload: dict[str, Any]) -> None:
+        """Write one complete line outside the asyncio event-loop thread."""
+
+        self._stdout.write(compact_json(payload) + "\n")
+        self._stdout.flush()
 
     async def _write_loop(self) -> None:
         while True:
-            payload = await self._out.get()
+            _priority, _sequence, payload = await self._out.get()
             if payload is None:
                 break
             try:
-                self._stdout.write(compact_json(payload) + "\n")
-                self._stdout.flush()
+                # Pipe backpressure is synchronous.  Writing on the event-loop
+                # thread used to freeze stdin dispatch too, so a full stdout
+                # pipe made the red stop button and all queries appear dead.
+                await asyncio.to_thread(self._write_payload, payload)
             except Exception as exc:  # noqa: BLE001 - 父进程关掉管道时优雅退出
                 self._log(f"[fox serve] stdout 写入失败：{type(exc).__name__}: {exc}")
                 break
@@ -208,7 +229,8 @@ class NdjsonServer:
                 await host.stop()
             except Exception as exc:  # noqa: BLE001
                 self._log(f"[fox serve] 宿主收尾失败：{type(exc).__name__}: {exc}")
-        self._out.put_nowait(None)
+        # Drain everything already accepted before stopping the writer.
+        self._out.put_nowait((100, next(self._out_seq), None))
         if self._writer is not None:
             try:
                 await self._writer

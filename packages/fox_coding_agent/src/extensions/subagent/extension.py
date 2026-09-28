@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from dataclasses import dataclass
 
 from fox_ai.src import AssistantMessage, TextContent
 from fox_agent_core.src import AgentToolResult
+from fox_agent_core.src._async import maybe_await
 
 from ...core.agent_session import AgentSession, AgentSessionConfig
 from ...core.permissions import check_tool_permission
@@ -67,7 +69,15 @@ class SubAgentService:
             )
         return [available[name] for name in definition.allowed_tools]
 
-    async def run(self, agent_type: str, prompt: str, description: str = "") -> AgentToolResult:
+    async def run(
+        self,
+        agent_type: str,
+        prompt: str,
+        description: str = "",
+        *,
+        cancel_event: asyncio.Event | None = None,
+        on_update=None,
+    ) -> AgentToolResult:
         context = self._require_context()
         if not context.project_trusted:
             raise PermissionError("Sub-agents are disabled until the project is trusted")
@@ -80,14 +90,35 @@ class SubAgentService:
         parent = context.agent_session
         tools = self._select_tools(definition)
 
-        async def before_tool(data, cancel_event):
+        async def before_tool(data, child_cancel_event):
             tool = next((item for item in tools if item.name == data["tool_call"].name), None)
             if tool is None:
                 return {"block": True, "reason": "Tool is outside the sub-agent capability set"}
+            # A child must go through the same host approval/audit chain as its
+            # parent. In the desktop host the runtime itself is deliberately
+            # built as full-access and the real user-selected policy lives in
+            # this hook. Running a second static check against the extension
+            # context made a delegated shell call stricter than the identical
+            # main-agent call.
+            parent_before = parent.session_config.before_tool_call
+            if parent_before is not None:
+                outcome = await maybe_await(parent_before(data, child_cancel_event))
+                if outcome:
+                    return outcome
+                return None
+
+            # A manually assembled AgentSession may not have a parent hook. In
+            # that SDK-only case retain the ordinary static permission guard.
             reason = check_tool_permission(
                 tool, data["args"], context.cwd, context.permission_mode
             )
             return {"block": True, "reason": reason} if reason else None
+
+        child_stream_options = dict(parent.session_config.stream_options)
+        # The provider-facing session id identifies one agent conversation.
+        # Reusing the parent's id for an isolated child can make transports or
+        # gateways cancel one stream when another request starts.
+        child_stream_options.pop("session_id", None)
 
         child = AgentSession(AgentSessionConfig(
             model=parent.state.model,
@@ -97,7 +128,7 @@ class SubAgentService:
             tools=tools,
             skills=[],
             stream_fn=parent.session_config.stream_fn,
-            stream_options=dict(parent.session_config.stream_options),
+            stream_options=child_stream_options,
             thinking_level=parent.state.thinking_level,
             max_turns=self.config.max_turns,
             tool_execution=parent.session_config.tool_execution,
@@ -105,6 +136,51 @@ class SubAgentService:
             model_retry_attempts=parent.session_config.model_retry_attempts,
         ))
         self._children.add(child)
+        started_at = time.monotonic()
+        progress = {"phase": "正在启动"}
+
+        def report_progress(*, force: bool = False) -> None:
+            if on_update is None:
+                return
+            elapsed = max(0, int(time.monotonic() - started_at))
+            text = f"子 Agent 运行中 · {elapsed}s · {progress['phase']}"
+            on_update(_result(
+                text,
+                agent_type=agent_type,
+                description=description,
+                elapsed_seconds=elapsed,
+                heartbeat=not force,
+            ))
+
+        async def relay_child_event(event, _child_cancel_event) -> None:
+            kind = getattr(event, "type", "")
+            if kind == "agent_start":
+                progress["phase"] = "正在请求模型"
+                report_progress(force=True)
+            elif kind == "turn_start":
+                progress["phase"] = "正在思考"
+            elif kind == "tool_execution_start":
+                progress["phase"] = f"正在调用 {getattr(event, 'tool_name', '工具')}"
+                report_progress(force=True)
+            elif kind == "tool_execution_end":
+                progress["phase"] = f"已完成 {getattr(event, 'tool_name', '工具')}，继续处理"
+                report_progress(force=True)
+
+        async def heartbeat() -> None:
+            while True:
+                await asyncio.sleep(5)
+                report_progress()
+
+        async def relay_parent_cancel() -> None:
+            assert cancel_event is not None
+            await cancel_event.wait()
+            child.abort()
+
+        child.subscribe(relay_child_event)
+        heartbeat_task = asyncio.create_task(heartbeat()) if on_update is not None else None
+        cancel_task = (
+            asyncio.create_task(relay_parent_cancel()) if cancel_event is not None else None
+        )
         try:
             await child.prompt(prompt)
             final = next(
@@ -127,8 +203,15 @@ class SubAgentService:
                 usage=usage,
             )
         finally:
+            for task in (heartbeat_task, cancel_task):
+                if task is not None and not task.done():
+                    task.cancel()
             child.abort()
             await child.wait_for_idle()
+            await asyncio.gather(
+                *(task for task in (heartbeat_task, cancel_task) if task is not None),
+                return_exceptions=True,
+            )
             self._children.discard(child)
 
     async def close(self) -> None:
@@ -165,7 +248,11 @@ class SubAgentTool:
 
     async def execute(self, call_id, params, cancel_event=None, on_update=None):
         return await self.service.run(
-            params.get("type", "general"), params["prompt"], params["description"]
+            params.get("type", "general"),
+            params["prompt"],
+            params["description"],
+            cancel_event=cancel_event,
+            on_update=on_update,
         )
 
 

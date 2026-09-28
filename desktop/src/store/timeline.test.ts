@@ -38,10 +38,13 @@ const userMessage = (text: string): HostEvent => ({
   message: { role: 'user', content: [{ type: 'text', text }] },
 })
 
-const stream = (event: Extract<HostEvent, { type: 'message_update' }>['assistant_message_event']): HostEvent => ({
+const stream = (
+  event: Extract<HostEvent, { type: 'message_update' }>['assistant_message_event'],
+  context_usage?: Extract<HostEvent, { type: 'message_update' }>['context_usage'],
+): HostEvent => ({
   type: 'message_update',
-  message: { role: 'assistant', content: [] },
   assistant_message_event: event,
+  context_usage,
 })
 
 describe('timeline reducer', () => {
@@ -169,8 +172,8 @@ describe('timeline reducer', () => {
       tool_call_id: 'call-x',
       tool_name: 'write',
       args: { path: 'C:/outside.txt' },
-      required: 'workspace-write',
-      mode: 'workspace-write',
+      required: 'workspace-modify',
+      mode: 'workspace-modify',
       cwd: 'C:/repo',
       reason: 'outside-workspace',
       summary: 'write C:/outside.txt',
@@ -308,17 +311,34 @@ describe('timeline reducer', () => {
     expect(state.blocks.some((block) => block.kind === 'notice')).toBe(true)
   })
 
-  it('estimates the streaming share of the context and settles it on usage', () => {
+  it('shows progress and backend usage while file arguments are streaming', () => {
+    const state = run([
+      { type: 'agent_start' },
+      stream({ type: 'toolcall_delta', content_index: 0, delta: '<svg' },
+        { context_tokens: 3210, output_tokens: 120, estimated: true }),
+    ])
+    expect(state.activity).toBe('正在生成工具参数…')
+    expect(state.context).toEqual(expect.objectContaining({ used: 3210 }))
+    expect(state.stalled).toBe(false)
+  })
+
+  it('uses backend streaming token snapshots and settles them on final usage', () => {
     const streaming = run([
       { type: 'turn_start' },
-      stream({ type: 'text_start', content_index: 0 }),
-      stream({ type: 'text_delta', content_index: 0, delta: '正在写一段中文' }),
+      stream(
+        { type: 'text_start', content_index: 0 },
+        { context_tokens: 1_008, output_tokens: 0, estimated: true },
+      ),
+      stream(
+        { type: 'text_delta', content_index: 0, delta: '正在写一段中文' },
+        { context_tokens: 1_016, output_tokens: 8, estimated: true },
+      ),
     ])
 
-    // 中文按「一个字一个 token」估，所以流式期间 live 必须已经大于 0：否则用户会以为
-    // 上下文占用卡住了（这正是 m05802 报的「token 不是实时增加的」）。
-    expect(streaming.context.live).toBeGreaterThan(0)
-    expect(streaming.context.used).toBe(0)
+    expect(streaming.context.live).toBe(0)
+    expect(streaming.context.used).toBe(1_016)
+    expect(streaming.context.output).toBe(8)
+    expect(streaming.context.source).toBe('host')
 
     const settled = applyFrame(streaming, frame({
       type: 'message_end',

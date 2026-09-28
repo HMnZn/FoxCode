@@ -51,7 +51,7 @@ IPC bridge 连真宿主；不设则回落到进程内的**演示宿主**（`desk
 | `--resume [FILE]` | 继续最近的会话（可跟具体文件） |
 | `--new-session` | 强制开新会话（**默认是继续最近会话**，见下文「会话」） |
 | `--thinking LEVEL` | `off\|minimal\|low\|medium\|high\|xhigh` |
-| `--permission MODE` | `read-only\|workspace-write\|full-access`（默认沿用配置档位） |
+| `--permission MODE` | `read-only\|workspace-modify\|full-access`（默认沿用配置档位） |
 | `--ask-timeout SEC` | 等界面授权的最长秒数，超时按拒绝（默认 600） |
 | `--prompt TEXT` / `--compact` / `--command NAME …` | 启动后立刻做一件事 |
 | `--list-models` / `--quiet` / `--version` | 列出模型 / 不打日志 / 版本 |
@@ -75,10 +75,11 @@ IPC bridge 连真宿主；不设则回落到进程内的**演示宿主**（`desk
 请求之间**互不阻塞**：`prompt` 是「入队后立刻返回」，进度全部由帧驱动，所以
 `permission.answer` 可以在同一轮里随时插进来（服务端每行一个 task 并发分发）。
 
-### 请求（25 个，与前端 `HostCommand` 一致）
+### 请求（26 个，与前端 `HostCommand` 一致）
 
 `host.info`、`sessions.list`、`sessions.open{id}`、`sessions.new`、
-`sessions.fork{fromId?}`、`sessions.delete{id}`、`session.export{format:'json'|'markdown',path}`、
+`sessions.rename{id,title}`、`sessions.fork{fromId?}`、`sessions.delete{id}`、
+`session.export{format:'json'|'markdown',path}`、
 `prompt{message,options?}`、`steer{message}`、`follow_up{message}`、`abort`、
 `compact`、`run_command{name,arguments?}`、`invoke_skill{name,instructions?}`、
 `model.select{reference}`、`thinking.set{level}`、`permission.set{mode}`、
@@ -94,6 +95,12 @@ deletions,binary,staged,untracked,oversized}], total, truncated, error}`，未�
 HEAD 里没有的未跟踪文件合成「整文件新增」；`files.read` 给原文。三个命令都**不抛异常**：
 找不到 git、不在仓库里、超时都只填 `error`，界面对应退回「本轮会话触碰的文件」。
 路径只允许工作区（及仓库根）之内，越界抛 `HostError`；二进制与超过 2 MiB 的文件不预览。
+
+`files.read` 的返回值带 `kind`（`text` / `binary` / `image`）、`mime`、`data`、`error`：
+图片（`.png/.jpg/.jpeg/.gif/.webp/.bmp/.ico/.avif`，见 `IMAGE_MIMES`）直接给 base64
+（`data`），前端拼 `data:` URL 渲染；图片超过 `MAX_IMAGE_BYTES = 2 MiB`（base64 还要再涨约
+37%）时不内嵌，`data` 为 `None` 且 `error` 写明「图片 X 超过内嵌预览上限」，界面只显示这句
+话和文件大小。文本与二进制照旧给 `text`；二进制判定仍是前 8000 字节里出现 `\x00`。
 注意 git 走 `asyncio.to_thread(subprocess.run, …)`：sidecar 的 stdin/stdout 是 Node 管道，
 Windows proactor 循环下 `create_subprocess_exec` 的子进程会拿不到管道关闭事件而卡到超时。
 
@@ -103,8 +110,27 @@ Windows proactor 循环下 `create_subprocess_exec` 的子进程会拿不到管�
 `TypeError: argument should be a str or an os.PathLike object where __fspath__ returns a str`。
 
 `sessions.delete{id}` 只删会话目录内的文件：`find` 找不到 → `找不到会话：…`；
-解析后不在 `<cwd>/.foxcode/sessions` 或用户级会话目录里 → `PermissionError`；
+解析后不在当前工作区对应的用户级会话目录里 → `PermissionError`；
 正在使用的会话（与 `runtime.session_file` 同一文件）→ 拒绝并提示先切换。
+
+`sessions.rename{id,title}` 只重写会话文件第一行的 `_meta._label`（`sessions.py` 的
+`set_session_label`：同目录临时文件 + `os.replace`，其余行 `shutil.copyfileobj` 原样抄，
+所以消息数与回放完全不受影响）。`title` 为空/缺失就是**清掉标签**，界面回到「首条用户消息」
+这个自动标题；标题先折叠所有空白再截到 `MAX_LABEL_LENGTH = 120`（前端输入框同一个值）。
+**正在使用的会话必须经由它自己的 storage 改名**：`_cmd_sessions_rename` 先按 `_runtimes`
+找 owner，`owner.session.storage.set_label()` 存在就走它，否则才直接改文件 ——
+理由是会话对象在内存里握着旧 label，下一次 append 把整个文件重写一遍，磁盘上刚写好的名字
+会被它覆盖。错误映射：`find` 找不到 → `找不到会话：…`，目录外的路径 → `PermissionError`
+原文，其余 `OSError`/`ValueError`/文件头不是合法 JSON → `重命名会话失败：…`。
+返回值是这条会话的最新 `summary`（`live` 标记照旧）。
+
+`sessions.fork{fromId?}` 分叉完成后把新会话命名成「原标题-分支」（`sessions.py` 的
+`branch_label`：已带 `-分支` 后缀就往数字上加一，`X-分支` → `X-分支2` → `X-分支3`；空白先
+折叠）。截断用 `_fit_branch(root, suffix)` 从 `root` 上截，**保后缀**：直接对结果取
+`[:MAX_LABEL_LENGTH]` 会把 `-分支` 裁掉，只剩一个和原会话同名的标题。写入顺序是先
+`summary_for(path, live=True)` 取标题、再 `branch_label`、然后 `runtime.session.storage.
+set_label()`（分叉出来的会话还没有下一条消息，内存与磁盘不会打架），没有 storage 才回退
+`SessionIndex.rename`。
 
 `prompt.options.queueAs` 为 `steer`/`follow_up` 时改走运行中插话（调用
 `runtime.agent_session.steer/follow_up`），否则按普通提交。`permission.answer` 的
@@ -125,7 +151,7 @@ Windows proactor 循环下 `create_subprocess_exec` 的子进程会拿不到管�
 - **命名**：流事件用 snake_case（`content_index`/`delta`/`tool_call`/`reason`），
   消息与用量用 camelCase（`stopReason`/`toolCallId`/`totalTokens`/`cacheRead`）——
   分别对应 `model_dump(mode="json")` 与 `model_dump(mode="json", by_alias=True)`。
-- **只转发增量**：`message_update` 只带 `assistant_message_event` 的 delta，前端自行累加
+- **只转发增量**：`message_update` 只带 `assistant_message_event` 的 delta 和后端计算的 `context_usage`，不重复序列化整条 partial message
   （宿主每个 delta 都深拷贝了整个 partial，原样转发是 O(n²)）。
 - **工具结果字符串化**：`tool_execution_end.result` 被压成人类可读文本
   （content 文本 + `[exit N]` + `[输出已截断]`），因为前端工具卡就是这么渲染的。
@@ -136,7 +162,7 @@ Windows proactor 循环下 `create_subprocess_exec` 的子进程会拿不到管�
   （`fox_agent_core.src.harness.compaction.estimate_context_tokens`），并且**丢掉**
   `result.retainedTail`（原文尾巴可能几 MB，前端只用计数）。字符串形式的 `result`
   仍会透传（截断到 4000 字符），供 mock 之类的简单宿主使用。
-- `host.info.contextTokens`：宿主对当前会话分支的 token 估算，前端在还没有 usage 时用它
+- `host.info.contextTokens`：Coding backend 对当前会话分支的 token 估算，serve 只转发，前端在还没有 usage 时用它
   填充上下文占用。
 - `host.info.busy` / `host.info.lastFrameAt`：**这一轮到底还在不在跑**。`busy` 在
   `agent_start` 到 `agent_end`/`error` 之间为 true（`_cmd_prompt` 一接单就先置 true，
@@ -166,7 +192,7 @@ Windows proactor 循环下 `create_subprocess_exec` 的子进程会拿不到管�
 ```
 
 后两步**只能收紧、不能放行**。所以如果 sidecar 直接把 `permission_mode` 交给宿主，
-`workspace-write` 档位下界面就永远无法「点一次同意，放过这次越界写入」——
+`workspace-modify` 档位下界面就永远无法「点一次同意，放过这次越界写入」——
 静态检查会先拒绝掉。
 
 因此 fox_serve 的做法是：
@@ -174,8 +200,9 @@ Windows proactor 循环下 `create_subprocess_exec` 的子进程会拿不到管�
 1. 构造 runtime 时用 `settings_overrides={"permission_mode": "full-access"}`，
    让静态检查永不先拒（`host.info.runtimePermissionMode` 会如实上报 `full-access`）；
 2. **档位由 sidecar 的 `PermissionPolicy` 执行**：`read-only` 档位直接 block 更高权限
-   的工具（钩子无法提权，只能如实拒绝），`workspace-write` 档位对「越界路径 / shell」
-   发审批请求，`full-access` 档位全放行；
+   的工具（钩子无法提权，只能如实拒绝），`workspace-modify` 在界面中显示为
+   “工作区修改”，工作区内写入与 shell 直接放行，仅对越界文件写入发审批请求，
+   `full-access` 档位全放行；
 3. 审批把 `before_tool_call` 挂起在一个 future 上，向界面发 `permission` 事件，
    等 `permission.answer`、`abort` 或超时（超时按拒绝）。`allow-session` 记进
    会话级白名单；`read-only` 类工具（Read/Grep/Find/Ls）永远放行。
@@ -191,10 +218,10 @@ Windows proactor 循环下 `create_subprocess_exec` 的子进程会拿不到管�
   都会拉起一个新的 sidecar 进程，如果默认新建会话，用户每开一次界面就多一个空会话文件；
   界面上的「新建会话」按钮走 `sessions.new`，所以默认续接是安全的。要强制新会话用
   `--new-session`。
-- `sessions.list` 扫两个目录（`<cwd>/.foxcode/sessions` 与
-  `<user_dir>/sessions/<sha256(normcase(cwd))[:16]>`），**轻量解析** JSONL
-  （不 import 宿主的 `SessionManager`），并默认过滤掉 0 条消息的空会话
-  （只保留当前 live 的那个）。
+- `sessions.list` 只扫描
+  `<user_dir>/sessions/--<normalized-cwd>--/session-*/session.jsonl`，**轻量解析**
+  JSONL（不 import 宿主的 `SessionManager`）。空白草稿仅作为当前 live 行由宿主返回，
+  磁盘上没有对应文件。
 - `sessions.open` 先发 `session_start{…}`，再对历史里每条 `message` 逐个发 `message_end`
   ——磁盘上的消息本来就是 camelCase（`session_manager.py` 用 `by_alias=True` 落盘），
   可以直接转发给前端回放。
@@ -203,6 +230,12 @@ Windows proactor 循环下 `create_subprocess_exec` 的子进程会拿不到管�
   透传 ISO 字符串会让侧栏排序得到 `NaN`、时间显示退化成日期。
 - `sessions.delete` 复用 `SessionIndex.find`，并把解析后的路径限制在
   `SessionIndex.directories()` 内才 `unlink`（防越界删除）。
+- `sessions.rename` 与 `sessions.delete` 现在共用同一个私有守卫 `SessionIndex._owned()`
+  （`find` + 判据 `resolved.parent.parent == directory`），越界一律 `PermissionError` ——
+  改名写文件比删除更危险，边界检查不能只写在删除那条路径上。
+- **Windows 上必须先把源文件关掉再 `os.replace`**：替换一个还开着读句柄的文件会得到
+  `PermissionError: [WinError 5] 拒绝访问`。`set_session_label` 因此把整个读取过程包进
+  `try`，`os.replace` 落在 `with path.open(...)` 之外，异常时先 unlink 临时文件再抛。
 
 ---
 
@@ -246,10 +279,10 @@ Windows proactor 循环下 `create_subprocess_exec` 的子进程会拿不到管�
 | `extension_catalog.py` | 扩展目录：spec 解析、`setup` 探测、可发现候选、作用域合并与 `extensions.set` 的数据层 |
 | `protocol.py` | 事件/DTO 翻译（`event_payload`、`message_payload`、`stream_event_payload`、`to_jsonable`） |
 | `approvals.py` | `PermissionPolicy`（档位规则、路径判定、summary/preview）+ `ApprovalBroker`（future ↔ 事件 ↔ 超时） |
-| `sessions.py` | 会话目录扫描与 JSONL 轻量解析 |
+| `sessions.py` | 会话目录扫描与 JSONL 轻量解析、改名（`set_session_label`）、分叉命名（`branch_label`） |
 | `server.py` | `NdjsonServer`：读一行 / 并发分发 / 单 writer 写一行 / 优雅退出 |
 | `cli.py`、`__main__.py` | argparse 入口（`python -m fox_serve`） |
-| `tests/` | 118 个 `unittest` 用例（协议翻译、权限策略、服务端并发与错误路径、会话时间戳/删除/`sessions.new` 取路径、扩展目录与开关/回滚、`test_agent_state.py` 的忙碌标志/心跳/插话拒绝） |
+| `tests/` | 142 个 `unittest` 用例（协议翻译、权限策略、服务端并发与错误路径、会话时间戳/删除/改名/分叉命名/`sessions.new` 取路径、图片 base64 与超限、扩展目录与开关/回滚、`test_agent_state.py` 的忙碌标志/心跳/插话拒绝） |
 | `scripts/ndjson_client.py` | 协议示例 + 排查工具（也在端到端验证里当驱动用） |
 
 ## 测试
@@ -259,7 +292,7 @@ venv 里没有 pytest，所以测试用标准库 `unittest`：
 ```powershell
 $env:PYTHONIOENCODING = "utf-8"     # Windows 控制台显示中文
 uv run python -m unittest discover -s fox_serve/tests -t .
-# Ran 118 tests ... OK
+# Ran 142 tests ... OK
 ```
 
 （PowerShell 会把 uv 的 stderr 当成错误而给出 exit 1，结论看 `OK` 那一行。）

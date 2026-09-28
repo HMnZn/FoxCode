@@ -6,7 +6,7 @@ import { useSession } from '@/store/sessionStore'
 import { useUi } from '@/store/uiStore'
 import { useWorkspace } from '@/store/workspaceStore'
 
-const IDLE_COMPOSER = '描述任务，/ 唤起命令，Shift + Enter 换行'
+const IDLE_COMPOSER = '描述你想要构建的内容，/ 调用指令，@ 文件或对话'
 /** The shell refuses to start without a workspace: tests seed the demo host's. */
 const WORKSPACE = 'C:\\Users\\Qin\\Desktop\\coding_agent\\FoxCode'
 
@@ -189,25 +189,25 @@ describe('FoxCode Studio shell', () => {
 
     // 会话视角：欢迎区在，轨迹摘要不在。
     await waitFor(() => {
-      expect(screen.getByText('开始一段新会话')).toBeTruthy()
+      expect(screen.getByRole('heading', { name: 'FoxCode' })).toBeTruthy()
     })
     expect(screen.queryByText('执行轨迹')).toBeNull()
 
-    // 「轨迹」段与侧栏的「会话」同名，查询要限定在分段控件内。
-    const switcher = screen.getByRole('group', { name: '会话与轨迹切换' })
-
-    fireEvent.click(within(switcher).getByRole('button', { name: '轨迹' }))
+    // 空白欢迎页按设计隐藏标题栏；快捷切换到轨迹后才显示分段控件。
+    useUi.getState().setChatView('trace')
     await waitFor(() => {
       expect(useUi.getState().chatView).toBe('trace')
     })
     expect(screen.getByText('执行轨迹')).toBeTruthy()
     expect(screen.getByText('还没有工具调用')).toBeTruthy()
 
+    // 「轨迹」段与侧栏的「会话」同名，查询要限定在分段控件内。
+    const switcher = screen.getByRole('group', { name: '会话与轨迹切换' })
     fireEvent.click(within(switcher).getByRole('button', { name: '会话' }))
     await waitFor(() => {
       expect(useUi.getState().chatView).toBe('chat')
     })
-    expect(screen.getByText('开始一段新会话')).toBeTruthy()
+    expect(screen.getByRole('heading', { name: 'FoxCode' })).toBeTruthy()
   })
 
   it('refreshes the context usage after a manual compact', async () => {
@@ -252,24 +252,22 @@ describe('FoxCode Studio shell', () => {
     })
     const before = useSession.getState().sessions.length
 
-    // 当前活动会话的删除按钮是禁用的，这里挑一个可删除的历史会话。
-    const buttons = await waitFor(() => {
-      const found = screen
-        .getAllByRole('button', { name: /^删除会话 / })
-        .filter((node) => !(node as HTMLButtonElement).disabled)
-      expect(found.length).toBeGreaterThan(0)
-      return found
+    // 当前活动会话删除前会先新建一条会话（净数量不变），所以挑一条历史会话。
+    const target = await waitFor(() => {
+      const found = useSession.getState().sessions.find((session) => session.live !== true)
+      expect(found).toBeTruthy()
+      return found!
     })
 
-    fireEvent.click(buttons[0])
+    fireEvent.click(screen.getByRole('button', { name: `会话操作 ${target.title}` }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: '永久删除会话' }))
     await waitFor(() => {
-      expect(screen.getByText('删除这个会话？')).toBeTruthy()
+      expect(screen.getByText('永久删除这个会话？')).toBeTruthy()
     })
 
-    fireEvent.click(screen.getByRole('button', { name: '删除' }))
+    fireEvent.click(screen.getByRole('button', { name: '永久删除' }))
     await waitFor(() => {
       expect(useSession.getState().sessions.length).toBe(before - 1)
     })
-    expect(useSession.getState().sessions.length).toBeLessThan(before)
   })
 })

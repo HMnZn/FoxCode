@@ -3,7 +3,9 @@ import type {
   TransportStatus,
   WindowControls,
 } from '@/bridge/types'
-import { uid } from '@/lib/format'
+import { branchLabel, uid } from '@/lib/format'
+import { nativeShell } from '@/bridge/native'
+import { terminalDriver, type TerminalDriver } from '@/bridge/terminal'
 import type {
   AssistantStreamEvent,
   HostCommand,
@@ -21,9 +23,108 @@ import type {
   FileContent,
   FileDiff,
   WorkspaceChanges,
+  WorkspaceDirectory,
 } from '@/types/protocol'
 import { PROTOCOL_VERSION } from '@/types/protocol'
 import { DEMO_PROMPT, SCRIPT, chunkText } from './scenario'
+
+/** 演示宿主里能当图片渲染的后缀（与宿主的 `IMAGE_MIMES` 同一套）。 */
+const DEMO_IMAGE_MIMES: Record<string, string> = {
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  gif: 'image/gif',
+  webp: 'image/webp',
+  bmp: 'image/bmp',
+  ico: 'image/x-icon',
+  avif: 'image/avif',
+}
+
+/** 演示宿主里「不是图片但也没法当文本看」的后缀。 */
+const BINARY_EXTENSIONS = new Set(['pdf', 'zip', 'gz', 'tar', 'exe', 'dll', 'woff', 'woff2', 'ttf'])
+
+/** 一张真的 32×18 渐变 PNG（785 字节，base64 内嵌，省得演示模式去读磁盘）。 */
+const DEMO_PNG_BASE64 =
+  'iVBORw0KGgoAAAANSUhEUgAAACAAAAASCAIAAAC1qksFAAAC2ElEQVR42pXTZ1eSUQAH8PuZ3AxB9p4PCJKlVq7KVaaVUoaTpYCCLBEQBJWhouCs0+mcPlfPfa5Xb6dU+gK/F/8B2LZv3K5rnvWqw3opslxIOs9lnWcKc01tqmpNp3rqxGismI3HFsNRl/7wib78TFfq1RWfawsvNQeDmv1h9d5rVX5ElRtX7r5VZCcVmSn5zkdZekaWskuTc9IkQLTQciHGtMpU1SCaqpiMx500bYD0U12pB9MDBD12Q2en5JkP8p0ZWdouTX2RJr9KthfECQBpy7kU0WZI6wjaStB9mB5S779S742o8mPK3IRy9x2mP8nSs5ieFycWxVsrojigabm5psS0gapQmLbpy936co+u1KctvtAW+jUHiH6jyo9i+j1Bf0a0BNLLorhLFPMIo4Cm1aZTOm4DdUIxcVsNRzb9YTcT9y09SNDjiFZkppm4Z2WQnpNsOzDtFMXcwuiqIOIThAFqkiKaRHSvFsbdTzQ5SjQ5jZu8pRdu6LhbGPMKoz5BJNAR3ujYBPRITIjGcdc9Ehi3g2lyiYkb0WuCiJ+hQ/xQmBcE941k6G4kMO5Jokk70SSiXQS9jmh+MMrbiLevAxsxEjruAdxknSNBTdJx+wWQDvJDm5hOtAeSXD94dCTTiMZxzxNNenCTAUxHbuj1JDeQ5vqzHB+4HckwonHcdY4ENbnJD0V4wRhvYwvTGY5vl722x14FD4/EfjcSGLeTaDJANInobYLOs1cPWN4iywP+vDscyd93f2AkUUS3B1Jc/w5NcyC9z/IWWJ5ym/uo1QXqHIkH0bjJMNEkorOctRymSwxdaXWdtjhBPXd/YCQM7csxcRdY3lKb57DNfczQtZaV8+Zl8J8jgXEniCYRDePG9EmLs8rQl01L102L4F93hyMh7x66fySILiO6FdJnNN0M6e+NCz8a58EccfdHR5JCNG6yiJusYPqieekK0z8bHL8aHL8BYzwiVDJ16a4AAAAASUVORK5CYII='
+
+/** 演示内容的兜底（不是已知类型时给一段带注释的假代码，高亮照样能看）。 */
+function demoText(extension: string, path: string, name: string): string {
+  if (extension === 'html' || extension === 'htm') {
+    return [
+      '<!doctype html>',
+      '<html lang="zh">',
+      '  <head>',
+      '    <meta charset="utf-8" />',
+      '    <title>演示页面</title>',
+      '    <style>',
+      '      body { margin: 0; font-family: system-ui, sans-serif; background: #0b1020; color: #e8ecf8; }',
+      '      .card { margin: 24px; padding: 20px 22px; border-radius: 14px; background: linear-gradient(135deg,#20306b,#4a1f7a); }',
+      '      h1 { margin: 0 0 8px; font-size: 20px; }',
+      '      p { margin: 0; color: #b9c2e0; font-size: 13px; }',
+      '    </style>',
+      '  </head>',
+      '  <body>',
+      '    <div class="card">',
+      '      <h1>这段 HTML 是渲染出来的</h1>',
+      '      <p>右侧栏用 sandbox="" 的 iframe 显示它：样式生效，脚本不执行。</p>',
+      '    </div>',
+      '  </body>',
+      '</html>',
+    ].join('\n')
+  }
+  if (extension === 'svg') {
+    return [
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 120" width="240" height="120">',
+      '  <defs>',
+      '    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">',
+      '      <stop offset="0" stop-color="#2f6fed" />',
+      '      <stop offset="1" stop-color="#8b5cf6" />',
+      '    </linearGradient>',
+      '  </defs>',
+      '  <rect width="240" height="120" rx="12" fill="url(#g)" />',
+      '  <circle cx="60" cy="60" r="26" fill="#ffffff" fill-opacity="0.85" />',
+      '  <text x="104" y="66" font-family="system-ui" font-size="16" fill="#ffffff">SVG 预览</text>',
+      '</svg>',
+    ].join('\n')
+  }
+  if (extension === 'md' || extension === 'markdown') {
+    return [
+      '# 演示 Markdown',
+      '',
+      '右侧栏把它当文档渲染，而不是当代码看。',
+      '',
+      '- 列表、**粗体**、`行内代码` 都走正文那套渲染器',
+      '- 切到「原文」就是源码',
+      '',
+      '```ts',
+      "export const name = 'demo'",
+      '```',
+    ].join('\n')
+  }
+  if (extension === 'json') {
+    return JSON.stringify(
+      {
+        name: 'foxcode-desktop',
+        version: '0.1.0',
+        private: true,
+        scripts: { dev: 'vite', build: 'tsc -b && vite build', test: 'vitest run' },
+        dependencies: { react: '^19.2.0', 'react-dom': '^19.2.0', zustand: '^5.0.2' },
+        workspaces: ['packages/fox_ai', 'packages/fox_agent_core'],
+      },
+      null,
+      2,
+    )
+  }
+  return [
+    `// ${path}`,
+    '// 演示宿主：真实内容由 fox_serve 的 files.read 提供。',
+    '',
+    `export const name = '${name}'`,
+    'export function demo(): number {',
+    '  return 42',
+    '}',
+  ].join('\n')
+}
 
 const MODELS: ModelInfo[] = [
   {
@@ -87,7 +188,7 @@ const COMMANDS: CommandInfo[] = [
   { name: 'fork', description: '从当前节点分叉出新会话' },
   { name: 'export', description: '导出会话', argumentHint: 'json|markdown' },
   { name: 'trust', description: '切换项目信任状态', argumentHint: 'on|off' },
-  { name: 'permission', description: '切换权限模式', argumentHint: 'read-only|workspace-write|full-access' },
+  { name: 'permission', description: '切换权限模式', argumentHint: 'read-only|workspace-modify|full-access' },
 ]
 
 /** 演示用的「已启用」扩展：形状与 `fox serve` 的 `host.info.extensions` 一致。 */
@@ -211,7 +312,7 @@ const DEMO_SESSIONS: DemoSessionSeed[] = [
   {
     id: 's-3',
     file: `${CWD}\\.foxcode\\sessions\\2026-02-11T08-12-30Z.jsonl`,
-    title: '检查 workspace-write 下的越界写入拦截',
+    title: '检查 workspace-modify 下的越界写入拦截',
     cwd: `${CWD}\\packages\\fox_coding_agent`,
     model: 'claude-sonnet-4-6',
     createdAt: Date.now() - 3 * 86_400_000,
@@ -224,7 +325,7 @@ const DEMO_SESSIONS: DemoSessionSeed[] = [
       {
         role: 'assistant',
         text:
-          '会被静态检查拦下，报错是：\n\n```\nTool \'write\' cannot modify outside the workspace in workspace-write mode: <candidate>\n```\n\n注意钩子只能进一步收紧——所以「临时批准一次越界写」在 workspace-write 下做不到，UI 必须显式抬高 `permission_mode`。',
+          '会被静态检查拦下，报错是：\n\n```\nTool \'write\' cannot modify outside the workspace in workspace-modify mode: <candidate>\n```\n\n注意钩子只能进一步收紧——所以「临时批准一次越界写」在 workspace-modify 下做不到，UI 必须显式抬高 `permission_mode`。',
       },
     ],
   },
@@ -239,6 +340,11 @@ const DEMO_SESSIONS: DemoSessionSeed[] = [
 export class MockHost implements FoxBridge {
   readonly kind = 'mock' as const
   readonly platform = 'win32'
+  /**
+   * 终端不依赖 sidecar：演示模式里照样用主进程的真 shell（`window.foxcode` 存在时），
+   * 只有在纯浏览器/jsdom 里才退化成脚本化的演示终端。
+   */
+  readonly terminal: TerminalDriver = terminalDriver()
   readonly window: WindowControls = {
     minimize: () => {},
     toggleMaximize: () => {},
@@ -269,7 +375,7 @@ export class MockHost implements FoxBridge {
     sessionFile: SESSION_FILE,
     model: MODELS[0],
     thinking: 'medium' as HostInfo['thinkingLevel'],
-    permission: 'workspace-write' as HostInfo['permissionMode'],
+    permission: 'workspace-modify' as HostInfo['permissionMode'],
     trusted: true,
   }
 
@@ -282,11 +388,10 @@ export class MockHost implements FoxBridge {
     for (const listener of [...this.frameListeners]) listener(frame)
   }
 
-  private emitStream(event: AssistantStreamEvent, assistantMessage?: unknown): void {
+  private emitStream(event: AssistantStreamEvent): void {
     this.emit({
       type: 'message_update',
       assistant_message_event: event,
-      message: assistantMessage as never,
     })
   }
 
@@ -348,9 +453,20 @@ export class MockHost implements FoxBridge {
     if (typeof window !== 'undefined') window.open(url, '_blank', 'noreferrer')
   }
 
-  /** There is no OS file manager inside the demo host. */
-  async reveal(): Promise<boolean> {
-    return false
+  /**
+   * 演示宿主没有 sidecar，但「在文件管理器里显示」是 Electron 主进程的事 —— 外壳在
+   * 就把这活转给它，不在（浏览器里跑 vite dev）才回 false。
+   */
+  async reveal(path: string): Promise<boolean> {
+    const shell = nativeShell()
+    if (!shell) return false
+    return shell.revealPath(path)
+  }
+
+  async openTerminal(path: string): Promise<boolean> {
+    const shell = nativeShell()
+    if (!shell) return false
+    return shell.openTerminal(path)
   }
 
   themeFlash(): void {}
@@ -407,6 +523,16 @@ export class MockHost implements FoxBridge {
         staged: false,
         untracked: true,
       },
+      {
+        path: 'docs/handbook.pdf',
+        display: 'docs/handbook.pdf',
+        status: 'modified',
+        additions: 0,
+        deletions: 0,
+        binary: true,
+        staged: false,
+        untracked: false,
+      },
     ]
     return {
       cwd,
@@ -417,6 +543,30 @@ export class MockHost implements FoxBridge {
       total: files.length,
       truncated: false,
       error: null,
+    }
+  }
+
+  private demoDirectory(path = ''): WorkspaceDirectory {
+    const root = [
+      { name: 'desktop', path: 'desktop', type: 'directory' as const, size: 0 },
+      { name: 'fox_serve', path: 'fox_serve', type: 'directory' as const, size: 0 },
+      { name: 'packages', path: 'packages', type: 'directory' as const, size: 0 },
+      { name: 'README.md', path: 'README.md', type: 'file' as const, size: 4210 },
+      // 演示模式没有真实宿主，这四行让「渲染」页签有东西可看。
+      { name: 'poster.svg', path: 'poster.svg', type: 'file' as const, size: 620 },
+      { name: 'report.html', path: 'report.html', type: 'file' as const, size: 980 },
+      { name: 'preview.png', path: 'preview.png', type: 'file' as const, size: 785 },
+      { name: 'main.py', path: 'main.py', type: 'file' as const, size: 860 },
+    ]
+    const nested = [
+      { name: 'src', path: `${path}/src`, type: 'directory' as const, size: 0 },
+      { name: 'package.json', path: `${path}/package.json`, type: 'file' as const, size: 1250 },
+    ]
+    return {
+      cwd: this.state.cwd,
+      path,
+      entries: path ? nested : root,
+      truncated: false,
     }
   }
 
@@ -471,26 +621,46 @@ export class MockHost implements FoxBridge {
     }
   }
 
-  /** 演示用的文件内容（高亮按扩展名猜语言）。 */
+  /**
+   * 演示用的文件内容。
+   *
+   * 按扩展名分别给一份「像那么回事」的内容，右侧栏的三种渲染（图片 / HTML / 文档）
+   * 在没有真实宿主的演示模式下才有东西可看：图片用一张内嵌的 32×18 渐变 PNG，
+   * SVG 与 HTML 是文本、直接内联，Markdown 与 JSON 各给一小段。
+   */
   private demoFile(path: string): FileContent {
     const name = path.split('/').pop() ?? path
-    const text = [
-      `// ${path}`,
-      '// 演示宿主：真实内容由 fox_serve 的 files.read 提供。',
-      '',
-      `export const name = '${name}'`,
-      'export function demo(): number {',
-      '  return 42',
-      '}',
-    ].join('\n')
+    const absolute = `${this.state.cwd}\\${path.split('/').join('\\')}`
+    const extension = name.includes('.') ? name.slice(name.lastIndexOf('.') + 1).toLowerCase() : ''
+    const image = DEMO_IMAGE_MIMES[extension]
+    if (image) {
+      return {
+        path,
+        absolute,
+        text: '',
+        truncated: false,
+        binary: false,
+        size: DEMO_PNG_BASE64.length * 0.75,
+        lines: 0,
+        kind: 'image',
+        mime: image,
+        data: DEMO_PNG_BASE64,
+        error: null,
+      }
+    }
+    const text = demoText(extension, path, name)
+    const binary = BINARY_EXTENSIONS.has(extension)
     return {
       path,
-      absolute: `${this.state.cwd}\\${path.split('/').join('\\')}`,
-      text,
+      absolute,
+      text: binary ? '' : text,
       truncated: false,
-      binary: false,
-      size: text.length,
-      lines: 7,
+      binary,
+      size: binary ? 84_512 : text.length,
+      lines: binary ? 0 : text.split('\n').length,
+      kind: binary ? 'binary' : 'text',
+      mime: null,
+      data: null,
     }
   }
 
@@ -510,6 +680,8 @@ export class MockHost implements FoxBridge {
         return this.forkSession()
       case 'sessions.delete':
         return this.deleteSession(command.params.id)
+      case 'sessions.rename':
+        return this.renameSession(command.params.id, command.params.title)
       case 'extensions.set':
         return this.setExtension(command.params.id, command.params.enabled)
       case 'session.export':
@@ -561,6 +733,8 @@ export class MockHost implements FoxBridge {
       case 'cwd.change':
         this.state.cwd = command.params.cwd
         return null
+      case 'files.list':
+        return this.demoDirectory(command.params?.path ?? '')
       case 'files.changes':
         return this.demoChanges()
       case 'files.diff':
@@ -651,11 +825,13 @@ export class MockHost implements FoxBridge {
   }
 
   private async forkSession(): Promise<SessionSummary> {
+    // `newSession()` 会把当前会话换成新的，所以先留住分叉源的名字。
+    const source = this.currentSessionId ? this.seeds.get(this.currentSessionId) : undefined
     const created = this.newSession()
-    const forked: SessionSummary = {
-      ...created,
-      title: `${created.title}（分支）`,
-    }
+    const title = branchLabel(source?.title ?? created.title)
+    const seed = this.seeds.get(created.id)
+    if (seed) seed.title = title
+    const forked: SessionSummary = { ...created, title }
     return forked
   }
 
@@ -719,6 +895,17 @@ export class MockHost implements FoxBridge {
     }
     this.seeds.delete(id)
     return { id, file: seed.file }
+  }
+
+  private renameSession(id: string, title: string): SessionSummary {
+    const seed = this.seeds.get(id)
+    if (!seed) throw new Error(`找不到会话：${id}`)
+    const label = title.trim()
+    if (!label) throw new Error('sessions.rename 需要一个标题')
+    seed.title = label
+    seed.updatedAt = Date.now()
+    const { replay: _replay, ...summary } = seed
+    return summary
   }
 
   /* ------------------------------- runtime ----------------------------- */
@@ -1011,7 +1198,7 @@ export class MockHost implements FoxBridge {
     }
     if (name === 'permission') {
       const mode = args.trim() as HostInfo['permissionMode']
-      if (['read-only', 'workspace-write', 'full-access'].includes(mode)) this.state.permission = mode
+      if (['read-only', 'workspace-modify', 'full-access'].includes(mode)) this.state.permission = mode
       return this.state.permission
     }
     if (name === 'trust') {

@@ -124,7 +124,7 @@ Memory 在 `setup(api)` 中注册工具，在首次请求之前的 `session_star
 memory 自有工具 ─────┘
 ```
 
-这只解决“工具是否暴露”，不会绕过项目 trust。Memory 工具声明通用的 `extension-state` 权限域，其读、写、删除操作修改的是扩展自有状态，因此不受 `read-only`、`workspace-write`、`full-access` 三档工作区权限影响；未受信项目仍由 runtime 在调用前统一阻止。core 只认识通用权限域，不导入或识别 Memory。SDK 使用者可以设置 `MemoryExtensionConfig(auto_activate_tools=False)`，让宿主 allowlist 或 Session 的人工选择保持最终决定权。
+这只解决“工具是否暴露”，不会绕过项目 trust。Memory 工具声明通用的 `extension-state` 权限域，其读、写、删除操作修改的是扩展自有状态，因此不受 `read-only`、`workspace-modify`、`full-access` 三档工作区权限影响；未受信项目仍由 runtime 在调用前统一阻止。core 只认识通用权限域，不导入或识别 Memory。SDK 使用者可以设置 `MemoryExtensionConfig(auto_activate_tools=False)`，让宿主 allowlist 或 Session 的人工选择保持最终决定权。
 
 ## 6. 预算化安全注入
 

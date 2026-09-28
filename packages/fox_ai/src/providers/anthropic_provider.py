@@ -31,6 +31,7 @@ from ..constrained_sampling import (
     resolve_json_schema_strict_sampling,
 )
 from ..event_stream import EventStream
+from ..partial_json import parse_partial_json as _parse_streaming_json, parse_tool_arguments
 from ..events import (
     AssistantMessageEvent,
     DoneEvent,
@@ -401,25 +402,6 @@ class _Block:
         self.tool_call: ToolCall | None = None
 
 
-def _parse_streaming_json(s: str) -> dict[str, Any]:
-    """容错解析不完整 JSON。"""
-    if not s:
-        return {}
-    import json
-
-    try:
-        result: dict[str, Any] = json.loads(s)
-        return result
-    except Exception:
-        pass
-    try:
-        from json_repair import repair_json
-
-        repaired = repair_json(s, return_objects=True)
-        return repaired if isinstance(repaired, dict) else {}
-    except Exception:
-        return {}
-
 
 # ============================================================
 # 主流式函数
@@ -541,6 +523,7 @@ def _run_anthropic_stream(
             )
             # 遍历类型化流事件
             async for event in response:
+                await asyncio.sleep(0)
                 etype = event.type
 
                 if etype == "message_start":
@@ -723,6 +706,11 @@ def _run_anthropic_stream(
                 raise RuntimeError("Request was aborted")
             if output.stop_reason == "error":
                 raise RuntimeError(output.error_message or "provider error")
+
+            if output.stop_reason != "length":
+                for blk in blocks.values():
+                    if blk.tool_call is not None and blk.partial_json:
+                        blk.tool_call.arguments = parse_tool_arguments(blk.partial_json)
 
             es.push(DoneEvent(reason=output.stop_reason, message=output))
             es.end(output)

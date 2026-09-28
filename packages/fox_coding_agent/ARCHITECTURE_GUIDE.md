@@ -526,7 +526,7 @@ uv run fox --interactive
 ```powershell
 uv run fox --trust-project --interactive
 # settings.json 的 extensions 中加载 Memory 后：
-uv run fox --trust-project --permission workspace-write --interactive
+uv run fox --trust-project --permission workspace-modify --interactive
 uv run fox --resume --interactive
 uv run fox --resume --compact
 uv run fox -p "梳理项目结构"
@@ -758,7 +758,7 @@ uv run fox --trust-project --interactive
 
 ### 10.3 观察一次请求写入了什么
 
-新会话默认保存在 `<cwd>/.foxcode/sessions/<uuid>.jsonl`。文件第一行是 metadata，后续是模型切换、thinking level、启用工具和消息等条目。可以依次执行：
+新会话统一保存在用户级 `~/.foxcode/sessions/--<normalized-cwd>--/session-<uuid>/session.jsonl`。空白草稿不会创建目录，第一条消息提交时才落盘。文件第一行是 metadata，后续是模型切换、thinking level、启用工具和消息等条目。可以依次执行：
 
 ```text
 /usage
@@ -776,7 +776,7 @@ uv run fox --resume --interactive
 uv run fox --resume -p "继续刚才的任务"
 ```
 
-不带路径的 `--resume` 选择当前项目、当前 `session_scope` 下修改时间最新的 JSONL。指定具体文件时，Runtime 以文件 metadata 中的 cwd 为准，而不是盲目沿用当前终端目录。
+不带路径的 `--resume` 选择当前工作区用户级目录下修改时间最新的 JSONL。指定具体文件时，Runtime 以文件 metadata 中的 cwd 为准，而不是盲目沿用当前终端目录。
 
 ### 10.4 加入项目指令、Prompt 与 Skill
 
@@ -836,7 +836,7 @@ uv run fox --skill release-audit -p "检查当前分支"
 Memory 不是默认能力，必须在每次启动时显式加载：
 
 ```powershell
-uv run fox --trust-project --permission workspace-write --interactive
+uv run fox --trust-project --permission workspace-modify --interactive
 ```
 
 然后输入“请记住：默认用中文回答，代码注释也使用中文”。只有模型实际调用 `memory_remember` 后才完成持久化；一句普通的“我记住了”不能作为保存成功的证据。使用以下命令验证：
@@ -851,7 +851,7 @@ uv run fox --trust-project --permission workspace-write --interactive
 ### 10.6 最小验收清单
 
 - `uv run fox --list-models` 能列出 `provider/model`。
-- 新会话能生成 `.foxcode/sessions/*.jsonl`，其中没有 API key。
+- 提交首条消息后能生成用户级 `sessions/--<normalized-cwd>--/session-*/session.jsonl`，其中没有 API key。
 - `/tools` 与 system prompt 中的工具列表一致。
 - `/reload` 后新的 AGENTS、Prompt、Skill 或扩展生效。
 - `/export` 能导出当前会话，`/usage` 能汇总当前活动分支。
@@ -878,11 +878,10 @@ uv run fox --trust-project --permission workspace-write --interactive
 | `compaction.keep_recent_tokens` | integer，默认 `8000` | 压缩时尽量原样保留的近期消息预算 |
 | `tools` | `string[] \| null` | `null` 使用平台默认；空数组禁用；名称必须唯一且存在 |
 | `extensions` | `string[]`，默认空 | 显式加载扩展文件、`module:` 模块或 `entrypoint:` 包入口 |
-| `permission_mode` | `read-only` / `workspace-write` / `full-access` | 工作区与系统工具权限；默认 `full-access` 以保持 SDK 兼容，`extension-state` 独立于此模式 |
+| `permission_mode` | `read-only` / `workspace-modify` / `full-access` | 工作区与系统工具权限；默认 `full-access` 以保持 SDK 兼容，`extension-state` 独立于此模式 |
 | `max_turns` | 正整数，默认 `100` | 一次 Agent 操作的最大轮数 |
 | `model_retry_attempts` | `0..5`，默认 `1` | 对可安全重试的空响应错误最多恢复几次 |
 | `tool_execution` | `parallel` / `sequential` | 同一轮多个工具调用的执行策略 |
-| `session_scope` | `project` / `user` | Session 保存在项目目录还是用户目录 |
 
 示例：
 
@@ -899,9 +898,8 @@ uv run fox --trust-project --permission workspace-write --interactive
     "keep_recent_tokens": 8000
   },
   "tool_execution": "parallel",
-  "permission_mode": "workspace-write",
-  "extensions": ["module:fox_coding_agent.src.extensions.memory:setup"],
-  "session_scope": "project"
+  "permission_mode": "workspace-modify",
+  "extensions": ["module:fox_coding_agent.src.extensions.memory:setup"]
 }
 ```
 
@@ -1008,8 +1006,7 @@ Prompt 模板虽然在 untrusted 项目也可被发现，但它只做 `$ARGUMENT
 | 凭据 | `~/.foxcode/auth.json` | provider 级凭据 |
 | 用户策略 | `~/.foxcode/settings.json` | 低于项目配置优先级 |
 | 信任决定 | `~/.foxcode/trust.json` | 规范化绝对路径到 boolean |
-| 项目 Session | `<cwd>/.foxcode/sessions/*.jsonl` | `session_scope=project` |
-| 用户 Session | `~/.foxcode/sessions/<project-hash>/*.jsonl` | `session_scope=user`，仍按项目隔离 |
+| 用户 Session | `~/.foxcode/sessions/--<normalized-cwd>--/session-<uuid>/session.jsonl` | 唯一会话位置；空白草稿不落盘 |
 | 长期记忆 | `~/.foxcode/projects/<project-hash>/memory/` | 与 Session 生命周期分离 |
 
 <a id="ch12"></a>

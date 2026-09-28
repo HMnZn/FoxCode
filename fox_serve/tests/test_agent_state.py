@@ -37,7 +37,7 @@ class _StubRuntime:
         self.state = types.SimpleNamespace(model=None)
         self.available_models: list[Any] = []
         self.project_trusted = True
-        self.permission_mode = "workspace-write"
+        self.permission_mode = "workspace-modify"
 
 
 def _bare_host(runtime: Any | None = None) -> ServeHost:
@@ -52,7 +52,6 @@ def _bare_host(runtime: Any | None = None) -> ServeHost:
     host._started_at = time.time()
     host._agent_running = False
     host._last_frame_at = time.time()
-    host._pre_compact_tokens = None
     host._log_line = lambda message: None
     host.frames: list[dict[str, Any]] = []
     host._send = lambda payload: host.frames.append(payload)
@@ -161,8 +160,8 @@ class HostInfoBusyTests(unittest.IsolatedAsyncioTestCase):
     def _info_host(self) -> ServeHost:
         host = _bare_host(_StubRuntime())
         host._policy = types.SimpleNamespace(
-            mode="workspace-write",
-            snapshot=lambda: {"mode": "workspace-write"},
+            mode="workspace-modify",
+            snapshot=lambda: {"mode": "workspace-modify"},
         )
         host._thinking_level = lambda: "medium"
         host._extension_views_safe = lambda: ([], [])

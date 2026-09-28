@@ -13,7 +13,14 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Literal
 
-from fox_ai.src import AssistantMessage, Model, TextContent, ToolCall, ToolResultMessage
+from fox_ai.src import (
+    AssistantMessage,
+    Model,
+    TextContent,
+    ToolCall,
+    ToolResultMessage,
+    UserMessage,
+)
 from fox_agent_core.src._async import check_cancelled, maybe_await
 from fox_agent_core.src.agent import AgentOptions
 from fox_agent_core.src.harness import (
@@ -27,7 +34,13 @@ from fox_agent_core.src.harness import (
     estimate_tokens,
     should_compact,
 )
-from fox_agent_core.src.types import AgentContext, AgentMessage, StreamFn
+from fox_agent_core.src.types import (
+    AgentContext,
+    AgentMessage,
+    ContextUsageSnapshot,
+    MessageUpdateEvent,
+    StreamFn,
+)
 from .session_manager import SessionManager
 from .skills import LoadSkillsOptions, Skill, format_skill_invocation, format_skills_for_prompt, load_skills
 from .tools import create_coding_tools
@@ -35,10 +48,18 @@ from .tools import create_coding_tools
 
 @dataclass
 class CompactionEvent:
-    type: Literal["compaction_start", "compaction_end", "compaction_error"]
+    type: Literal[
+        "compaction_start",
+        "compaction_update",
+        "compaction_end",
+        "compaction_error",
+    ]
     automatic: bool = False
     result: CompactionResult | None = None
     error: str | None = None
+    pre_tokens: int | None = None
+    post_tokens: int | None = None
+    summary_tokens: int | None = None
 
 
 @dataclass
@@ -77,7 +98,12 @@ class AgentSessionConfig:
 
 class AgentSession(CoreAgentHarness):
     def __init__(self, config: AgentSessionConfig) -> None:
-        self.session_config = config
+        # A silent SSE connection used to keep the whole harness busy forever.
+        # 60s is deliberately an *idle* budget: a healthy long generation can
+        # run for hours as long as it keeps producing chunks.
+        stream_options = dict(config.stream_options)
+        stream_options.setdefault("timeout_ms", 60_000)
+        self.session_config = replace(config, stream_options=stream_options)
         self.cwd = Path(config.cwd).expanduser().resolve()
         self.session = config.session if config.session is not None else SessionManager()
         self._manual_cancel: asyncio.Event | None = None
@@ -109,7 +135,6 @@ class AgentSession(CoreAgentHarness):
         ) if part)
         if config.system_prompt_builder:
             system = config.system_prompt_builder([self._tools[n] for n in active_names], self.skills, self.cwd)
-        stream_options = dict(config.stream_options)
         stream_options.setdefault("session_id", self.session.storage.get_metadata().get("id"))
         agent_options = AgentOptions(
             initial_state={"model": model, "system_prompt": system, "messages": self.session.build_context(),
@@ -130,6 +155,24 @@ class AgentSession(CoreAgentHarness):
             ),
         ))
         self._recover_interrupted_tools()
+
+    async def _on_agent_event(self, event, cancel_event) -> None:
+        """Attach backend token accounting before forwarding a stream update.
+
+        The renderer previously counted characters itself.  That made the UI a
+        second source of truth and meant non-desktop hosts saw no live usage at
+        all.  The AgentSession owns the context and compaction policy, so it is
+        the only layer that can produce a consistent snapshot.
+        """
+
+        if isinstance(event, MessageUpdateEvent):
+            messages = [*self.state.messages, event.message]
+            event.context_usage = ContextUsageSnapshot(
+                context_tokens=self._estimate_context_tokens(messages),
+                output_tokens=estimate_tokens(event.message),
+                estimated=True,
+            )
+        await super()._on_agent_event(event, cancel_event)
 
     def _before_session_run(self):
         self._recover_interrupted_tools()
@@ -208,26 +251,60 @@ class AgentSession(CoreAgentHarness):
 
     async def _prepare_request(self, request):
         context = request["context"]
-        # 估算包含 system prompt 和工具声明；保留启发式计数，避免引入 tokenizer。
-        from fox_ai.src import UserMessage
-        overhead = estimate_tokens(UserMessage(content=context.system_prompt))
-        overhead += estimate_tokens(UserMessage(content=json.dumps([
-            {"name": t.name, "description": t.description, "parameters": t.parameters}
-            for t in context.tools or []], ensure_ascii=False)))
-        count = estimate_context_tokens(context.messages) + overhead
+        count = self._estimate_context_tokens(context.messages, context=context)
         if should_compact(count, request["model"].context_window, self.session_config.compaction):
             result = await self._compact_context(context, request["model"], request["cancel_event"], automatic=True)
             if result.removed_count:
                 context.messages = self.session.build_context()
             # 无法再切割（例如单个超长用户输入）时，明确结束，保留原始输入。
-            remaining = estimate_context_tokens(context.messages) + overhead
+            remaining = self._estimate_context_tokens(context.messages, context=context)
             output_budget = self.session_config.stream_options.get("max_tokens") or request["model"].max_tokens
             if remaining + output_budget >= request["model"].context_window:
                 raise RuntimeError("Context still exceeds the model budget after compaction; reduce the input or tool output")
         return {"context": context}
 
+    def _estimate_context_tokens(self, messages, *, context=None) -> int:
+        """Estimate messages plus the prompt/tool declaration overhead."""
+
+        system_prompt = (
+            context.system_prompt if context is not None else self.state.system_prompt
+        )
+        tools = context.tools if context is not None else self.state.tools
+        overhead = estimate_tokens(UserMessage(content=system_prompt))
+        overhead += estimate_tokens(
+            UserMessage(
+                content=json.dumps(
+                    [
+                        {
+                            "name": tool.name,
+                            "description": tool.description,
+                            "parameters": tool.parameters,
+                        }
+                        for tool in tools or []
+                    ],
+                    ensure_ascii=False,
+                )
+            )
+        )
+        return estimate_context_tokens(list(messages)) + overhead
+
+    def context_tokens(self) -> int:
+        """Current backend estimate used by hosts before the first model usage."""
+
+        messages = list(self.state.messages)
+        if self.state.streaming_message is not None:
+            messages.append(self.state.streaming_message)
+        return self._estimate_context_tokens(messages)
+
     async def _compact_context(self, context, model, cancel_event, *, automatic):
-        await self._emit(CompactionEvent("compaction_start", automatic))
+        pre_tokens = self._estimate_context_tokens(context.messages, context=context)
+        await self._emit(
+            CompactionEvent(
+                "compaction_start",
+                automatic,
+                pre_tokens=pre_tokens,
+            )
+        )
         try:
             summary_options = dict(self.session_config.stream_options)
             # 普通回复的输出预算与摘要预算独立。
@@ -236,9 +313,28 @@ class AgentSession(CoreAgentHarness):
                 key = await maybe_await(self.session_config.get_api_key(model.provider))
                 if key:
                     summary_options["api_key"] = key
-            result = await compact(model, list(context.messages), self.session_config.compaction,
-                                   **{**summary_options, "stream_fn": self.session_config.stream_fn,
-                                      "summary_fn": self.session_config.summary_fn, "cancel_event": cancel_event})
+            async def on_summary_update(message) -> None:
+                await self._emit(
+                    CompactionEvent(
+                        "compaction_update",
+                        automatic,
+                        pre_tokens=pre_tokens,
+                        summary_tokens=estimate_tokens(message),
+                    )
+                )
+
+            result = await compact(
+                model,
+                list(context.messages),
+                self.session_config.compaction,
+                **{
+                    **summary_options,
+                    "stream_fn": self.session_config.stream_fn,
+                    "summary_fn": self.session_config.summary_fn,
+                    "cancel_event": cancel_event,
+                    "on_update": on_summary_update,
+                },
+            )
             check_cancelled(cancel_event)
             if result.removed_count:
                 self.session.append_compaction(result.summary, result.retained_tail)
@@ -246,7 +342,20 @@ class AgentSession(CoreAgentHarness):
         except Exception as exc:
             await self._emit(CompactionEvent("compaction_error", automatic, error=str(exc)))
             raise
-        await self._emit(CompactionEvent("compaction_end", automatic, result=result))
+        await self._emit(
+            CompactionEvent(
+                "compaction_end",
+                automatic,
+                result=result,
+                pre_tokens=pre_tokens,
+                post_tokens=self.context_tokens(),
+                summary_tokens=estimate_tokens(
+                    UserMessage(content=result.summary)
+                )
+                if result.summary
+                else 0,
+            )
+        )
         return result
 
     async def compact(self) -> CompactionResult:

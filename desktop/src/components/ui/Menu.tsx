@@ -10,8 +10,10 @@
  * </Menu>
  * ```
  *
- * The panel is absolutely positioned inside a `relative inline-flex` wrapper (no
- * portal, so `overflow: hidden` ancestors will clip it). Items are real
+ * The panel is portaled to `document.body` and positioned with `fixed` coordinates
+ * measured from the trigger, so an `overflow: hidden` ancestor (a card, a table row,
+ * the sidebar) cannot clip it. It flips to the other side of the trigger when the
+ * preferred one has no room and is clamped to the viewport. Items are real
  * `role="menuitem"` divs driven by a roving tab index: Arrows/Home/End move the
  * highlight, Enter/Space activate, Escape, outside-click, or a selection closes.
  */
@@ -20,10 +22,12 @@ import {
   useContext,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   type ReactNode,
 } from 'react'
+import { createPortal } from 'react-dom'
 import { cn } from '@/lib/cn'
 import { detectPlatform } from './Kbd'
 
@@ -71,6 +75,7 @@ export function Menu({
   disabled = false,
 }: MenuProps) {
   const [open, setOpen] = useState(false)
+  const [pos, setPos] = useState<{ top: number; left: number } | null>(null)
   const rootRef = useRef<HTMLDivElement>(null)
   const panelRef = useRef<HTMLDivElement>(null)
   const triggerRef = useRef<HTMLButtonElement>(null)
@@ -86,12 +91,54 @@ export function Menu({
   useEffect(() => {
     if (!open) return
     const onPointerDown = (event: globalThis.PointerEvent) => {
-      const root = rootRef.current
-      if (root && event.target instanceof Node && !root.contains(event.target)) close()
+      const target = event.target
+      if (!(target instanceof Node)) return
+      // 面板走了 portal，所以它是「外面」的 DOM 但仍然是「里面」的菜单。
+      if (rootRef.current?.contains(target)) return
+      if (panelRef.current?.contains(target)) return
+      close()
     }
     document.addEventListener('pointerdown', onPointerDown, true)
     return () => document.removeEventListener('pointerdown', onPointerDown, true)
   }, [close, open])
+
+  // Portal 出去的 fixed 面板得自己算坐标：量触发按钮与面板、放不下就翻面、夹在视口内，
+  // 打开期间跟着滚动/缩放走。首帧先 `visibility: hidden`（layout effect 在绘制前跑完，
+  // 所以不会闪一下 0,0）。
+  useLayoutEffect(() => {
+    if (!open) {
+      setPos(null)
+      return
+    }
+    const place = () => {
+      const trigger = triggerRef.current
+      const panel = panelRef.current
+      if (!trigger || !panel) return
+      const rect = trigger.getBoundingClientRect()
+      const width = panel.offsetWidth
+      const height = panel.offsetHeight
+      const gap = 4
+      const spaceBelow = window.innerHeight - rect.bottom - gap
+      const spaceAbove = rect.top - gap
+      let openUp = placement === 'top'
+      if (openUp ? spaceAbove < height && spaceBelow > spaceAbove : spaceBelow < height && spaceAbove > spaceBelow) {
+        openUp = !openUp
+      }
+      const rawTop = openUp ? rect.top - height - gap : rect.bottom + gap
+      const rawLeft = align === 'end' ? rect.right - width : rect.left
+      setPos({
+        top: Math.min(Math.max(rawTop, 8), Math.max(8, window.innerHeight - height - 8)),
+        left: Math.min(Math.max(rawLeft, 8), Math.max(8, window.innerWidth - width - 8)),
+      })
+    }
+    place()
+    window.addEventListener('resize', place)
+    window.addEventListener('scroll', place, true)
+    return () => {
+      window.removeEventListener('resize', place)
+      window.removeEventListener('scroll', place, true)
+    }
+  }, [align, children, open, placement])
 
   const itemNodes = () => {
     const panel = panelRef.current
@@ -183,26 +230,31 @@ export function Menu({
         {trigger}
       </button>
 
-      {open && (
-        <div
-          ref={panelRef}
-          role="menu"
-          aria-label={label}
-          tabIndex={-1}
-          onKeyDown={onPanelKeyDown}
-          className={cn(
-            'absolute z-50 max-h-[60vh] min-w-[144px] max-w-[360px] animate-rise overflow-y-auto p-1 scroll-quiet',
-            placement === 'top' ? 'bottom-full mb-1' : 'top-full mt-1',
-            'surface-pop',
-            align === 'end' ? 'right-0' : 'left-0',
-            className,
-          )}
-        >
-          <MenuContext.Provider value={{ close, clearHighlight }}>
-            {children}
-          </MenuContext.Provider>
-        </div>
-      )}
+      {open &&
+        createPortal(
+          <div
+            ref={panelRef}
+            role="menu"
+            aria-label={label}
+            tabIndex={-1}
+            onKeyDown={onPanelKeyDown}
+            style={{
+              top: pos?.top ?? 0,
+              left: pos?.left ?? 0,
+              visibility: pos ? 'visible' : 'hidden',
+            }}
+            className={cn(
+              'fixed z-50 max-h-[60vh] min-w-[144px] max-w-[360px] animate-rise overflow-y-auto p-1 scroll-quiet',
+              'surface-pop',
+              className,
+            )}
+          >
+            <MenuContext.Provider value={{ close, clearHighlight }}>
+              {children}
+            </MenuContext.Provider>
+          </div>,
+          document.body,
+        )}
     </div>
   )
 }

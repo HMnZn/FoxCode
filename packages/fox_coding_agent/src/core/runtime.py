@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import hashlib
 import os
 from pathlib import Path
-from uuid import uuid4
 
 from fox_ai.src import Model
 from fox_agent_core.src._async import maybe_await, cancellable
@@ -13,6 +11,7 @@ import asyncio
 from .agent_session import AgentSession, AgentSessionConfig
 from .resources import ResourceLoader
 from .session_manager import InMemorySessionStorage, JsonlSessionStorage, SessionManager
+from .session_layout import SessionLayout
 from .settings import SettingsManager
 from .model_runtime import ModelRuntime
 from .tools import create_all_tools
@@ -68,11 +67,6 @@ class AgentSessionRuntime:
         if session is None:
             path, session = self._new_session(cwd, settings)
         agent_session = self._build(cwd, session, selected, settings, resources, project_trusted)
-        try:
-            self._persist_new(agent_session, path)
-        except BaseException:
-            agent_session.extensions.dispose()
-            raise
         self._install(cwd, path, settings, loader, resources, agent_session, project_trusted)
 
     @staticmethod
@@ -105,30 +99,28 @@ class AgentSessionRuntime:
         return selected
 
     @staticmethod
-    def _session_dir(cwd: Path, manager: SettingsManager) -> Path:
-        if manager.settings.session_scope == "user":
-            # A separate namespace per project keeps --resume from selecting another project's history.
-            key = hashlib.sha256(os.path.normcase(str(cwd)).encode()).hexdigest()[:16]
-            return manager.user_dir / "sessions" / key
-        return cwd / ".foxcode" / "sessions"
+    def _session_layout(manager: SettingsManager) -> SessionLayout:
+        # SessionLayout has no cwd/default-root fallback.  SettingsManager's
+        # explicit user directory is the sole owner of all transcripts.
+        return SessionLayout(manager.user_dir / "sessions")
 
     @classmethod
     def latest_session(cls, cwd: str | Path = ".", *, user_dir=None,
                        project_trusted: bool = True) -> Path:
         cwd = Path(cwd).expanduser().resolve()
         manager = SettingsManager(cwd, user_dir=user_dir, project_trusted=project_trusted)
-        files = list(cls._session_dir(cwd, manager).glob("*.jsonl"))
+        files = cls._session_layout(manager).files(cwd)
         if not files:
             raise FileNotFoundError(f"No saved sessions for {cwd}")
         return max(files, key=lambda path: (path.stat().st_mtime_ns, path.name))
 
     def _new_session(self, cwd, settings):
-        path = self._session_dir(cwd, settings) / f"{uuid4().hex}.jsonl"
+        path = self._session_layout(settings).new_session_file(cwd)
         return path, SessionManager(InMemorySessionStorage(metadata={"cwd": str(cwd)}))
 
     @staticmethod
     def _persist_new(agent_session, path):
-        """Validate the new AgentSession before publishing a file discoverable by --resume."""
+        """Publish an in-memory draft immediately before its first real message."""
         if isinstance(agent_session.session.storage, JsonlSessionStorage):
             return
         if path.exists():
@@ -350,10 +342,13 @@ class AgentSessionRuntime:
         finally:
             self._preparing = False
             self._hook_cancel = None
+        self._persist_new(self.agent_session, self.session_file)
         await self.agent_session.prompt(message)
 
     async def continue_(self):
         await self._prepare_start()
+        if any(entry.type == "message" for entry in self.session.get_entries()):
+            self._persist_new(self.agent_session, self.session_file)
         await self.agent_session.continue_()
 
     async def invoke_skill(self, name, instructions=""):
@@ -436,7 +431,6 @@ class AgentSessionRuntime:
             if self._extensions_started:
                 await old.extensions.emit("session_shutdown", {"type": "session_shutdown", "reason": "reload" if reload else "switch"},
                                           old.extension_context)
-            self._persist_new(candidate, path)
             if reload:
                 candidate.agent.steering_queue = old.agent.steering_queue
                 candidate.agent.follow_up_queue = old.agent.follow_up_queue
@@ -451,11 +445,17 @@ class AgentSessionRuntime:
             self._changing = False
 
     async def switch_session(self, session_file: str | Path):
+        target = Path(session_file).expanduser().resolve()
+        if target == Path(self.session_file).expanduser().resolve():
+            return
         await self._replace(session_file=session_file)
 
     async def change_cwd(self, cwd: str | Path, *, model: Model | None = None,
                          project_trusted: bool | None = None):
         """切换项目并新建会话；不把旧项目的消息自动带入新项目。"""
+        target = Path(cwd).expanduser().resolve()
+        if target == self.cwd and model is None and project_trusted is None:
+            return
         await self._replace(cwd=cwd, model=model, project_trusted=project_trusted)
 
     async def new_session(self, *, model: Model | None = None):
@@ -472,7 +472,7 @@ class AgentSessionRuntime:
             forked = old.session.fork(from_id)
             settings, loader, resources = self._prepare(self.cwd, self.project_trusted)
             selected = self._model(None, forked, settings)
-            path = self._session_dir(self.cwd, settings) / f"{uuid4().hex}.jsonl"
+            path = self._session_layout(settings).new_session_file(self.cwd)
             candidate = self._build(
                 self.cwd, forked, selected, settings, resources, self.project_trusted
             )
@@ -534,6 +534,11 @@ class AgentSessionRuntime:
             self.abort()
             await self.agent_session.wait_for_idle()
             try:
+                # Direct SDK users may append a user message before calling
+                # continue_().  Persist meaningful transcripts on close, while
+                # still discarding untouched UI drafts and setting-only entries.
+                if any(entry.type == "message" for entry in self.session.get_entries()):
+                    self._persist_new(self.agent_session, self.session_file)
                 if self._extensions_started:
                     await self.agent_session.extensions.emit("session_shutdown", {"type": "session_shutdown", "reason": "close"},
                                                        self.agent_session.extension_context)

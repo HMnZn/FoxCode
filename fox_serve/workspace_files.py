@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import os
 import subprocess
 from pathlib import Path
@@ -38,6 +39,22 @@ DEFAULT_EXCLUDES: tuple[str, ...] = (
 #: 单个文件最多读多少字节（预览用；超过就截断并置 `truncated`）。
 MAX_FILE_BYTES = 2 * 1024 * 1024
 
+#: 后缀 → MIME：这些图片直接以 base64 内嵌给右侧栏渲染。
+IMAGE_MIMES: dict[str, str] = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".bmp": "image/bmp",
+    ".ico": "image/x-icon",
+    ".avif": "image/avif",
+}
+
+#: 内嵌图片的大小上限。base64 之后还会再涨 ~37%，再加 JSON/IPC 的拷贝，2 MiB 是
+#: 「看一眼截图」和「别把一次响应撑爆」之间的折中。
+MAX_IMAGE_BYTES = 2 * 1024 * 1024
+
 #: 合成未跟踪文件差异时最多展开多少行（够看开头，不用等整个大文件）。
 MAX_SYNTHETIC_LINES = 2000
 
@@ -55,6 +72,66 @@ _KIND_BY_CODE = {
 
 class WorkspaceFileError(RuntimeError):
     """路径不合法或文件读不出来；由 `host.py` 翻成 `HostError` 回给前端。"""
+
+
+def _directory_sync(
+    cwd: Path,
+    relative: str,
+    limit: int,
+    excludes: tuple[str, ...],
+) -> dict[str, Any]:
+    """列出工作区内的一层目录；在线程里执行，避免慢盘阻塞 sidecar。"""
+
+    root = Path(cwd).expanduser().resolve()
+    raw = (relative or "").strip().replace("\\", "/")
+    target = (root / raw).resolve() if raw else root
+    try:
+        target.relative_to(root)
+    except ValueError as exc:
+        raise WorkspaceFileError("目录不能超出当前工作区") from exc
+    if not target.exists():
+        raise WorkspaceFileError(f"目录不存在：{raw or '.'}")
+    if not target.is_dir():
+        raise WorkspaceFileError(f"不是目录：{raw or '.'}")
+
+    visible: list[Path] = []
+    try:
+        for child in target.iterdir():
+            if child.name in excludes:
+                continue
+            # 不允许目录符号链接把浏览器带出工作区。
+            try:
+                child.resolve().relative_to(root)
+            except (OSError, ValueError):
+                continue
+            visible.append(child)
+    except OSError as exc:
+        raise WorkspaceFileError(f"无法读取目录：{exc}") from exc
+
+    visible.sort(key=lambda item: (not item.is_dir(), item.name.casefold()))
+    entries: list[dict[str, Any]] = []
+    for child in visible[:limit]:
+        is_directory = child.is_dir()
+        size = 0
+        if not is_directory:
+            try:
+                size = child.stat().st_size
+            except OSError:
+                pass
+        entries.append(
+            {
+                "name": child.name,
+                "path": display_path(root, child),
+                "type": "directory" if is_directory else "file",
+                "size": size,
+            }
+        )
+    return {
+        "cwd": str(root),
+        "path": display_path(root, target) if target != root else "",
+        "entries": entries,
+        "truncated": len(visible) > limit,
+    }
 
 
 # ----------------------------------------------------------------------
@@ -290,8 +367,26 @@ async def repo_root(cwd: Path, *, timeout: float = 10.0) -> Path | None:
 
 
 # ----------------------------------------------------------------------
-# 对外三个动作
+# 对外动作
 # ----------------------------------------------------------------------
+
+
+async def directory(
+    cwd: Path,
+    path: str = "",
+    *,
+    limit: int = 500,
+    excludes: tuple[str, ...] = DEFAULT_EXCLUDES,
+) -> dict[str, Any]:
+    """列出工作区中的一层文件和目录。"""
+
+    return await asyncio.to_thread(
+        _directory_sync,
+        cwd,
+        path,
+        max(1, int(limit)),
+        excludes,
+    )
 
 
 async def changes(
@@ -475,16 +570,47 @@ async def read(
     *,
     max_bytes: int = MAX_FILE_BYTES,
 ) -> dict[str, Any]:
-    """读文件内容给预览面板（超出上限截断、二进制只报事实）。"""
+    """读文件内容给预览面板。
+
+    文本按 `max_bytes` 截断；图片额外带上 base64 `data` 和 `mime` 让渲染进程直接
+    `<img>` 出来（走宿主读盘而不是 `file://`：开发模式下 webSecurity 会拦住后者，
+    而为了图片再开一套协议不值当）。
+    """
 
     target, display, _repo_relative = _resolve(
         cwd, path, extra_root=await repo_root(cwd)
     )
-    text, truncated, binary = _read_text(target, max_bytes=max_bytes)
-    size = 0
     try:
         size = target.stat().st_size
     except OSError:
+        size = 0
+    mime = IMAGE_MIMES.get(target.suffix.lower())
+    if mime is not None:
+        data: str | None = None
+        error: str | None = None
+        if size > MAX_IMAGE_BYTES:
+            error = f"图片 {_human_size(size)} 超过内嵌预览上限（{_human_size(MAX_IMAGE_BYTES)}）"
+        else:
+            try:
+                data = base64.b64encode(target.read_bytes()).decode("ascii")
+            except OSError as exc:
+                raise WorkspaceFileError(f"读不到文件：{exc}") from exc
+        return {
+            "path": display,
+            "absolute": str(target),
+            "text": "",
+            "truncated": False,
+            "binary": False,
+            "size": size,
+            "lines": 0,
+            "kind": "image",
+            "mime": mime,
+            "data": data,
+            "error": error,
+        }
+
+    text, truncated, binary = _read_text(target, max_bytes=max_bytes)
+    if not size:
         size = len(text.encode("utf-8", "replace"))
     return {
         "path": display,
@@ -494,6 +620,9 @@ async def read(
         "binary": binary,
         "size": size,
         "lines": 0 if binary else text.count("\n") + (1 if text and not text.endswith("\n") else 0),
+        "kind": "binary" if binary else "text",
+        "mime": None,
+        "data": None,
     }
 
 
@@ -565,6 +694,16 @@ async def _is_tracked(cwd: Path, spec: str, *, timeout: float) -> bool:
     except WorkspaceFileError:
         return False
     return code == 0 and bool(out.strip())
+
+
+def _human_size(size: int) -> str:
+    """给错误信息用的大小文本（1.4 MB / 812 KB / 900 B）。"""
+
+    if size >= 1024 * 1024:
+        return f"{size / (1024 * 1024):.1f} MB"
+    if size >= 1024:
+        return f"{size / 1024:.0f} KB"
+    return f"{size} B"
 
 
 def _diff_counts(diff_text: str) -> dict[str, int]:

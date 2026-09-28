@@ -240,12 +240,28 @@ class MessageStartEvent:
 
 
 @dataclass
+class ContextUsageSnapshot:
+    """Backend-owned live context accounting attached to stream updates.
+
+    Providers generally report authoritative usage only on the final chunk.
+    While a message is still streaming, the coding-agent backend fills this
+    snapshot with its tokenizer-free estimate.  Hosts and UIs must transport
+    and display the snapshot instead of reimplementing token accounting.
+    """
+
+    context_tokens: int = 0
+    output_tokens: int = 0
+    estimated: bool = True
+
+
+@dataclass
 class MessageUpdateEvent:
     """assistant 消息流式更新（携带底层 pi-ai 流式事件）。"""
 
     type: Literal["message_update"] = "message_update"
     message: AgentMessage = None  # type: ignore[assignment]
     assistant_message_event: AssistantMessageEvent | None = None
+    context_usage: ContextUsageSnapshot | None = None
 
 
 @dataclass
@@ -315,6 +331,7 @@ __all__ = [
     "TurnEndEvent",
     "MessageStartEvent",
     "MessageUpdateEvent",
+    "ContextUsageSnapshot",
     "MessageEndEvent",
     "ToolExecutionStartEvent",
     "ToolExecutionUpdateEvent",

@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import base64
 import shutil
 import subprocess
 import sys
@@ -26,6 +27,7 @@ from fox_serve.workspace_files import (  # noqa: E402
     WorkspaceFileError,
     _resolve,
     changes,
+    directory,
     diff,
     display_path,
     is_excluded,
@@ -127,6 +129,34 @@ class ParserTests(unittest.TestCase):
 
 
 class ResolveGuardTests(unittest.IsolatedAsyncioTestCase):
+    async def test_directory_lists_one_level_and_hides_generated_folders(self) -> None:
+        base = _temp_dir()
+        try:
+            (base / "src").mkdir()
+            (base / "src" / "main.py").write_text("print('ok')", encoding="utf-8")
+            (base / "README.md").write_text("hello", encoding="utf-8")
+            (base / "node_modules").mkdir()
+            payload = await directory(base)
+            self.assertEqual(
+                [(entry["name"], entry["type"]) for entry in payload["entries"]],
+                [("src", "directory"), ("README.md", "file")],
+            )
+            nested = await directory(base, "src")
+            self.assertEqual(nested["path"], "src")
+            self.assertEqual(nested["entries"][0]["path"], "src/main.py")
+        finally:
+            _drop(base)
+
+    async def test_directory_rejects_paths_outside_the_workspace(self) -> None:
+        base = _temp_dir()
+        try:
+            workspace = base / "work"
+            workspace.mkdir()
+            with self.assertRaises(WorkspaceFileError):
+                await directory(workspace, "..")
+        finally:
+            _drop(base)
+
     async def test_rejects_relative_paths_escaping_the_workspace(self) -> None:
         base = _temp_dir()
         try:
@@ -237,6 +267,33 @@ class RepoWorkspaceTests(unittest.IsolatedAsyncioTestCase):
         payload = await read(self.repo, "blob.bin")
         self.assertTrue(payload["binary"])
         self.assertEqual(payload["text"], "")
+        self.assertEqual(payload["kind"], "binary")
+
+    async def test_read_returns_a_png_as_base64(self) -> None:
+        # 1×1 透明 PNG：图片不带文本，但渲染进程要有 `data` 才能画出来。
+        png = bytes.fromhex(
+            "89504e470d0a1a0a0000000d4948445200000001000000010806000000"
+            "1f15c4890000000a49444154789c63000100000500010d0a2db4000000"
+            "0049454e44ae426082"
+        )
+        (self.repo / "tiny.png").write_bytes(png)
+        payload = await read(self.repo, "tiny.png")
+        self.assertEqual(payload["kind"], "image")
+        self.assertEqual(payload["mime"], "image/png")
+        self.assertEqual(payload["size"], len(png))
+        self.assertFalse(payload["binary"])
+        self.assertIsNone(payload["error"])
+        self.assertEqual(base64.b64decode(str(payload["data"])), png)
+
+    async def test_read_refuses_to_inline_an_oversized_image(self) -> None:
+        path = self.repo / "huge.png"
+        path.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
+        with unittest.mock.patch.object(workspace_files, "MAX_IMAGE_BYTES", 8):
+            payload = await read(self.repo, "huge.png")
+        self.assertEqual(payload["kind"], "image")
+        self.assertIsNone(payload["data"])
+        self.assertTrue(payload["error"])
+        self.assertIn("超过内嵌预览上限", str(payload["error"]))
 
     async def test_changes_outside_a_repo_reports_an_error(self) -> None:
         # 测试仓库就建在 `.build-cache/tmp` 里（见 `_temp_dir`），那底下不属于任何
@@ -271,6 +328,10 @@ class HostFileCommandTests(unittest.IsolatedAsyncioTestCase):
         payload = await self.host.handle("files.changes")
         self.assertTrue(payload["repo"])
         self.assertEqual([item["path"] for item in payload["files"]], ["a.txt"])
+
+    async def test_files_list_command(self) -> None:
+        payload = await self.host.handle("files.list", {"path": ""})
+        self.assertIn("a.txt", [item["name"] for item in payload["entries"]])
 
     async def test_files_diff_and_read_commands(self) -> None:
         diff_payload = await self.host.handle("files.diff", {"path": "a.txt"})

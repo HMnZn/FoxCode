@@ -162,13 +162,55 @@ class EventPayloadTests(unittest.TestCase):
         self.assertEqual(payload["result"], "done\n\n[exit 0]")
         self.assertFalse(payload["is_error"])
 
-    def test_message_update_splits_message_and_stream_event(self) -> None:
+    def test_message_update_sends_only_delta_and_backend_usage(self) -> None:
         message = _AliasedModel({"role": "assistant"}, {"role": "role"})
         stream = _AliasedModel({"type": "thinking_delta", "content_index": 1}, {})
+        event = _FakeMessageUpdate(assistant_message_event=stream, message=message)
+        event.context_usage = dataclasses.make_dataclass(
+            "Usage", [("context_tokens", int), ("output_tokens", int), ("estimated", bool)]
+        )(120, 7, True)
+        payload = event_payload(event)
+        assert payload is not None
+        self.assertNotIn("message", payload)
+        self.assertEqual(payload["assistant_message_event"]["content_index"], 1)
+        self.assertEqual(payload["context_usage"]["context_tokens"], 120)
+
+    def test_message_update_size_does_not_grow_with_partial_message(self) -> None:
+        from fox_ai.src import AssistantMessage, ToolCall
+        from fox_ai.src.events import ToolCallDeltaEvent
+        message = AssistantMessage(content=[ToolCall(
+            id="write-1", name="write", arguments={"path": "index.html", "content": "x" * 100_000},
+        )])
+        stream = ToolCallDeltaEvent(content_index=0, delta="{}", partial=message)
         payload = event_payload(_FakeMessageUpdate(assistant_message_event=stream, message=message))
         assert payload is not None
-        self.assertEqual(payload["message"]["role"], "assistant")
-        self.assertEqual(payload["assistant_message_event"]["content_index"], 1)
+        self.assertLess(len(compact_json(payload)), 500)
+        self.assertNotIn("partial", payload["assistant_message_event"])
+
+    def test_compaction_payload_uses_backend_counts_without_retained_messages(self) -> None:
+        result = dataclasses.make_dataclass(
+            "Result",
+            [("summary", str), ("retained_tail", list), ("removed_count", int)],
+        )("summary", [1, 2, 3], 7)
+        event = dataclasses.make_dataclass(
+            "Compaction",
+            [
+                ("result", object),
+                ("pre_tokens", int),
+                ("post_tokens", int),
+                ("summary_tokens", int),
+                ("automatic", bool),
+                ("type", str, dataclasses.field(default="compaction_end")),
+            ],
+        )(result, 1000, 200, 30, True)
+        payload = event_payload(event)
+        assert payload is not None
+        self.assertEqual(payload["preTokens"], 1000)
+        self.assertEqual(payload["postTokens"], 200)
+        self.assertEqual(payload["summaryTokens"], 30)
+        self.assertEqual(payload["removedCount"], 7)
+        self.assertEqual(payload["retainedCount"], 3)
+        self.assertNotIn("result", payload)
 
     def test_agent_end_omits_full_history(self) -> None:
         payload = event_payload(_FakeAgentEnd(messages=[1, 2, 3]))

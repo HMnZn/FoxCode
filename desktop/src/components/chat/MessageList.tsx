@@ -37,8 +37,8 @@ const SUGGESTIONS = [
 function UserBubble({ block }: { block: UserBlock }) {
   return (
     <div className="flex justify-end">
-      <div className="flex max-w-[82%] flex-col items-end gap-1">
-        <div className="rounded-xl border border-line bg-bubble px-4 py-2.5 text-[13.5px] leading-6 whitespace-pre-wrap text-fg">
+      <div className="flex max-w-[70.2%] flex-col items-end gap-1.5">
+        <div className="rounded-xl bg-bubble px-4 py-2.5 text-[14px] leading-[22px] whitespace-pre-wrap text-fg">
           {block.text}
         </div>
         {block.queued ? (
@@ -144,6 +144,10 @@ function ToolsBlockView({ block }: { block: ToolsBlock }) {
   // Approvals are answered above the composer, but the row that explains *what*
   // is asking for permission must not stay folded while it waits on the user.
   const asks = block.calls.some((call) => call.status === 'awaiting-approval')
+  const resultPreview =
+    block.calls.length === 1 && block.calls[0].result
+      ? block.calls[0].result.split(/\r?\n/, 1)[0].trim()
+      : ''
 
   useEffect(() => {
     if (asks) setOpen(true)
@@ -165,6 +169,7 @@ function ToolsBlockView({ block }: { block: ToolsBlock }) {
         <span className="shrink-0 text-fg-subtle">{block.calls.length} 项工具调用</span>
         <span className="min-w-0 flex-1 truncate font-mono text-[12px] text-fg-muted">
           {callNames(block)}
+          {resultPreview ? <span className="text-fg-subtle"> · {resultPreview}</span> : null}
         </span>
         {failed ? <span className="shrink-0 text-danger">{failed} 失败</span> : null}
         {pending ? <span className="shrink-0 text-accent">{pending} 运行中</span> : null}
@@ -291,7 +296,7 @@ export function MessageList({ blocks, status, onSuggestion }: MessageListProps) 
   return (
     <div className="relative min-h-0 flex-1">
       <div ref={scroller} onScroll={onScroll} className="scroll-quiet h-full overflow-y-auto">
-        <div className="mx-auto flex w-full max-w-[920px] flex-col gap-5 px-4 py-5">
+        <div className="mx-auto flex w-full max-w-[984px] flex-col gap-4 px-8 py-4">
           {blocks.length === 0 ? <Welcome onSuggestion={onSuggestion} /> : null}
           {blocks.map((block) => (
             <BlockView key={block.id} block={block} />

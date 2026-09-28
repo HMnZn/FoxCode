@@ -6,11 +6,10 @@
  * 通过 sessionStore 的动作回到宿主。
  */
 import { useDeferredValue, useMemo, useState, type MouseEvent } from 'react'
-import { Download, FolderOpen, GitFork, Plus, RefreshCw, Search, Trash2 } from 'lucide-react'
+import { Download, FolderOpen, GitFork, MoreHorizontal, Pin, Plus, RefreshCw, Search } from 'lucide-react'
 import {
   Button,
   Chip,
-  ConfirmDialog,
   EmptyState,
   IconButton,
   SegmentedControl,
@@ -19,8 +18,11 @@ import {
   TextInput,
   Tooltip,
 } from '@/components/ui'
+import { SessionMenu } from '@/components/sessions/SessionMenu'
 import { FoxMascot } from '@/components/brand/Fox'
+import { usePins, pinnedFirst } from '@/store/pinStore'
 import { useSession } from '@/store/sessionStore'
+import { useUi } from '@/store/uiStore'
 import { formatCost, formatRelative, formatTokens, shortPath } from '@/lib/format'
 import type { SessionSummary } from '@/types/protocol'
 
@@ -34,7 +36,7 @@ const SCOPE_OPTIONS: ReadonlyArray<{ value: Scope; label: string }> = [
 ]
 
 const SORT_OPTIONS: ReadonlyArray<{ value: SortKey; label: string; hint: string }> = [
-  { value: 'updated', label: '最近更新', hint: '按 updatedAt 降序' },
+  { value: 'updated', label: '最近更新', hint: '按 updatedAt 降序；置顶的会话排在最前' },
   { value: 'created', label: '创建时间', hint: '按 createdAt 降序' },
   { value: 'messages', label: '消息数', hint: '按 messageCount 降序' },
   { value: 'cost', label: '花费', hint: '按累计花费降序' },
@@ -53,13 +55,13 @@ export function SessionsPage() {
   const newSession = useSession((state) => state.newSession)
   const forkSession = useSession((state) => state.forkSession)
   const exportSession = useSession((state) => state.exportSession)
-  const deleteSession = useSession((state) => state.deleteSession)
+  const setView = useUi((state) => state.setView)
+  const pinned = usePins((state) => state.pinned)
 
   const [query, setQuery] = useState('')
   const [scope, setScope] = useState<Scope>('all')
   const [sort, setSort] = useState<SortKey>('updated')
   const [refreshing, setRefreshing] = useState(false)
-  const [pendingDelete, setPendingDelete] = useState<SessionSummary | null>(null)
 
   const deferredQuery = useDeferredValue(query)
 
@@ -95,8 +97,11 @@ export function SessionsPage() {
           return b.updatedAt - a.updatedAt
       }
     }
-    return [...rows].sort(compare)
-  }, [deferredQuery, host?.sessionFile, hostCwd, scope, sessions, sort])
+    const sorted = [...rows].sort(compare)
+    // 置顶只在「最近更新」这一档生效：用户显式选了「按消息数 / 花费」排序时，
+    // 再把某几行拎到前面就等于不执行他选的那个排序。
+    return sort === 'updated' ? pinnedFirst(sorted, pinned) : sorted
+  }, [deferredQuery, host?.sessionFile, hostCwd, pinned, scope, sessions, sort])
 
   const stats = useMemo(
     () =>
@@ -125,13 +130,20 @@ export function SessionsPage() {
     void exportSession(format)
   }
 
+  const openConversation = (id: string) => {
+    // Returning to the already-live row is only navigation. openSession is
+    // idempotent, so an in-flight generation keeps running in the background.
+    setView('chat')
+    void openSession(id)
+  }
+
   const filtered = query.trim().length > 0 || scope !== 'all'
 
   return (
     <div className="scroll-quiet flex h-full flex-col overflow-y-auto bg-canvas">
-      <div className="mx-auto flex w-full max-w-[1100px] flex-col gap-4 p-6">
+      <div className="mx-auto flex w-full max-w-[960px] flex-col gap-6 px-8 py-9 lg:px-12">
         <header className="flex flex-wrap items-center gap-2">
-          <h1 className="text-[20px] leading-[28px] font-medium text-fg">历史会话</h1>
+          <h1 className="text-[26px] leading-8 font-medium tracking-[-0.02em] text-fg">历史会话</h1>
           <Chip size="sm" mono>
             {visible.length}
           </Chip>
@@ -206,6 +218,7 @@ export function SessionsPage() {
           <div className="surface-card overflow-hidden">
             {visible.map((session, index) => {
               const live = isLive(session, host?.sessionFile)
+              const isPinned = pinned.includes(session.id)
               const tokens = session.totalTokens ?? 0
               const cost = session.cost ?? 0
               return (
@@ -214,11 +227,11 @@ export function SessionsPage() {
                   role="button"
                   tabIndex={0}
                   aria-label={`打开会话 ${session.title}`}
-                  onClick={() => void openSession(session.id)}
+                  onClick={() => openConversation(session.id)}
                   onKeyDown={(event) => {
                     if (event.key === 'Enter' || event.key === ' ') {
                       event.preventDefault()
-                      void openSession(session.id)
+                      openConversation(session.id)
                     }
                   }}
                   className={[
@@ -240,6 +253,11 @@ export function SessionsPage() {
                       <span className="truncate text-[13px] font-medium text-fg">
                         {session.title || '未命名会话'}
                       </span>
+                      {isPinned && (
+                        <Tooltip content="已置顶" side="top" className="shrink-0">
+                          <Pin size={11} className="text-fg-caption" aria-label="已置顶" />
+                        </Tooltip>
+                      )}
                       {live && (
                         <Chip size="xs" tone="success">
                           活跃
@@ -293,23 +311,18 @@ export function SessionsPage() {
                         Markdown
                       </Button>
                     </Tooltip>
-                    <Tooltip
-                      content={live ? '当前活动会话不能删除' : '删除会话（不可撤销）'}
-                      side="top"
-                    >
-                      <Button
-                        size="xs"
-                        variant="ghost"
-                        disabled={live}
-                        iconLeft={<Trash2 size={12} aria-hidden="true" />}
-                        onClick={(event) => {
-                          event.stopPropagation()
-                          setPendingDelete(session)
-                        }}
-                      >
-                        删除
-                      </Button>
-                    </Tooltip>
+                    <SessionMenu
+                      session={session}
+                      live={live}
+                      label={`会话操作 ${session.title || '未命名会话'}`}
+                      triggerClassName="h-6 gap-1 px-1.5"
+                      trigger={
+                        <>
+                          <MoreHorizontal size={12} aria-hidden="true" />
+                          更多
+                        </>
+                      }
+                    />
                   </span>
                 </div>
               )
@@ -337,25 +350,6 @@ export function SessionsPage() {
           )}
         </footer>
       </div>
-
-      <ConfirmDialog
-        open={pendingDelete != null}
-        tone="danger"
-        title="删除这个会话？"
-        description={
-          pendingDelete
-            ? `将从磁盘删除 ${pendingDelete.file}，此操作不可撤销。`
-            : undefined
-        }
-        confirmLabel="删除"
-        cancelLabel="取消"
-        onCancel={() => setPendingDelete(null)}
-        onConfirm={() => {
-          const target = pendingDelete
-          setPendingDelete(null)
-          if (target) void deleteSession(target.id)
-        }}
-      />
     </div>
   )
 }
