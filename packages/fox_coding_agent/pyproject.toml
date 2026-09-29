@@ -49,8 +49,11 @@ packages = [
 "fox_coding_agent.src.extensions.mcp" = ["MCP_DESIGN.md"]
 "fox_coding_agent.src.extensions.skill_evolution" = [
     "SKILL_EVOLUTION_DESIGN.md",
+    "SKILL_EVOLUTION_TUTORIAL.md",
+    "data/ALFWorld/*.json",
     "fixtures/evolution_eval/*.json",
     "fixtures/evolution_eval/*.jsonl",
+    "fixtures/evolution_eval/*.md",
 ]
 "fox_coding_agent.src.extensions.memory" = [
     "MEMORY_DESIGN.md",

@@ -5,8 +5,8 @@
 这个扩展学习的是可复用方法，而不是项目事实。事实、偏好和外部资料仍由 Memory
 扩展负责；稳定工作流、输出规范、纠正规则和判断标准才进入 Skill 演化。
 
-BearCode 的设计里最有价值的部分是反馈窗口、add/merge/discard、版本快照、来源追踪
-和使用评估。FoxCode 保留这些思想，但将“模型直接写 Skill”改成隔离式两阶段提交：
+扩展采用反馈窗口、add/merge/discard、版本快照、来源追踪和使用评估，并将
+“模型抽取候选”与“写入活动 Skill”拆成隔离式两阶段提交：
 
 ```text
 本轮请求与回答
@@ -74,24 +74,24 @@ uv run python -m fox_coding_agent.src.extensions.skill_evolution.evaluation offl
 缺少用户证据；当前可复现汇总保存在 `fixtures/evolution_eval/results.json`。该结果评估的
 是演化机制，不是大模型答题能力。
 
-### 2. BearCode 数据审计
+### 2. 数据集审计
 
 ```bash
 uv run python -m fox_coding_agent.src.extensions.skill_evolution.evaluation audit \
-  --data-root '/mnt/c/Users/Qin/Desktop/秋招/BearCode/data'
+  --data-root packages/fox_coding_agent/src/extensions/skill_evolution/data
 ```
 
-BearCode `data/` 不是自进化训练集。GAIA/HLE 可用于最终任务 Pass@1，但 GAIA 的文件附件、
-HLE 图像以及 ALFWorld/WebShop 交互环境并未完整包含在该目录。审计命令会逐类报告可运行与
+通用任务数据不是自进化训练集。GAIA/HLE 可用于最终任务 Pass@1，但文件附件、图像以及
+交互环境可能未完整包含在数据目录。审计命令会逐类报告可运行与
 跳过数量，不把缺环境样本伪装成真实执行。ToolHop 目录含问题、答案和工具 schema，但没有
 对应工具实现；若另行直接问模型，也只能算 direct-answer 诊断，不能宣称 ToolHop agent 成绩。
-本次目录审计快照保存在 `fixtures/evolution_eval/bear_data_audit.json`。
+本次目录审计快照保存在 `fixtures/evolution_eval/dataset_audit.json`。
 
 ### 3. 真实模型 Pass@1 与 Skill 消融
 
 ```bash
 uv run python -m fox_coding_agent.src.extensions.skill_evolution.evaluation live \
-  --data-root '/mnt/c/Users/Qin/Desktop/秋招/BearCode/data' \
+  --data-root packages/fox_coding_agent/src/extensions/skill_evolution/data \
   --datasets gaia,hle \
   --skills-dir .foxcode/skills \
   --variants baseline,metadata-only,full \
@@ -105,3 +105,6 @@ uv run python -m fox_coding_agent.src.extensions.skill_evolution.evaluation live
 
 要做正式报告，应固定模型、温度、样本顺序、Skill 快照和数据版本，并至少报告：总样本数、
 跳过原因、各 variant Pass@1、相对 baseline 的百分点变化、token 用量和失败样本。
+
+随附家庭任务数据与用户级 Skill 的计划分解消融使用 `planning-live`；它只报告动作计划质量，
+不会把文本规划结果标记成环境任务成功。

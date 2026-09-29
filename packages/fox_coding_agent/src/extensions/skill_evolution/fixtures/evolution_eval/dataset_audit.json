@@ -1,0 +1,13 @@
+{
+  "data_root_examined": "bundled evaluation data",
+  "datasets": {
+    "alfworld": {
+      "runnable": 0,
+      "skipped": 134,
+      "total": 134
+    }
+  },
+  "notes": {
+    "alfworld": "The bundled file contains goals and expected subgoal patterns; the interactive environment is not bundled."
+  }
+}

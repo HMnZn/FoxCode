@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -18,7 +17,10 @@ from fox_coding_agent.src.extensions.skill_evolution import (
 )
 from fox_coding_agent.src.extensions.skill_evolution.evaluation import (
     audit_datasets,
+    build_evolution_feedback,
+    expected_plan_actions,
     run_offline_evaluation,
+    score_household_plan,
 )
 from test_agent_core import scripted
 
@@ -170,31 +172,53 @@ class SkillEvolutionExtensionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(store.get_proposal(proposal.id).status, "applied")
 
 
-class BearDatasetAuditTests(unittest.TestCase):
-    def test_bear_dataset_audit_reports_environment_gaps_when_available(self):
+class DatasetAuditTests(unittest.TestCase):
+    def test_bundled_dataset_audit_reports_environment_gap(self):
         root = (
-            Path(r"C:\Users\Qin\Desktop\秋招\BearCode\data")
-            if os.name == "nt"
-            else Path("/mnt/c/Users/Qin/Desktop/秋招/BearCode/data")
+            Path(__file__).parents[1] / "packages" / "fox_coding_agent" / "src" /
+            "extensions" / "skill_evolution" / "data"
         )
-        if not root.is_dir():
-            self.skipTest("BearCode data directory is not mounted")
-        report = audit_datasets(root, ["gaia", "hle", "toolhop", "alfworld", "webshop"])
-        self.assertEqual(report["datasets"]["gaia"]["total"], 165)
-        self.assertEqual(report["datasets"]["hle"]["total"], 500)
-        self.assertEqual(report["datasets"]["hle"]["runnable"], 387)
+        report = audit_datasets(root, ["alfworld"])
         self.assertEqual(report["datasets"]["alfworld"]["runnable"], 0)
-        self.assertEqual(report["datasets"]["webshop"]["runnable"], 0)
         recorded = json.loads(
             (Path(__file__).parents[1] / "packages" / "fox_coding_agent" / "src" /
              "extensions" / "skill_evolution" / "fixtures" / "evolution_eval" /
-             "bear_data_audit.json").read_text(encoding="utf-8")
+             "dataset_audit.json").read_text(encoding="utf-8")
         )
         for dataset, values in recorded["datasets"].items():
             self.assertEqual(
                 {key: report["datasets"][dataset][key] for key in ("runnable", "skipped", "total")},
                 values,
             )
+
+    def test_household_plan_scorer_checks_order_object_and_quantity(self):
+        subgoals = (
+            "Subgoal 1: You see a soapbar \\d+\n"
+            "Subgoal 2: You pick up the soapbar \\d+\n"
+            "Subgoal 3: You put the soapbar \\d+ in/on the garbagecan \\d+"
+        )
+        self.assertEqual(expected_plan_actions(subgoals), ["observe", "take", "place"])
+        passed = score_household_plan(
+            "put two soapbar in garbagecan.",
+            subgoals,
+            "OBSERVE soapbar\nTAKE soapbar one\nPLACE soapbar one\nTAKE soapbar two\nPLACE soapbar two",
+        )
+        self.assertTrue(passed["passed"])
+        wrong = score_household_plan(
+            "put two soapbar in garbagecan.", subgoals, "PLACE soapbar\nTAKE soapbar"
+        )
+        self.assertFalse(wrong["passed"])
+
+    def test_evolution_feedback_uses_only_supplied_failures_and_targets_seed(self):
+        feedback = build_evolution_feedback([{
+            "goal": "cool a tomato",
+            "expected_actions": ["observe", "take", "cool"],
+            "predicted_actions": ["take", "place"],
+        }], skill_name="household-task-planner")
+        self.assertIn("existing household-task-planner skill", feedback)
+        self.assertIn("OBSERVE -> TAKE -> COOL", feedback)
+        self.assertIn("TAKE -> PLACE", feedback)
+        self.assertNotIn("held-out", feedback)
 
 
 if __name__ == "__main__":

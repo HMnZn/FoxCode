@@ -605,7 +605,7 @@ fox_coding_agent/src/
 
 ### 9.2 Memory：已实现为策略化可选扩展
 
-当前实现位于 `src/extensions/memory/`，通过 `extensions` 中的模块入口显式启用。它参考 BearCode 的四个核心选择：项目路径映射到独立目录、正文使用人可读 Markdown、`MEMORY.md` 作为派生索引、模型请求前按需召回。FoxCode 对边界做了进一步收紧：
+当前实现位于 `src/extensions/memory/`，通过 `extensions` 中的模块入口显式启用。它采用四个核心选择：项目路径映射到独立目录、正文使用人可读 Markdown、`MEMORY.md` 作为派生索引、模型请求前按需召回。FoxCode 对边界做了进一步收紧：
 
 - 记忆统一保存在 `~/.foxcode/projects/<project-hash>/memory/`，不会向用户项目写入额外知识文件。
 - Markdown 条目是事实来源，`MEMORY.md` 随 CRUD 重建；文件名、类型、字段长度、条目数和路径都经过校验。
