@@ -5,9 +5,11 @@ import { useSession } from '@/store/sessionStore'
 export function SessionStatusBar() {
   const host = useSession((state) => state.host)
   const timeline = useSession((state) => state.timeline)
-  const used = Math.max(0, timeline.context.used + (timeline.context.live ?? 0))
+  const used = Math.max(0, timeline.context.used)
+  const childUsed = Math.max(0, timeline.context.live ?? 0)
   const limit = timeline.context.limit || host?.model?.contextWindow || 0
-  const percent = limit > 0 ? Math.min(100, Math.round((used / limit) * 100)) : 0
+  const displayed = childUsed > 0 ? childUsed : used
+  const percent = limit > 0 ? Math.min(100, Math.round((displayed / limit) * 100)) : 0
   const running = ['streaming', 'awaiting-approval', 'compacting'].includes(timeline.status)
 
   return (
@@ -18,7 +20,11 @@ export function SessionStatusBar() {
       </span>
       <span className="inline-flex items-center gap-1.5">
         <Database size={12} />
-        上下文已用 {formatTokens(used)} / {limit ? formatTokens(limit) : '—'}
+        {childUsed > 0 ? (
+          <>主上下文 {formatTokens(used)} · 子 Agent {formatTokens(childUsed)} / {limit ? formatTokens(limit) : '—'}</>
+        ) : (
+          <>上下文已用 {formatTokens(used)} / {limit ? formatTokens(limit) : '—'}</>
+        )}
         <span className="text-fg-subtle">({percent}%)</span>
       </span>
       <span className="inline-flex items-center gap-1.5">

@@ -55,10 +55,13 @@ class _FileTool:
             raise ValueError("File exceeds 10 MiB; inspect a smaller range with bash")
         if b"\x00" in data:
             raise ValueError("Binary files are not supported by this text tool")
-        return data.decode("utf-8")
+        # utf-8-sig is identical to UTF-8 for ordinary files and transparently
+        # removes the BOM required by Windows PowerShell 5.1 for non-ASCII .ps1.
+        return data.decode("utf-8-sig")
 
-    def _write(self, path: Path, text: str) -> None:
-        data = text.encode("utf-8")
+    def _write(self, path: Path, text: str) -> int:
+        encoding = "utf-8-sig" if os.name == "nt" and path.suffix.lower() == ".ps1" else "utf-8"
+        data = text.encode(encoding)
         if len(data) > MAX_FILE_BYTES:
             raise ValueError("File exceeds the 10 MiB write limit")
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -75,6 +78,7 @@ class _FileTool:
         finally:
             if temp is not None:
                 temp.unlink(missing_ok=True)
+        return len(data)
 
 
 class ReadTool(_FileTool):
@@ -115,8 +119,8 @@ class WriteTool(_FileTool):
     async def execute(self, tool_call_id, params, cancel_event=None, on_update=None):
         check_cancelled(cancel_event)
         path = self._path(params["path"])
-        self._write(path, params["content"])
-        return _text(f"Wrote {len(params['content'].encode('utf-8'))} bytes to {path}", path=str(path))
+        size = self._write(path, params["content"])
+        return _text(f"Wrote {size} bytes to {path}", path=str(path))
 
 
 class EditTool(_FileTool):
@@ -152,6 +156,13 @@ class BashTool(_FileTool):
     def __init__(self, cwd: str | Path = ".", *, shell: str | None = None) -> None:
         super().__init__(cwd)
         self.shell = shell
+        self._uses_wsl = False
+        if os.name == "nt" and self.name == "bash":
+            self.description = (
+                type(self).description
+                + " Use paths relative to the working directory; Windows bash may be WSL "
+                "(/mnt/c), not Git Bash (/c)."
+            )
 
     def _command(self, command):
         shell = self.shell or shutil.which("bash")
@@ -160,7 +171,29 @@ class BashTool(_FileTool):
             shell = str(git_bash) if git_bash.exists() else None
         if shell is None:
             raise RuntimeError("bash was not found; install Git Bash or set BashTool(shell=...)")
+        normalized = str(shell).replace("/", "\\").lower()
+        self._uses_wsl = os.name == "nt" and normalized.endswith("\\system32\\bash.exe")
         return [shell, "-c", command]
+
+    def _environment(self) -> dict[str, str]:
+        """Keep command-created temporary artifacts inside the workspace."""
+
+        environment = os.environ.copy()
+        temp_dir = self.cwd / ".foxcode" / "tmp"
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        temp_value = str(temp_dir)
+        if self._uses_wsl and len(temp_value) >= 3 and temp_value[1:3] == ":\\":
+            drive = temp_value[0].lower()
+            temp_value = f"/mnt/{drive}/{temp_value[3:].replace(chr(92), '/')}"
+        environment.update({"TMPDIR": temp_value, "TEMP": temp_value, "TMP": temp_value})
+        if self._uses_wsl:
+            # WSL only imports explicitly listed custom Windows variables.
+            inherited = [item for item in environment.get("WSLENV", "").split(":") if item]
+            for name in ("TMPDIR", "TEMP", "TMP"):
+                if name not in inherited:
+                    inherited.append(name)
+            environment["WSLENV"] = ":".join(inherited)
+        return environment
 
     async def execute(self, tool_call_id, params, cancel_event=None, on_update=None):
         check_cancelled(cancel_event)
@@ -170,6 +203,7 @@ class BashTool(_FileTool):
             raise ValueError("timeout must be between 0 and 600 seconds")
         process = await asyncio.create_subprocess_exec(
             *command, cwd=self.cwd,
+            env=self._environment(),
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
             start_new_session=os.name != "nt",
         )
@@ -221,7 +255,19 @@ class PowerShellTool(BashTool):
         shell = self.shell or shutil.which("pwsh") or shutil.which("powershell")
         if shell is None:
             raise RuntimeError("PowerShell was not found; install pwsh or use bash")
-        return [shell, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command]
+        # Windows PowerShell 5.1 inherits the legacy console code page even
+        # when stdout is redirected.  The host decodes tool output as UTF-8,
+        # so force both PowerShell and native child processes onto UTF-8 before
+        # evaluating the user's command. PowerShell 7 already uses UTF-8; the
+        # preamble is harmless there.
+        utf8_command = (
+            "$__foxcodeUtf8 = [System.Text.UTF8Encoding]::new($false); "
+            "[Console]::InputEncoding = $__foxcodeUtf8; "
+            "[Console]::OutputEncoding = $__foxcodeUtf8; "
+            "$OutputEncoding = $__foxcodeUtf8; "
+            + command
+        )
+        return [shell, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", utf8_command]
 
 
 def _limit(params, default):

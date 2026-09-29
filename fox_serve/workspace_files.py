@@ -537,7 +537,20 @@ async def diff(
         )
         if code != 0:
             merged = (err or out).strip()
-            if "unknown revision" in merged or "ambiguous argument 'HEAD'" in merged:
+            # An unborn repository has no HEAD yet.  Git's wording differs by
+            # version/platform (notably Windows emits ``bad revision 'HEAD'``),
+            # but this is not a preview failure: the file should fall through
+            # to the untracked-file synthetic diff below.
+            lowered = merged.lower()
+            if any(
+                marker in lowered
+                for marker in (
+                    "unknown revision",
+                    "ambiguous argument 'head'",
+                    "bad revision 'head'",
+                    "invalid object name 'head'",
+                )
+            ):
                 out = ""
             else:
                 result["error"] = merged or "git diff 失败"

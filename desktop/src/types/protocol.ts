@@ -187,13 +187,19 @@ export type HostEvent =
       tool_name: string
       args: Record<string, unknown>
     }
-  | { type: 'tool_execution_update'; tool_call_id: string; partial_result: unknown }
+  | {
+      type: 'tool_execution_update'
+      tool_call_id: string
+      partial_result: unknown
+      details?: Record<string, unknown>
+    }
   | {
       type: 'tool_execution_end'
       tool_call_id: string
       tool_name: string
       result: unknown
       is_error: boolean
+      details?: Record<string, unknown>
     }
   | { type: 'compaction_start'; automatic?: boolean; preTokens?: number }
   | {
@@ -531,7 +537,10 @@ export type HostCommand =
   | { method: 'sessions.fork'; params: { fromId?: string } }
   | { method: 'session.export'; params: { format: 'json' | 'markdown'; path: string } }
   | { method: 'prompt'; params: { message: string; options?: PromptOptions } }
-  | { method: 'steer'; params: { message: string } }
+  | {
+      method: 'steer'
+      params: { message: string; promoteFollowUps?: boolean; interrupt?: boolean }
+    }
   | { method: 'follow_up'; params: { message: string } }
   | { method: 'abort' }
   | { method: 'compact' }

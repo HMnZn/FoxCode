@@ -3,9 +3,9 @@ import {
   AlertTriangle,
   ArrowUp,
   Copy,
+  FileText,
   FolderOpen,
   FolderTree,
-  ListPlus,
   Slash,
   Sparkles,
   Square,
@@ -23,17 +23,35 @@ import {
   toast,
 } from '@/components/ui'
 import { useSession } from '@/store/sessionStore'
+import { QueuedMessages } from '@/components/chat/QueuedMessages'
 import { useUi } from '@/store/uiStore'
 import { samePath, useWorkspace, workspaceName } from '@/store/workspaceStore'
-import { shortPath } from '@/lib/format'
+import { formatBytes, shortPath } from '@/lib/format'
 import {
   PERMISSION_LABEL,
   PERMISSION_MODES,
   THINKING_LEVELS,
   type CommandInfo,
   type ThinkingLevel,
+  type WorkspaceDirectory,
 } from '@/types/protocol'
 import { cn } from '@/lib/cn'
+
+/**
+ * `/` 目录刻意只留两件事：**把文件加进这条消息** 与 **压缩上下文**。
+ *
+ * 其余命令（权限、模型、导出、技能、prompt…）在 Ctrl+K 面板和各自的页面里都有，
+ * 全堆在输入框上只会挡住正文。手敲 `/compact` 这类真名仍然照旧可用。
+ */
+const SLASH_FILE = '文件'
+const SLASH_COMPACT = '压缩'
+const SLASH_ALIASES: Record<string, string> = { [SLASH_COMPACT]: 'compact' }
+
+/** 上一级目录（`files.list` 的路径是相对工作区的 POSIX 风格）。 */
+function parentOf(path: string): string {
+  const cut = path.replace(/\/+$/, '').lastIndexOf('/')
+  return cut <= 0 ? '' : path.slice(0, cut)
+}
 
 const THINKING_LABEL: Record<ThinkingLevel, string> = {
   off: '思考关闭',
@@ -55,9 +73,12 @@ export interface ComposerProps {
 /**
  * Message composer.
  *
- * Sending follows the host contract exactly: `prompt` throws while a run is in
- * flight, so a busy composer switches to `steer` (delivered to the running
- * loop) or `follow_up` (queued behind it) instead of failing.
+ * 运行中普通发送不会打断这一轮：消息先落在输入框上方的排队小框里（可改、可删），
+ * 等这一轮结束由 `drainQueue()` 发出去；要抢先就在小框上点 ⚡（或 Ctrl/Cmd+Enter）
+ * 走 `steer`，由宿主中断当前请求并消费 steering 队列。
+ *
+ * `/` 目录只有两项（见 `SLASH_FILE` / `SLASH_COMPACT`）：把工作区文件加进这条消息、
+ * 压缩上下文；`/文件` 会打开工作区选择器，选中后把 `@路径` 接进草稿。
  */
 export function Composer({ draftKey, className, hero = false }: ComposerProps) {
   const draft = useUi((s) => s.drafts[draftKey] ?? '')
@@ -79,9 +100,12 @@ export function Composer({ draftKey, className, hero = false }: ComposerProps) {
   const openWorkspace = useWorkspace((s) => s.open)
 
   const busy = timeline.status === 'streaming' || timeline.status === 'compacting'
-  const [queueMode, setQueueMode] = useState<'steer' | 'follow_up'>('steer')
   const [picker, setPicker] = useState<number | null>(null)
+  const [dir, setDir] = useState<WorkspaceDirectory | null>(null)
+  const [dirIndex, setDirIndex] = useState(0)
   const area = useRef<HTMLTextAreaElement>(null)
+  const list = useRef<HTMLDivElement>(null)
+  const dirList = useRef<HTMLDivElement>(null)
 
   useLayoutEffect(() => {
     const node = area.current
@@ -96,37 +120,105 @@ export function Composer({ draftKey, className, hero = false }: ComposerProps) {
     return match ? match[1].toLowerCase() : null
   }, [value])
 
-  const commands: CommandInfo[] = host?.commands ?? []
+  const hostCommands: CommandInfo[] = host?.commands ?? []
+  const commands: CommandInfo[] = useMemo(
+    () => [
+      { name: SLASH_FILE, description: '把工作区里的文件加进这条消息', argumentHint: '[路径]' },
+      ...hostCommands
+        .filter((command) => command.name === 'compact')
+        .map((command) => ({ ...command, name: SLASH_COMPACT, argumentHint: '' })),
+    ],
+    [hostCommands],
+  )
   const matches = useMemo(() => {
     if (slashQuery === null) return []
-    return commands
-      .filter(
-        (c) =>
-          !slashQuery ||
-          c.name.toLowerCase().includes(slashQuery) ||
-          c.description.toLowerCase().includes(slashQuery),
-      )
-      .slice(0, 8)
+    return commands.filter(
+      (c) =>
+        !slashQuery ||
+        c.name.toLowerCase().includes(slashQuery) ||
+        c.description.toLowerCase().includes(slashQuery),
+    )
   }, [commands, slashQuery])
 
   useEffect(() => {
     setPicker(matches.length ? 0 : null)
   }, [matches.length, slashQuery])
 
-  const submit = () => {
+  // 列表比弹层高时要能把选中项滚进视野（键盘 ↑↓ 走到底部不会「看不见选中谁」）。
+  useEffect(() => {
+    if (picker === null) return
+    const node = list.current?.children[picker]
+    if (node instanceof HTMLElement) node.scrollIntoView({ block: 'nearest' })
+  }, [picker])
+
+  useEffect(() => {
+    const node = dirList.current?.children[dirIndex]
+    if (node instanceof HTMLElement) node.scrollIntoView({ block: 'nearest' })
+  }, [dirIndex, dir])
+
+  /** 打开工作区文件选择器（`/文件` 不带参数时走这条路）。 */
+  const openFilePicker = async (path = '') => {
+    setPicker(null)
+    try {
+      const listing = (await bridge.send({
+        method: 'files.list',
+        params: path ? { path } : undefined,
+      })) as WorkspaceDirectory
+      // 目录排前面，名字排序：键盘上下走的时候直觉上先看到可以进去的地方。
+      const entries = [...(listing?.entries ?? [])].sort((a, b) =>
+        a.type === b.type ? a.name.localeCompare(b.name) : a.type === 'directory' ? -1 : 1,
+      )
+      setDir({ ...listing, entries })
+      setDirIndex(0)
+    } catch (error) {
+      toast.danger({
+        title: '读不到工作区文件',
+        description: error instanceof Error ? error.message : String(error),
+      })
+    }
+  }
+
+  /** 把 `@路径` 接进草稿（前面已经写了一半的话保留），并顺手在右侧打开它。 */
+  const insertMention = (path: string) => {
+    // 取 store 里的最新草稿而不是闭包里的 `value`：`/文件 <路径>` 那条路会先把
+    // `/文件 …` 清掉，再插引用，用旧值会把命令原文一起留在输入框里。
+    const base = useUi.getState().drafts[draftKey] ?? ''
+    const rest = base.replace(/^\/[^\s]*\s*/, '')
+    const spacer = rest && !rest.endsWith(' ') ? ' ' : ''
+    setDraft(draftKey, `${rest}${spacer}@${path} `)
+    setDir(null)
+    area.current?.focus()
+  }
+
+  const chooseEntry = (index: number) => {
+    const entry = dir?.entries[index]
+    if (!entry) return
+    if (entry.type === 'directory') void openFilePicker(entry.path)
+    else insertMention(entry.path)
+  }
+
+  const submit = (interrupt = false) => {
     const text = value.trim()
     if (!text) return
     if (text.startsWith('/')) {
       const [name, ...rest] = text.slice(1).split(/\s+/)
-      if (commands.some((c) => c.name === name)) {
+      if (name === SLASH_FILE) {
+        const path = rest.join(' ').trim()
         setDraft(draftKey, '')
-        void runCommand(name, rest.join(' '))
+        if (path) insertMention(path)
+        else void openFilePicker()
+        return
+      }
+      const hostName = SLASH_ALIASES[name] ?? name
+      if (hostCommands.some((c) => c.name === hostName)) {
+        setDraft(draftKey, '')
+        void runCommand(hostName, rest.join(' '))
         return
       }
     }
     setDraft(draftKey, '')
     if (busy) {
-      if (queueMode === 'steer') void steer(text)
+      if (interrupt) void steer(text, true)
       else void followUp(text)
       return
     }
@@ -136,12 +228,44 @@ export function Composer({ draftKey, className, hero = false }: ComposerProps) {
   const accept = (index: number) => {
     const command = matches[index]
     if (!command) return
+    if (command.name === SLASH_FILE) {
+      setDraft(draftKey, '')
+      void openFilePicker()
+      return
+    }
     setDraft(draftKey, `/${command.name} `)
     setPicker(null)
     area.current?.focus()
   }
 
   const onKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (dir) {
+      const count = dir.entries.length
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        if (dir.path) void openFilePicker(parentOf(dir.path))
+        else setDir(null)
+        return
+      }
+      if (count) {
+        if (event.key === 'ArrowDown') {
+          event.preventDefault()
+          setDirIndex((i) => (i + 1) % count)
+          return
+        }
+        if (event.key === 'ArrowUp') {
+          event.preventDefault()
+          setDirIndex((i) => (i - 1 + count) % count)
+          return
+        }
+        if (event.key === 'Enter' && !event.shiftKey) {
+          event.preventDefault()
+          chooseEntry(dirIndex)
+          return
+        }
+      }
+      return
+    }
     if (event.key === 'Escape') {
       if (picker !== null) {
         event.preventDefault()
@@ -168,7 +292,7 @@ export function Composer({ draftKey, className, hero = false }: ComposerProps) {
     }
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault()
-      submit()
+      submit(event.ctrlKey || event.metaKey)
     }
   }
 
@@ -176,27 +300,94 @@ export function Composer({ draftKey, className, hero = false }: ComposerProps) {
 
   return (
     <div className={cn('relative flex flex-col', className)}>
+      {dir ? (
+        <div className="absolute bottom-full left-0 z-20 mb-2 w-full overflow-hidden surface-pop">
+          <div className="flex items-center gap-2 border-b border-line px-3 py-1.5 text-2xs text-fg-subtle">
+            <FolderOpen size={12} className="shrink-0" aria-hidden="true" />
+            <span className="truncate font-mono text-fg-muted">{dir.path || dir.cwd}</span>
+            <span className="ml-auto shrink-0">把文件加进这条消息</span>
+          </div>
+          <div
+            ref={dirList}
+            className="scroll-quiet max-h-[min(46vh,320px)] overflow-y-auto"
+            aria-label="工作区文件"
+          >
+            {dir.entries.length ? (
+              dir.entries.map((entry, index) => (
+                <button
+                  key={entry.path}
+                  type="button"
+                  onMouseEnter={() => setDirIndex(index)}
+                  onClick={() => chooseEntry(index)}
+                  className={cn(
+                    'flex w-full items-center gap-2 px-3 py-1.5 text-left',
+                    index === dirIndex ? 'bg-accent-soft/70' : 'hover:bg-surface-3',
+                  )}
+                >
+                  {entry.type === 'directory' ? (
+                    <FolderOpen size={12} className="shrink-0 text-fg-subtle" />
+                  ) : (
+                    <FileText size={12} className="shrink-0 text-fg-subtle" />
+                  )}
+                  <span className="truncate font-mono text-[12px] text-fg">{entry.name}</span>
+                  {entry.type === 'directory' ? (
+                    <span className="ml-auto shrink-0 text-2xs text-fg-muted">进入</span>
+                  ) : (
+                    <span className="ml-auto shrink-0 font-mono text-2xs text-fg-subtle">
+                      {formatBytes(entry.size)}
+                    </span>
+                  )}
+                </button>
+              ))
+            ) : (
+              <div className="px-3 py-2 text-2xs text-fg-subtle">这个目录是空的</div>
+            )}
+          </div>
+          <div className="flex items-center gap-3 border-t border-line px-3 py-1 text-2xs text-fg-subtle">
+            <span className="inline-flex items-center gap-1">
+              <Kbd>↑</Kbd>
+              <Kbd>↓</Kbd> 选择
+            </span>
+            <span className="inline-flex items-center gap-1">
+              <Kbd>Enter</Kbd> 选中
+            </span>
+            <span className="inline-flex items-center gap-1">
+              <Kbd>Esc</Kbd> {dir.path ? '上一级' : '关闭'}
+            </span>
+            <span className="ml-auto">{dir.entries.length} 项</span>
+          </div>
+        </div>
+      ) : null}
+
       {picker !== null && matches.length ? (
         <div className="absolute bottom-full left-0 z-20 mb-2 w-full overflow-hidden surface-pop">
-          {matches.map((command, index) => (
-            <button
-              key={command.name}
-              type="button"
-              onMouseEnter={() => setPicker(index)}
-              onClick={() => accept(index)}
-              className={cn(
-                'flex w-full items-center gap-2 px-3 py-1.5 text-left',
-                index === picker ? 'bg-accent-soft/70' : 'hover:bg-surface-3',
-              )}
-            >
-              <Slash size={12} className="shrink-0 text-fg-subtle" />
-              <span className="font-mono text-[12px] text-fg">{command.name}</span>
-              {command.argumentHint ? (
-                <span className="font-mono text-2xs text-fg-subtle">{command.argumentHint}</span>
-              ) : null}
-              <span className="ml-auto truncate text-2xs text-fg-muted">{command.description}</span>
-            </button>
-          ))}
+          {/*
+            命令目录要能装下宿主的全部命令：以前切到最后 8 条就没了，列表也不滚动，
+            于是「/permission 之后的那些」谁也看不见。
+          */}
+          <div ref={list} className="scroll-quiet max-h-[min(46vh,320px)] overflow-y-auto">
+            {matches.map((command, index) => (
+              <button
+                key={command.name}
+                type="button"
+                onMouseEnter={() => setPicker(index)}
+                onClick={() => accept(index)}
+                className={cn(
+                  'flex w-full items-center gap-2 px-3 py-1.5 text-left',
+                  index === picker ? 'bg-accent-soft/70' : 'hover:bg-surface-3',
+                )}
+              >
+                <Slash size={12} className="shrink-0 text-fg-subtle" />
+                <span className="font-mono text-[12px] text-fg">/{command.name}</span>
+                {command.argumentHint ? (
+                  <span className="font-mono text-2xs text-fg-subtle">{command.argumentHint}</span>
+                ) : null}
+                <span className="ml-auto truncate text-2xs text-fg-muted">
+                  {command.description}
+                </span>
+              </button>
+            ))}
+          </div>
           <div className="flex items-center gap-3 border-t border-line px-3 py-1 text-2xs text-fg-subtle">
             <span className="inline-flex items-center gap-1">
               <Kbd>↑</Kbd>
@@ -208,6 +399,7 @@ export function Composer({ draftKey, className, hero = false }: ComposerProps) {
             <span className="inline-flex items-center gap-1">
               <Kbd>Esc</Kbd> 关闭
             </span>
+            <span className="ml-auto">{matches.length} 条</span>
           </div>
         </div>
       ) : null}
@@ -233,6 +425,8 @@ export function Composer({ draftKey, className, hero = false }: ComposerProps) {
           </div>
         ) : null}
 
+        <QueuedMessages className="rounded-t-panel border-b border-line/70" />
+
         <textarea
           ref={area}
           value={value}
@@ -241,7 +435,7 @@ export function Composer({ draftKey, className, hero = false }: ComposerProps) {
           onChange={(event) => setDraft(draftKey, event.target.value)}
           onKeyDown={onKeyDown}
           placeholder={busy
-            ? '运行中 — Enter 插入消息，Shift + Enter 换行'
+            ? '运行中 — Enter 排队（结束后自动发送），Ctrl/Cmd + Enter 立即插队'
             : hero
               ? '描述你想要构建的内容，/ 调用指令，@ 文件或对话'
               : '描述任务，/ 唤起命令，Shift + Enter 换行'}
@@ -371,34 +565,6 @@ export function Composer({ draftKey, className, hero = false }: ComposerProps) {
             ) : null}
           </span>
 
-          {busy ? (
-            <Menu
-              placement="top"
-              align="end"
-              label="排队方式"
-              triggerClassName="gap-1 rounded-sm border-transparent bg-transparent px-2 text-[12px] hover:border-transparent hover:bg-interactive"
-              trigger={
-                <>
-                  <ListPlus size={13} />
-                  {queueMode === 'steer' ? '立即插入' : '排队执行'}
-                </>
-              }
-            >
-              <MenuItem
-                label="立即插入运行中回合"
-                hint="steer"
-                selected={queueMode === 'steer'}
-                onSelect={() => setQueueMode('steer')}
-              />
-              <MenuItem
-                label="当前回合结束后执行"
-                hint="follow_up"
-                selected={queueMode === 'follow_up'}
-                onSelect={() => setQueueMode('follow_up')}
-              />
-            </Menu>
-          ) : null}
-
           <span className="hidden items-center gap-1.5 md:flex">
             <Menu
               placement="top"
@@ -475,7 +641,8 @@ export function Composer({ draftKey, className, hero = false }: ComposerProps) {
             className="size-8 rounded-full px-0"
             disabled={!value.trim()}
             iconLeft={<ArrowUp size={15} />}
-            onClick={submit}
+            title={busy ? '加入排队（这一轮结束后自动发送）· Ctrl/Cmd+Enter 立即插队' : '发送'}
+            onClick={() => submit(false)}
           />
         </div>
       </div>

@@ -2,6 +2,7 @@
  * Headless screenshot harness.
  *
  *   node scripts/shot.mjs [outputPath] [--no-build] [--delay=ms] [--click="<text>[+<text>…]"]
+ *     [--eval-file=path] [--eval-result=path] [--workspace=path] [--recent-workspace=path]
  *
  * Builds the renderer (unless --no-build), then launches Electron with
  * FOXCODE_SHOT set so `electron/main.js` captures the real window and exits.
@@ -29,6 +30,17 @@ const delayFlag = args.find((arg) => arg.startsWith('--delay='))
 const delay = delayFlag ? Number(delayFlag.split('=')[1]) : 2600
 const clickFlag = args.find((arg) => arg.startsWith('--click='))
 const click = clickFlag ? clickFlag.slice('--click='.length) : undefined
+const evalFileFlag = args.find((arg) => arg.startsWith('--eval-file='))
+const evalFile = evalFileFlag ? evalFileFlag.slice('--eval-file='.length) : undefined
+const shotEval = evalFile ? fs.readFileSync(path.resolve(root, evalFile), 'utf8') : undefined
+const evalResultFlag = args.find((arg) => arg.startsWith('--eval-result='))
+const evalResult = evalResultFlag ? evalResultFlag.slice('--eval-result='.length) : undefined
+const workspaceFlag = args.find((arg) => arg.startsWith('--workspace='))
+const workspace = workspaceFlag ? workspaceFlag.slice('--workspace='.length) : undefined
+const recentWorkspaceFlag = args.find((arg) => arg.startsWith('--recent-workspace='))
+const recentWorkspace = recentWorkspaceFlag
+  ? recentWorkspaceFlag.slice('--recent-workspace='.length)
+  : undefined
 
 const bin = (name) => path.join(root, 'node_modules', '.bin', isWindows ? `${name}.cmd` : name)
 
@@ -64,6 +76,10 @@ await run(
     FOXCODE_SHOT: target,
     FOXCODE_SHOT_DELAY: String(delay),
     ...(click ? { FOXCODE_SHOT_CLICK: click } : {}),
+    ...(shotEval ? { FOXCODE_SHOT_EVAL: shotEval, FOXCODE_SHOT_EVAL_STRICT: '1' } : {}),
+    ...(evalResult ? { FOXCODE_SHOT_EVAL_RESULT: evalResult } : {}),
+    ...(workspace ? { FOXCODE_SHOT_WORKSPACE: workspace } : {}),
+    ...(recentWorkspace ? { FOXCODE_SHOT_RECENT_WORKSPACE: recentWorkspace } : {}),
   },
   false,
 )
@@ -74,3 +90,7 @@ if (!fs.existsSync(resolved)) {
   process.exit(1)
 }
 console.log(`screenshot ready: ${resolved}`)
+if (evalResult && !fs.existsSync(path.resolve(root, evalResult))) {
+  console.error(`eval result was not written: ${path.resolve(root, evalResult)}`)
+  process.exit(1)
+}

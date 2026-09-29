@@ -10,7 +10,7 @@ import { SessionsPage } from '@/pages/SessionsPage'
 import { SettingsPage } from '@/pages/SettingsPage'
 import { SkillsPage } from '@/pages/SkillsPage'
 import { UsagePage } from '@/pages/UsagePage'
-import { useSession } from '@/store/sessionStore'
+import { isBusyStatus, useSession } from '@/store/sessionStore'
 import { useRail } from '@/store/railStore'
 import { useUi } from '@/store/uiStore'
 import { useWorkspace } from '@/store/workspaceStore'
@@ -23,12 +23,23 @@ export function App() {
   const abort = useSession((s) => s.abort)
   const newSession = useSession((s) => s.newSession)
   const hostCwd = useSession((s) => s.host?.cwd)
+  const queueLength = useSession((s) => s.queue.length)
+  const timelineStatus = useSession((s) => s.timeline.status)
+  const drainQueue = useSession((s) => s.drainQueue)
   const workspace = useWorkspace((s) => s.current)
   const syncWorkspace = useWorkspace((s) => s.syncHost)
 
   useEffect(() => {
     void init()
   }, [init])
+
+  // 排队消息只在本机等着：这一轮**真的**跑完了才放下一条（`drainQueue()` 自己还会再问一次宿主
+  // 忙不忙），否则会撞上宿主「运行中不接受 prompt」的守卫。注意这里不能判 `status === 'idle'`：
+  // 带工具的一轮中间也会有 `turn_end`，那时工具还在跑。
+  useEffect(() => {
+    if (isBusyStatus(timelineStatus) || queueLength === 0) return
+    void drainQueue()
+  }, [drainQueue, queueLength, timelineStatus])
 
   // 每 4 秒和宿主对账，并刷新左侧会话树。后台 runtime 完成时当前页面
   // 不一定订阅它的正文帧，但 sessions.list 会更新「运行中」圆点和时间。
@@ -126,6 +137,15 @@ export function App() {
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [onKeyDown])
+
+  // 窗口变窄时把两个栏宽重新夹一遍，否则两个固定宽度能把中列挤到零（就是用户说的
+  // 「预览挤占中间、中间的字都漂移了」）。
+  useEffect(() => {
+    const onResize = () => useUi.getState().clampPaneWidths()
+    onResize()
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
 
   // Nothing else is reachable before a workspace exists: the agent's cwd, its
   // sessions and its trust state all hang off this one choice.

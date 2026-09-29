@@ -36,35 +36,142 @@ beforeEach(async () => {
 })
 
 describe('sessionStore recovery', () => {
-  it('sends a refused steer as a normal prompt instead of losing it', async () => {
-    const send = vi.spyOn(bridge, 'send')
-    useSession.setState({
-      timeline: { ...EMPTY_TIMELINE, status: 'streaming', activity: '模型生成中' },
+  it('strips the leading slash from host command names', async () => {
+    // 真实 `fox serve` 的命令名是 `/new`，而界面各处（补全、命令面板、技能页）都自己补斜杠：
+    // 不归一化就会显示成 `//new`，手敲的 `/new` 也会匹配不上命令表。
+    const base = await hostInfo()
+    const info = vi.spyOn(bridge, 'info').mockResolvedValue({
+      ...base,
+      commands: [
+        { name: '/new', description: '新建会话' },
+        { name: '/permission', description: '切换权限档位', argumentHint: 'MODE' },
+      ],
     })
-    send.mockRejectedValueOnce(new Error('当前没有正在运行的一轮，steer 不会被消费；请直接发送这条消息'))
-    send.mockResolvedValue(null)
 
-    await useSession.getState().prompt('继续做完')
+    await useSession.getState().refreshHost()
 
-    const methods = send.mock.calls.map(([command]) => command.method)
-    expect(methods).toEqual(['steer', 'prompt'])
-    const users = useSession.getState().timeline.blocks.filter((block) => block.kind === 'user')
-    // 回落不能留下两条重复的用户消息（一条排队块 + 一条真正的 prompt）。
-    expect(users).toHaveLength(1)
-    expect(users[0].kind === 'user' && users[0].text).toBe('继续做完')
-    expect(useSession.getState().queue).toHaveLength(0)
+    expect(useSession.getState().host?.commands.map((command) => command.name)).toEqual([
+      'new',
+      'permission',
+    ])
+    info.mockRestore()
   })
 
-  it('keeps a steer that the host accepted', async () => {
-    const send = vi.spyOn(bridge, 'send').mockResolvedValue(null)
+  it('keeps a busy send in the local queue instead of touching the host', async () => {
+    const send = vi.spyOn(bridge, 'send')
     useSession.setState({
       timeline: { ...EMPTY_TIMELINE, status: 'streaming', activity: '模型生成中' },
     })
 
     await useSession.getState().prompt('顺便改一下注释')
 
-    expect(send.mock.calls.map(([command]) => command.method)).toEqual(['steer'])
+    // 排队只落在输入框上方那些小框里（要能改、能删），所以一个请求都不该发。
+    expect(send).not.toHaveBeenCalled()
+    expect(useSession.getState().queue.map((item) => item.text)).toEqual(['顺便改一下注释'])
+    expect(useSession.getState().timeline.blocks.filter((b) => b.kind === 'user')).toHaveLength(0)
+  })
+
+  it('edits and drops queued messages', async () => {
+    useSession.setState({
+      timeline: { ...EMPTY_TIMELINE, status: 'streaming', activity: '模型生成中' },
+    })
+    await useSession.getState().followUp('先改注释')
+    await useSession.getState().followUp('再跑一遍测试')
+
+    const [first, second] = useSession.getState().queue
+    useSession.getState().updateQueued(first.id, '先改注释（补一句）')
+    expect(useSession.getState().queue[0].text).toBe('先改注释（补一句）')
+
+    // 空的改写不算改写，否则小框会被清成一条看不见的消息。
+    useSession.getState().updateQueued(first.id, '   ')
+    expect(useSession.getState().queue[0].text).toBe('先改注释（补一句）')
+
+    useSession.getState().dropQueued(first.id)
+    expect(useSession.getState().queue.map((item) => item.id)).toEqual([second.id])
+  })
+
+  it('drains the queue one message per finished turn', async () => {
+    const send = vi.spyOn(bridge, 'send').mockResolvedValue(null)
+    const base = await hostInfo()
+    const info = vi.spyOn(bridge, 'info').mockResolvedValue({
+      ...base,
+      busy: false,
+      commands: [{ name: '/compact', description: '压缩当前会话上下文' }],
+    })
+    await useSession.getState().followUp('第一条')
+    await useSession.getState().followUp('第二条')
+    useSession.setState({ timeline: { ...EMPTY_TIMELINE, status: 'idle' } })
+
+    await useSession.getState().drainQueue()
+
+    // 一次只放一条：多条一起发会被宿主当成同一轮里的同一句话。
+    expect(send.mock.calls.map(([command]) => command.method)).toEqual(['prompt'])
+    expect(useSession.getState().queue.map((item) => item.text)).toEqual(['第二条'])
+    expect(useSession.getState().timeline.status).toBe('streaming')
+    // The host refresh performed by queue draining must not put the wire-level
+    // leading slash back, or `/压缩` stops matching immediately after queuing.
+    expect(useSession.getState().host?.commands[0].name).toBe('compact')
+    info.mockRestore()
+  })
+
+  it('asks the host before draining: a busy host keeps the queue local', async () => {
+    const send = vi.spyOn(bridge, 'send').mockResolvedValue(null)
+    vi.spyOn(bridge, 'info').mockResolvedValue(await hostInfo({ busy: true }))
+    await useSession.getState().followUp('等宿主真空闲')
+    useSession.setState({ timeline: { ...EMPTY_TIMELINE, status: 'idle' } })
+
+    await useSession.getState().drainQueue()
+
+    // 真机上就是这里发早过：宿主回 `RuntimeError: Harness is already processing. Use
+    // steer() or follow_up(...)`，而请求本身是成功的（错误是**帧**不是请求异常），
+    // 那条消息于是既没被执行、也从队列里消失了。宿主说忙就一个字都别发。
+    expect(send).not.toHaveBeenCalled()
+    expect(useSession.getState().queue.map((item) => item.text)).toEqual(['等宿主真空闲'])
+  })
+
+  it('leaves the queue alone while a turn is still running', async () => {
+    const send = vi.spyOn(bridge, 'send').mockResolvedValue(null)
+    await useSession.getState().followUp('等一会儿')
+    useSession.setState({ timeline: { ...EMPTY_TIMELINE, status: 'streaming' } })
+
+    await useSession.getState().drainQueue()
+
+    expect(send).not.toHaveBeenCalled()
+    expect(useSession.getState().queue).toHaveLength(1)
+  })
+
+  it('steers a queued message out of turn and drops it from the queue', async () => {
+    const send = vi.spyOn(bridge, 'send').mockResolvedValue(null)
+    useSession.setState({
+      timeline: { ...EMPTY_TIMELINE, status: 'streaming', activity: '模型生成中' },
+    })
+    await useSession.getState().followUp('先做这个')
+
+    await useSession.getState().steerQueued(useSession.getState().queue[0].id)
+
+    expect(send).toHaveBeenCalledWith({
+      method: 'steer',
+      params: { message: '先做这个', promoteFollowUps: true, interrupt: true },
+    })
     expect(useSession.getState().queue).toHaveLength(0)
+    const users = useSession.getState().timeline.blocks.filter((block) => block.kind === 'user')
+    expect(users.every((block) => block.kind === 'user' && block.queued === 'steer')).toBe(true)
+  })
+
+  it('marks an explicitly steered message as inserted', async () => {
+    const send = vi.spyOn(bridge, 'send').mockResolvedValue(null)
+    useSession.setState({
+      timeline: { ...EMPTY_TIMELINE, status: 'streaming' },
+    })
+
+    await useSession.getState().steer('现在就处理', true)
+
+    expect(send).toHaveBeenCalledWith({
+      method: 'steer',
+      params: { message: '现在就处理', promoteFollowUps: true, interrupt: true },
+    })
+    const users = useSession.getState().timeline.blocks.filter((block) => block.kind === 'user')
+    expect(users.every((block) => block.kind === 'user' && block.queued === 'steer')).toBe(true)
   })
 
   it('needs the host to insist twice before unlocking a stuck run', async () => {

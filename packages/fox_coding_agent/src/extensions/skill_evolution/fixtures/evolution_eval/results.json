@@ -1,0 +1,30 @@
+{
+  "benchmark": "foxcode-skill-evolution-policy-v1",
+  "case_count": 6,
+  "summary": {
+    "full": {
+      "decision_accuracy": 1.0,
+      "passed": 6,
+      "total": 6,
+      "traceability_rate": 1.0
+    },
+    "no-dedup": {
+      "decision_accuracy": 0.8333,
+      "passed": 5,
+      "total": 6,
+      "traceability_rate": 1.0
+    },
+    "no-provenance": {
+      "decision_accuracy": 1.0,
+      "passed": 6,
+      "total": 6,
+      "traceability_rate": 0.0
+    },
+    "no-safety-gate": {
+      "decision_accuracy": 0.3333,
+      "passed": 2,
+      "total": 6,
+      "traceability_rate": 1.0
+    }
+  }
+}

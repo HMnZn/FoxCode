@@ -141,6 +141,12 @@ You are the project reviewer. Inspect evidence and report only findings.
         ]
         self.assertTrue(progress)
         self.assertIn("子 Agent 运行中", progress[0].partial_result.content[0].text)
+        live_usage = [
+            event.partial_result.details.get("context_usage", {})
+            for event in progress
+            if event.partial_result.details
+        ]
+        self.assertTrue(any(item.get("context_tokens", 0) > 0 for item in live_usage))
 
     async def test_subagent_child_tools_use_parent_approval_hook(self):
         write(self.user / "settings.json", {"extensions": [
@@ -179,6 +185,45 @@ You are the project reviewer. Inspect evidence and report only findings.
 
         self.assertEqual(approved, ["agent", "write"])
         self.assertEqual((self.project / "child.txt").read_text(encoding="utf-8"), "made by child")
+
+    async def test_subagent_cannot_write_outside_workspace_even_with_parent_approval(self):
+        write(self.user / "settings.json", {"extensions": [
+            "module:fox_coding_agent.src.extensions.subagent:setup",
+        ]})
+        outside = self.root / "outside.txt"
+        approved = []
+
+        async def before_tool(data, _cancel):
+            approved.append(data["tool_call"].name)
+            return None
+
+        stream = scripted(
+            FauxScript(tool_calls=[ToolCall(id="delegate", name="agent", arguments={
+                "description": "attempt outside write",
+                "prompt": "Try the requested write and report the result",
+                "type": "general",
+            })]),
+            FauxScript(tool_calls=[ToolCall(id="write", name="write", arguments={
+                "path": str(outside),
+                "content": "must not escape",
+            })]),
+            FauxScript(text="The outside write was blocked."),
+            FauxScript(text="parent completed"),
+        )
+        runtime = AgentSessionRuntime(
+            self.project,
+            user_dir=self.user,
+            model=FAUX_MODEL,
+            stream_fn=stream,
+            before_tool_call=before_tool,
+            project_trusted=True,
+        )
+        self.addAsyncCleanup(runtime.close)
+
+        await runtime.prompt("delegate the outside write")
+
+        self.assertFalse(outside.exists())
+        self.assertEqual(approved, ["agent"])
 
     def test_untrusted_projects_do_not_load_project_agent_profiles(self):
         write(self.user / "agents/shared.md", """---

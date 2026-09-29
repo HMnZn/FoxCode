@@ -167,6 +167,8 @@ def read_session_file(path: Path, *, live: bool = False) -> SessionFile | None:
     model: str | None = None
     usage: dict[str, float] = {}
     message_count = 0
+    entry_times: list[int] = []
+    activity_times: list[int] = []
 
     try:
         meta_obj = json.loads(lines[0])
@@ -191,6 +193,17 @@ def read_session_file(path: Path, *, live: bool = False) -> SessionFile | None:
             continue
         etype = entry.get("type")
         data = entry.get("data")
+        timestamp = _epoch_ms(entry.get("timestamp"), 0.0)
+        if not timestamp and isinstance(data, dict):
+            # Message timestamps use epoch milliseconds; entry timestamps use
+            # ISO strings. Older transcripts sometimes contain only the former.
+            raw = data.get("timestamp")
+            if isinstance(raw, (int, float)) and not isinstance(raw, bool) and raw > 0:
+                timestamp = int(raw)
+        if timestamp > 0:
+            entry_times.append(timestamp)
+            if etype in ("message", "compaction", "branch_summary"):
+                activity_times.append(timestamp)
         if etype == "message" and isinstance(data, dict):
             role = data.get("role")
             if role in ("user", "assistant"):
@@ -215,8 +228,15 @@ def read_session_file(path: Path, *, live: bool = False) -> SessionFile | None:
         path=path,
         session_id=session_id_from_path(path),
         cwd=cwd,
-        created_at=created_at or _iso(mtime),
-        updated_at=mtime,
+        created_at=created_at or (
+            datetime.fromtimestamp(min(entry_times) / 1000).astimezone().isoformat()
+            if entry_times else _iso(mtime)
+        ),
+        # Opening a session can refresh tool/configuration entries and its file
+        # mtime. Sidebar recency describes conversation activity, not disk I/O.
+        updated_at=max(activity_times) / 1000 if activity_times else (
+            min(entry_times) / 1000 if entry_times else mtime
+        ),
         message_count=message_count,
         title=title,
         model=model,

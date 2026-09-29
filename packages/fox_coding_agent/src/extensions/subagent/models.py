@@ -19,7 +19,19 @@ steps, critical files, verification, and risks. Do not modify files or run state
 
 GENERAL_PROMPT = """You are an isolated FoxCode sub-agent handling one bounded task.
 Use only the tools provided to you, complete the requested task, verify relevant work, and return a
-concise result for the parent agent. Do not create another sub-agent."""
+concise result for the parent agent. Do not create another sub-agent.
+
+All work must stay inside the current workspace. Use relative paths. Never create files in the OS
+temporary directory, the user profile, or another absolute path. If temporary files are necessary,
+put them under .foxcode/tmp and remove them before returning. Always reserve a final turn for a
+plain-text result; do not finish on a tool call."""
+
+TEST_PROMPT = """You are FoxCode's isolated verification sub-agent.
+Inspect and test the requested artifact without modifying the deliverable. You may run the provided
+shell tools. Keep every test helper, browser profile, screenshot, and other temporary artifact under
+.foxcode/tmp in the current workspace, then remove it before returning. Never use the OS temporary
+directory or any path outside the workspace. Return a concise plain-text report with checks run,
+evidence, failures, and remaining limitations. Always reserve a final turn for that report."""
 
 READ_ONLY_TOOLS = ("read", "grep", "find", "ls")
 
@@ -76,10 +88,14 @@ def built_in_agents() -> dict[str, SubAgentDefinition]:
             "general", "Independent task execution using the parent's enabled capabilities",
             GENERAL_PROMPT, None,
         ),
+        "test": SubAgentDefinition(
+            "test", "Independent verification with workspace-local temporary artifacts",
+            TEST_PROMPT, ("read", "grep", "find", "ls", "bash", "powershell"),
+        ),
     }
 
 
 __all__ = [
-    "GENERAL_PROMPT", "EXPLORE_PROMPT", "PLAN_PROMPT", "READ_ONLY_TOOLS",
+    "GENERAL_PROMPT", "TEST_PROMPT", "EXPLORE_PROMPT", "PLAN_PROMPT", "READ_ONLY_TOOLS",
     "SubAgentCatalog", "SubAgentDefinition", "SubAgentDiagnostic", "built_in_agents",
 ]

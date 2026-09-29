@@ -17,8 +17,13 @@ import { basename, shortPath } from '@/lib/format'
 import { HOME_TAB, useRail, type RailTab } from '@/store/railStore'
 import { useSession } from '@/store/sessionStore'
 import { useTerminal } from '@/store/terminalStore'
-import { useUi } from '@/store/uiStore'
+import { useUi, inspectorMaxWidth } from '@/store/uiStore'
+import { Splitter } from '@/components/layout/Splitter'
 import { cn } from '@/lib/cn'
+
+/** 没拖过时按内容给宽度：文件和终端要读，给宽一点；开始与文件列表只是导航。 */
+const WIDE_WIDTH = 520
+const NARROW_WIDTH = 360
 
 /** 标签上的名字：文件名、shell 名，或固定的「开始 / 文件」。 */
 function tabLabel(tab: RailTab, shell: string | null): string {
@@ -149,16 +154,39 @@ export function Inspector({ className }: { className?: string }) {
   const active = tabs.find((tab) => tab.id === activeId) ?? tabs[0] ?? HOME_TAB
   // 文件和终端是要读的东西，给宽一点；开始与文件列表是导航，窄一点就够。
   const wide = active.kind === 'file' || active.kind === 'terminal'
+  const storedWidth = useUi((s) => s.inspectorWidth)
+  const setInspectorWidth = useUi((s) => s.setInspectorWidth)
+  const sidebarWidth = useUi((s) => s.sidebarWidth)
+  const sidebarCollapsed = useUi((s) => s.sidebarCollapsed)
+  // 自动宽度也要夹：窗口不宽时 520px 的「宽」会把中列挤到读不了（用户报的挤占中间）。
+  const width = Math.min(
+    storedWidth ?? (wide ? WIDE_WIDTH : NARROW_WIDTH),
+    inspectorMaxWidth(sidebarWidth, sidebarCollapsed),
+  )
 
   return (
     <aside
       className={cn(
-        'flex shrink-0 flex-col border-l border-line bg-canvas transition-[width] duration-200',
-        wide ? 'w-[520px]' : 'w-[360px]',
+        'relative flex shrink-0 flex-col border-l border-line bg-canvas',
+        // 没拖过时保持「跟着内容变形」的动画；拖过之后宽度归用户，再加动画会跟手不及时。
+        storedWidth === null && 'transition-[width] duration-200',
         className,
       )}
+      style={{ width }}
       aria-label="工作区面板"
     >
+      {/* 右栏往左拖变宽，所以增量取反。 */}
+      <Splitter
+        label="调整工作区面板宽度"
+        className="absolute top-0 -left-[2px] h-full"
+        onResize={(delta) => {
+          // 先落到「当前实际宽度」再加速度：`??` 直接用 storedWidth 会把增量丢掉，
+          // 只有第一次（还没固定宽度时）能动 —— 拖一下就再也拖不动了。
+          const stored = useUi.getState().inspectorWidth
+          setInspectorWidth((stored ?? width) - delta)
+        }}
+        onReset={() => setInspectorWidth(null)}
+      />
       <RailTabs />
       <div className="flex min-h-0 flex-1 flex-col">
         {tabs.map((tab) => {

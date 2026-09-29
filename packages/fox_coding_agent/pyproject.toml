@@ -26,6 +26,9 @@ packages = [
     "fox_coding_agent.src.extensions",
     "fox_coding_agent.src.extensions.memory",
     "fox_coding_agent.src.extensions.mcp",
+    "fox_coding_agent.src.extensions.skill_evolution",
+    "fox_coding_agent.src.extensions.skill_evolution.fixtures",
+    "fox_coding_agent.src.extensions.skill_evolution.fixtures.evolution_eval",
     "fox_coding_agent.src.extensions.subagent",
     "fox_coding_agent.src.extensions.memory.fixtures",
     "fox_coding_agent.src.extensions.memory.fixtures.memory_eval",
@@ -38,11 +41,17 @@ packages = [
 "fox_coding_agent.src.extensions" = "src/extensions"
 "fox_coding_agent.src.extensions.memory" = "src/extensions/memory"
 "fox_coding_agent.src.extensions.mcp" = "src/extensions/mcp"
+"fox_coding_agent.src.extensions.skill_evolution" = "src/extensions/skill_evolution"
 "fox_coding_agent.src.extensions.subagent" = "src/extensions/subagent"
 
 [tool.setuptools.package-data]
 "fox_coding_agent.src.extensions.subagent" = ["SUBAGENT_DESIGN.md"]
 "fox_coding_agent.src.extensions.mcp" = ["MCP_DESIGN.md"]
+"fox_coding_agent.src.extensions.skill_evolution" = [
+    "SKILL_EVOLUTION_DESIGN.md",
+    "fixtures/evolution_eval/*.json",
+    "fixtures/evolution_eval/*.jsonl",
+]
 "fox_coding_agent.src.extensions.memory" = [
     "MEMORY_DESIGN.md",
     "MEMORY_TUTORIAL.md",

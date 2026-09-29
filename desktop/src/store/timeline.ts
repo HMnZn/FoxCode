@@ -49,6 +49,12 @@ export interface ToolCallState {
   updates: string[]
   result?: string
   isError?: boolean
+  /** Live context occupied by an isolated child agent running in this tool call. */
+  childContext?: {
+    contextTokens: number
+    outputTokens: number
+    estimated: boolean
+  }
   permissionId?: string
   decision?: PermissionDecision
 }
@@ -97,7 +103,8 @@ export interface ContextUsage {
   limit: number
   source: 'none' | 'usage' | 'compaction' | 'host'
   /**
-   * 兼容旧宿主的流式增量字段；新宿主直接回传完整后端快照，因此为 0。
+   * 当前运行中的隔离子 agent 上下文。它不属于父 agent 的模型上下文，
+   * 状态栏会单独标注，子 agent 结束后归零。
    *
    * token 估算由 Python coding backend 负责，前端不再重复分词/按字符计数。
    */
@@ -329,6 +336,28 @@ function findTool(blocks: Block[], toolCallId: string): ToolCallState | undefine
   return undefined
 }
 
+function activeChildContextTokens(blocks: Block[]): number {
+  return blocks.reduce((total, block) => {
+    if (block.kind !== 'tools') return total
+    return total + block.calls.reduce((sum, call) => {
+      if (call.status !== 'running' && call.status !== 'approved') return sum
+      return sum + (call.childContext?.contextTokens ?? 0)
+    }, 0)
+  }, 0)
+}
+
+function childContextFromDetails(details: Record<string, unknown> | undefined) {
+  const value = details?.context_usage
+  if (!value || typeof value !== 'object') return undefined
+  const usage = value as Record<string, unknown>
+  if (typeof usage.context_tokens !== 'number') return undefined
+  return {
+    contextTokens: Math.max(0, usage.context_tokens),
+    outputTokens: typeof usage.output_tokens === 'number' ? Math.max(0, usage.output_tokens) : 0,
+    estimated: usage.estimated !== false,
+  }
+}
+
 function usageToTotals(totals: UsageTotals, usage: Usage | undefined, toolCalls = 0): UsageTotals {
   if (!usage && toolCalls === 0) return totals
   return {
@@ -433,11 +462,20 @@ function foldFrame(state: TimelineState, frame: HostFrame): TimelineState {
           : block,
       )
       const hasPendingPermission = state.permissions.length > 0
+      // 一轮结束 ≠ 整轮结束：带工具的一轮之后宿主马上还要跑下一轮（`agent_loop.py` 每个工具批次之间
+      // 都发 `turn_end`，只有整轮跑完才发 `agent_end`）。这里以前写 `idle`，界面就在工具执行期间
+      // 中途解锁，排队的消息被当成新 `prompt` 发出去，宿主回
+      // `RuntimeError: Harness is already processing. Use steer() or follow_up(...)` —— 那条消息
+      // 既没被执行，也从队列里消失了。所以这里只收掉「流式中」标记，状态交给 `agent_end`/`error`。
       return {
         ...state,
         blocks,
-        status: hasPendingPermission ? 'awaiting-approval' : 'idle',
-        activity: hasPendingPermission ? '等待授权' : '空闲',
+        status: hasPendingPermission
+          ? 'awaiting-approval'
+          : state.status === 'idle'
+            ? 'idle'
+            : 'streaming',
+        activity: hasPendingPermission ? '等待授权' : '工具执行中',
       }
     }
 
@@ -518,6 +556,23 @@ function foldFrame(state: TimelineState, frame: HostFrame): TimelineState {
           }
         }
         case 'error':
+          if (
+            event.reason === 'aborted' &&
+            state.blocks.some(
+              (block) => block.kind === 'user' && block.queued === 'steer',
+            )
+          ) {
+            return {
+              ...state,
+              status: 'streaming',
+              activity: '正在处理插话',
+              blocks: state.blocks.map((block) =>
+                block.kind === 'assistant' && (block.textStreaming || block.thinkingStreaming)
+                  ? { ...block, textStreaming: false, thinkingStreaming: false }
+                  : block,
+              ),
+            }
+          }
           return {
             ...state,
             status: 'error',
@@ -544,6 +599,19 @@ function foldFrame(state: TimelineState, frame: HostFrame): TimelineState {
       const message = frame.message
       if (message.role === 'user') {
         const text = messageText(message)
+        const queuedIndex = state.blocks.findIndex(
+          (block) => block.kind === 'user' && block.queued && block.text === text,
+        )
+        if (queuedIndex >= 0) {
+          return {
+            ...state,
+            blocks: state.blocks.map((block, index) =>
+              index === queuedIndex && block.kind === 'user'
+                ? { ...block, queued: undefined }
+                : block,
+            ),
+          }
+        }
         const last = state.blocks[state.blocks.length - 1]
         if (last && last.kind === 'user' && last.text === text) return state
         return {
@@ -572,7 +640,9 @@ function foldFrame(state: TimelineState, frame: HostFrame): TimelineState {
             usage: message.usage ?? existing.usage,
             model: message.model ?? existing.model,
             stopReason: message.stopReason ?? existing.stopReason,
-            error: message.errorMessage ?? existing.error,
+            error: message.stopReason === 'aborted'
+              ? undefined
+              : message.errorMessage ?? existing.error,
           }
           return {
             ...state,
@@ -595,6 +665,7 @@ function foldFrame(state: TimelineState, frame: HostFrame): TimelineState {
           usage: message.usage,
           model: message.model,
           stopReason: message.stopReason,
+          error: message.stopReason === 'aborted' ? undefined : message.errorMessage ?? undefined,
         }
         return {
           ...state,
@@ -605,11 +676,13 @@ function foldFrame(state: TimelineState, frame: HostFrame): TimelineState {
         }
       }
       // toolResult
+      const childContext = childContextFromDetails(message.details ?? undefined)
       const patch: Partial<ToolCallState> = {
         result: messageText(message),
         isError: message.isError,
         status: message.isError ? 'error' : 'success',
         endedAt: ts,
+        ...(childContext ? { childContext } : {}),
       }
       return { ...state, blocks: patchTool(state.blocks, message.toolCallId, patch) }
     }
@@ -667,11 +740,20 @@ function foldFrame(state: TimelineState, frame: HostFrame): TimelineState {
         typeof frame.partial_result === 'string'
           ? frame.partial_result
           : JSON.stringify(frame.partial_result)
+      const childContext = childContextFromDetails(frame.details)
+      const updates = existing.updates.at(-1) === line
+        ? existing.updates
+        : [...existing.updates, line]
+      const blocks = patchTool(state.blocks, frame.tool_call_id, {
+        updates,
+        ...(childContext ? { childContext } : {}),
+      })
       return {
         ...state,
-        blocks: patchTool(state.blocks, frame.tool_call_id, {
-          updates: [...existing.updates, line],
-        }),
+        blocks,
+        context: childContext
+          ? { ...state.context, live: activeChildContextTokens(blocks), updatedAt: ts }
+          : state.context,
       }
     }
 
@@ -681,15 +763,19 @@ function foldFrame(state: TimelineState, frame: HostFrame): TimelineState {
       const result =
         typeof frame.result === 'string' ? frame.result : safeStringify(frame.result)
       const status: ToolStatus = denied ? 'blocked' : frame.is_error ? 'error' : 'success'
+      const childContext = childContextFromDetails(frame.details)
+      const blocks = patchTool(state.blocks, frame.tool_call_id, {
+        status,
+        result,
+        isError: frame.is_error,
+        endedAt: ts,
+        ...(childContext ? { childContext } : {}),
+      })
       return {
         ...state,
         activity: '空闲',
-        blocks: patchTool(state.blocks, frame.tool_call_id, {
-          status,
-          result,
-          isError: frame.is_error,
-          endedAt: ts,
-        }),
+        blocks,
+        context: { ...state.context, live: activeChildContextTokens(blocks), updatedAt: ts },
         totals:
           existing && existing.status !== 'success' && status === 'success'
             ? state.totals

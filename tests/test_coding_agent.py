@@ -16,7 +16,7 @@ from fox_ai.src import TextContent, ToolCall, UserMessage
 from fox_ai.src.providers.faux import FAUX_MODEL, FauxScript
 from fox_agent_core.src import AgentToolResult
 from fox_coding_agent.src import (
-    AgentSessionRuntime, ExtensionRunner, FindTool, GrepTool, LsTool, ModelConfig,
+    AgentSessionRuntime, BashTool, ExtensionRunner, FindTool, GrepTool, LsTool, ModelConfig,
     ModelRegistry, PowerShellTool,
     ResourceLoader, SettingsManager, ReadTool, WriteTool, build_system_prompt,
 )
@@ -78,11 +78,48 @@ class CodingToolTests(Workspace, unittest.IsolatedAsyncioTestCase):
 
     async def test_powershell_argument_vector_and_missing_executable(self):
         tool = PowerShellTool(self.project, shell="pwsh-test")
-        self.assertEqual(tool._command("Write-Output 'a;b'"),
-                         ["pwsh-test", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "Write-Output 'a;b'"])
+        command = tool._command("Write-Output 'a;b'")
+        self.assertEqual(command[:5],
+                         ["pwsh-test", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command"])
+        self.assertIn("[Console]::OutputEncoding", command[-1])
+        self.assertTrue(command[-1].endswith("Write-Output 'a;b'"))
         with patch("fox_coding_agent.src.core.tools.shutil.which", return_value=None):
             with self.assertRaisesRegex(RuntimeError, "PowerShell"):
                 await PowerShellTool(self.project).execute("ps", {"command": "echo hello"})
+
+    @unittest.skipUnless(
+        shutil.which("pwsh") or shutil.which("powershell"),
+        "PowerShell is unavailable",
+    )
+    async def test_powershell_uses_utf8_and_workspace_local_temp(self):
+        result = await PowerShellTool(self.project).execute(
+            "ps", {"command": "Write-Output '中文正常'; Write-Output $env:TEMP"}
+        )
+        text = result.content[0].text
+        self.assertIn("中文正常", text)
+        self.assertIn(str(self.project / ".foxcode" / "tmp").lower(), text.lower())
+
+        script = self.project / "中文脚本.ps1"
+        await WriteTool(self.project).execute(
+            "write-ps1",
+            {"path": script.name, "content": "Write-Output '脚本中文正常'\n"},
+        )
+        self.assertTrue(script.read_bytes().startswith(b"\xef\xbb\xbf"))
+        script_result = await PowerShellTool(self.project).execute(
+            "run-ps1", {"command": f"& '{script}'"}
+        )
+        self.assertIn("脚本中文正常", script_result.content[0].text)
+
+    @unittest.skipUnless(
+        os.name == "nt" and (shutil.which("bash") or "").lower().endswith("system32\\bash.exe"),
+        "Windows WSL bash launcher is unavailable",
+    )
+    async def test_wsl_bash_uses_mnt_workspace_temp(self):
+        tool = BashTool(self.project)
+        result = await tool.execute("bash", {"command": "printf '%s' \"$TEMP\""})
+        expected = "/mnt/" + str(self.project / ".foxcode" / "tmp")[0].lower()
+        self.assertTrue(result.content[0].text.startswith(expected + "/"))
+        self.assertIn("Windows bash may be WSL", tool.description)
 
 
 class SystemPromptTests(Workspace, unittest.TestCase):

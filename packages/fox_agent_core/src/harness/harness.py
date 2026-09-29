@@ -92,6 +92,9 @@ class AgentHarness:
     def follow_up(self, message: str | AgentMessage) -> None:
         self.agent.follow_up(message)
 
+    def promote_follow_ups(self) -> int:
+        return self.agent.promote_follow_ups()
+
     def abort(self) -> None:
         self.agent.abort()
 

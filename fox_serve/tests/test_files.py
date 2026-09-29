@@ -254,6 +254,20 @@ class RepoWorkspaceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("+++ b/brand.txt", str(payload["diff"]))
         self.assertIn("+hello", str(payload["diff"]))
 
+    async def test_diff_for_untracked_file_before_first_commit(self) -> None:
+        unborn = _temp_dir("test-unborn-repo-")
+        try:
+            _git("init", "--quiet", cwd=unborn)
+            (unborn / "first.txt").write_text("first project file\n", encoding="utf-8")
+            payload = await diff(unborn, "first.txt")
+            self.assertIsNone(payload["error"])
+            self.assertTrue(payload["untracked"])
+            self.assertEqual(payload["additions"], 1)
+            self.assertIn("+++ b/first.txt", str(payload["diff"]))
+            self.assertIn("+first project file", str(payload["diff"]))
+        finally:
+            _drop(unborn)
+
     async def test_diff_and_read_accept_absolute_paths(self) -> None:
         self.tracked.write_text("one\ntwo\nthree\nfour\nfive\n", encoding="utf-8")
         payload = await diff(self.repo, str(self.tracked))

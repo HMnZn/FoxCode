@@ -65,6 +65,10 @@ fox CLI / Notebook
 
 Memory v2 的受控写入、冲突版本、混合检索、预算化注入、50/120 golden set 和消融实验，见[循序教学文档](packages/fox_coding_agent/src/extensions/memory/MEMORY_TUTORIAL.md)与[设计说明](packages/fox_coding_agent/src/extensions/memory/MEMORY_DESIGN.md)。
 
+子 Agent 同样是可选扩展：在 `extensions` 中加入 `module:fox_coding_agent.src.extensions.subagent:setup` 启用，模型侧只暴露一个 `agent` 工具，人工审计用 `/agents`（列出内置与自定义 profile、`allowed-tools`、来源和加载诊断）。它把一个有界任务派发给上下文隔离、能力受限的子会话，父会话只收到最终文本报告与用量，因此长探索不会挤占父会话预算。内置 profile 有 `explore`、`plan`、`general`、`test` 四个，自定义 profile 从用户目录 `agents/*.md` 与受信项目的 `.foxcode/agents/*.md` 加载。委派不会放宽边界：子会话工具是父级已启用工具与 profile 声明的交集，且每次调用都要穿过能力集、文件系统边界和父级审批链三道闸门。原理、代码走读与动手实验见[循序教学文档](packages/fox_coding_agent/src/extensions/subagent/SUBAGENT_TUTORIAL.md)，字段级契约见[设计说明](packages/fox_coding_agent/src/extensions/subagent/SUBAGENT_DESIGN.md)。
+
+MCP 扩展让 FoxCode 以**普通工具**的身份使用外部 MCP 服务器：在 `extensions` 中加入 `module:fox_coding_agent.src.extensions.mcp:setup` 启用，服务器定义写在用户目录的 `mcp.json` 与受信项目的 `.foxcode/mcp.json` 中，人工审计用 `/mcp`（服务器状态、协商到的协议版本、代理工具与配置诊断）。设计原则是「零特殊通道」——每个远端工具被包装成一个走既有参数校验、权限和事件流的普通工具，因此核心循环不需要知道 MCP 的存在；代理仅在运行时注册，不写入持久化的 `active_tools`，恢复的会话不会依赖一个已不再配置的服务器。协议协商、进程组回收、结果映射与动手实验见[循序教学文档](packages/fox_coding_agent/src/extensions/mcp/MCP_TUTORIAL.md)，字段级契约见[设计说明](packages/fox_coding_agent/src/extensions/mcp/MCP_DESIGN.md)。
+
 ## 运行离线示例
 
 需要 Python 3.14+，在项目根目录运行：

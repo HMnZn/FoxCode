@@ -20,6 +20,10 @@ const DEV_URL = process.env.VITE_DEV_SERVER_URL
 const SHOT_PATH = process.env.FOXCODE_SHOT
 const SHOT_CLICK = process.env.FOXCODE_SHOT_CLICK
 const SHOT_EVAL = process.env.FOXCODE_SHOT_EVAL
+const SHOT_EVAL_RESULT = process.env.FOXCODE_SHOT_EVAL_RESULT
+const SHOT_WORKSPACE = process.env.FOXCODE_SHOT_WORKSPACE
+const SHOT_RECENT_WORKSPACE = process.env.FOXCODE_SHOT_RECENT_WORKSPACE
+const SHOT_EVAL_STRICT = process.env.FOXCODE_SHOT_EVAL_STRICT === '1'
 const SERVE_CMD = process.env.FOXCODE_SERVE_CMD
 const SERVE_ARGS = (process.env.FOXCODE_SERVE_ARGS ?? '').split(' ').filter(Boolean)
 const SHELL_BG = '#151517'
@@ -130,7 +134,7 @@ function createWindow() {
  * empty state. Polls briefly because the renderer mounts asynchronously.
  */
 function driveShot() {
-  if (!SHOT_CLICK && !SHOT_EVAL) return Promise.resolve()
+  if (!SHOT_CLICK && !SHOT_EVAL && !SHOT_WORKSPACE) return Promise.resolve()
   const steps = (SHOT_CLICK ?? '')
     .split('+')
     .map((step) => step.trim())
@@ -166,6 +170,24 @@ function driveShot() {
 
   return (async () => {
     await new Promise((resolve) => setTimeout(resolve, 350))
+    // Deterministic real-host UI tests must get past the first-launch workspace
+    // gate without automating an OS-native folder dialog. Seed exactly the same
+    // persisted value that a successful picker writes, then reload once so the
+    // renderer/store boot from it normally.
+    if (SHOT_WORKSPACE && win && !win.isDestroyed()) {
+      const persisted = JSON.stringify({
+        current: SHOT_WORKSPACE,
+        recent: [SHOT_WORKSPACE, SHOT_RECENT_WORKSPACE].filter(Boolean),
+        aliases: {},
+        hidden: [],
+      })
+      const loaded = new Promise((resolve) => win.webContents.once('did-finish-load', resolve))
+      await win.webContents.executeJavaScript(
+        `localStorage.setItem('foxcode.workspace.v1', ${JSON.stringify(persisted)}); location.reload()`,
+      )
+      await loaded
+      await new Promise((resolve) => setTimeout(resolve, 500))
+    }
     for (const needle of steps) {
       const hit = await clickOnce(needle)
       console.log(`shot click ${hit ? 'ok' : 'miss'}: ${needle}`)
@@ -176,8 +198,15 @@ function driveShot() {
       try {
         const value = await win.webContents.executeJavaScript(SHOT_EVAL)
         console.log(`shot eval: ${JSON.stringify(value)}`)
+        if (SHOT_EVAL_RESULT) {
+          const target = path.resolve(process.cwd(), SHOT_EVAL_RESULT)
+          fs.mkdirSync(path.dirname(target), { recursive: true })
+          fs.writeFileSync(target, `${JSON.stringify(value, null, 2)}\n`, 'utf8')
+          console.log(`shot eval result written: ${target}`)
+        }
       } catch (error) {
         console.error('shot eval failed:', error)
+        if (SHOT_EVAL_STRICT) throw error
       }
     }
   })()

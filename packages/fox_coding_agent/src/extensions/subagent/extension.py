@@ -63,11 +63,14 @@ class SubAgentService:
         if definition.allowed_tools is None:
             return list(available.values())
         missing = set(definition.allowed_tools) - available.keys()
-        if missing:
+        if missing and definition.source != "built-in":
             raise ValueError(
                 f"Sub-agent '{definition.name}' requests unavailable tools: {sorted(missing)}"
             )
-        return [available[name] for name in definition.allowed_tools]
+        # Built-ins describe a portable maximum capability set. For example,
+        # PowerShell is normally inactive on Linux; the test profile should
+        # still run with bash instead of failing profile validation.
+        return [available[name] for name in definition.allowed_tools if name in available]
 
     async def run(
         self,
@@ -94,6 +97,21 @@ class SubAgentService:
             tool = next((item for item in tools if item.name == data["tool_call"].name), None)
             if tool is None:
                 return {"block": True, "reason": "Tool is outside the sub-agent capability set"}
+            # Delegation must not silently widen the filesystem boundary.  In
+            # particular, a parent running with full access should not let a
+            # child write to AppData/TEMP merely because the model picked an
+            # absolute scratch path.  Shell tools are additionally given a
+            # workspace-local TEMP by BashTool/PowerShellTool.
+            if (
+                getattr(tool, "required_permission", None) == "workspace-modify"
+                and getattr(tool, "permission_paths", ())
+            ):
+                reason = check_tool_permission(tool, data["args"], context.cwd, "workspace-modify")
+                if reason:
+                    return {
+                        "block": True,
+                        "reason": "Sub-agent filesystem boundary: " + reason,
+                    }
             # A child must go through the same host approval/audit chain as its
             # parent. In the desktop host the runtime itself is deliberately
             # built as full-access and the real user-selected policy lives in
@@ -137,11 +155,24 @@ class SubAgentService:
         ))
         self._children.add(child)
         started_at = time.monotonic()
-        progress = {"phase": "正在启动"}
+        progress = {
+            "phase": "正在启动",
+            "context_tokens": 0,
+            "output_tokens": 0,
+            "estimated": True,
+            "last_report_at": 0.0,
+        }
 
         def report_progress(*, force: bool = False) -> None:
             if on_update is None:
                 return
+            now = time.monotonic()
+            # Message deltas can arrive several times per token.  A short
+            # throttle keeps live accounting responsive without flooding the
+            # desktop pipe with near-identical tool update frames.
+            if not force and now - progress["last_report_at"] < 0.2:
+                return
+            progress["last_report_at"] = now
             elapsed = max(0, int(time.monotonic() - started_at))
             text = f"子 Agent 运行中 · {elapsed}s · {progress['phase']}"
             on_update(_result(
@@ -150,6 +181,11 @@ class SubAgentService:
                 description=description,
                 elapsed_seconds=elapsed,
                 heartbeat=not force,
+                context_usage={
+                    "context_tokens": progress["context_tokens"],
+                    "output_tokens": progress["output_tokens"],
+                    "estimated": progress["estimated"],
+                },
             ))
 
         async def relay_child_event(event, _child_cancel_event) -> None:
@@ -165,6 +201,20 @@ class SubAgentService:
             elif kind == "tool_execution_end":
                 progress["phase"] = f"已完成 {getattr(event, 'tool_name', '工具')}，继续处理"
                 report_progress(force=True)
+            elif kind == "message_update":
+                usage = getattr(event, "context_usage", None)
+                if usage is not None:
+                    progress["context_tokens"] = max(
+                        0, int(getattr(usage, "context_tokens", 0) or 0)
+                    )
+                    progress["output_tokens"] = max(
+                        0, int(getattr(usage, "output_tokens", 0) or 0)
+                    )
+                    progress["estimated"] = bool(getattr(usage, "estimated", True))
+                    stream_event = getattr(event, "assistant_message_event", None)
+                    report_progress(force=getattr(stream_event, "type", "") in {
+                        "done", "text_end", "thinking_end", "toolcall_end",
+                    })
 
         async def heartbeat() -> None:
             while True:
@@ -194,13 +244,22 @@ class SubAgentService:
                 raise RuntimeError(final.error_message or "Sub-agent failed")
             text = "\n".join(
                 block.text for block in final.content if isinstance(block, TextContent)
-            ).strip() or "(Sub-agent produced no text output)"
+            ).strip()
+            if not text:
+                raise RuntimeError(
+                    "Sub-agent ended without a final text report; narrow the task or increase its turn budget"
+                )
             usage = child.session.usage_totals()
             return _result(
                 text,
                 agent_type=agent_type,
                 description=description,
                 usage=usage,
+                context_usage={
+                    "context_tokens": progress["context_tokens"],
+                    "output_tokens": progress["output_tokens"],
+                    "estimated": progress["estimated"],
+                },
             )
         finally:
             for task in (heartbeat_task, cancel_task):
@@ -230,7 +289,8 @@ class SubAgentTool:
     execution_mode = "parallel"
     description = (
         "Run one isolated sub-agent and return its final report. Built-ins: explore (read-only), "
-        "plan (read-only), general (enabled parent tools). Custom types come from .foxcode/agents."
+        "plan (read-only), test (verification with workspace-local temp files), general (enabled "
+        "parent tools). Custom types come from .foxcode/agents."
     )
     parameters = {
         "type": "object",
@@ -266,7 +326,9 @@ def create_subagent_extension(config: SubAgentExtensionConfig | None = None):
         api.register_tool(tool)
         api.add_prompt_guideline(
             "Use the agent tool for bounded delegated work when isolation or independent exploration helps; "
-            "include all necessary context in its prompt and do not duplicate its work."
+            "include all necessary context in its prompt and do not duplicate its work. Use the test type "
+            "for verification. Sub-agents must keep all files, including temporary artifacts, inside the "
+            "current workspace."
         )
 
         def session_start(data, context):

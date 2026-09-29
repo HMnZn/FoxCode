@@ -61,6 +61,38 @@ describe('timeline reducer', () => {
     expect(state.status).toBe('streaming')
   })
 
+  it('settles an existing queued bubble when the backend consumes it', () => {
+    const queued: TimelineState = {
+      ...EMPTY_TIMELINE,
+      blocks: [
+        { kind: 'user', id: 'queued', ts: 1, text: '任务完成后继续', queued: 'follow_up' },
+      ],
+    }
+
+    const state = run([userMessage('任务完成后继续')], queued)
+
+    expect(state.blocks).toHaveLength(1)
+    expect(state.blocks[0].kind === 'user' && state.blocks[0].queued).toBeUndefined()
+  })
+
+  it('treats an abort caused by steering as a continuation instead of an error', () => {
+    const steering: TimelineState = {
+      ...EMPTY_TIMELINE,
+      status: 'streaming',
+      blocks: [
+        { kind: 'user', id: 'steer', ts: 1, text: '现在改做这个', queued: 'steer' },
+      ],
+    }
+
+    const state = run([
+      stream({ type: 'error', reason: 'aborted', message: 'Operation aborted' }),
+    ], steering)
+
+    expect(state.status).toBe('streaming')
+    expect(state.activity).toBe('正在处理插话')
+    expect(state.blocks.some((block) => block.kind === 'notice')).toBe(false)
+  })
+
   it('folds streamed deltas into a single assistant block', () => {
     const state = run([
       { type: 'turn_start' },
@@ -74,6 +106,24 @@ describe('timeline reducer', () => {
     const assistant = onlyAssistant(state.blocks)
     expect(assistant.text).toBe('Hello')
     expect(assistant.textStreaming).toBe(false)
+  })
+
+  it('settles an interrupted thinking reply without showing a model error', () => {
+    const state = run([
+      { type: 'agent_start' },
+      stream({ type: 'thinking_delta', content_index: 0, delta: 'Planning the file edit' }),
+      { type: 'message_end', message: {
+        role: 'assistant', content: [{ type: 'thinking', thinking: 'Planning the file edit' }],
+        stopReason: 'aborted', errorMessage: 'Operation aborted',
+      } },
+      { type: 'agent_end' },
+    ])
+    expect(onlyAssistant(state.blocks).error).toBeUndefined()
+    expect(onlyAssistant(state.blocks).stopReason).toBe('aborted')
+    const replay = run([{ type: 'message_end', message: {
+      role: 'assistant', content: [], stopReason: 'error', errorMessage: 'provider rejected request',
+    } }])
+    expect(onlyAssistant(replay.blocks).error).toBe('provider rejected request')
   })
 
   it('keeps thinking text separate from the answer', () => {
@@ -128,6 +178,46 @@ describe('timeline reducer', () => {
     expect(state.totals.toolCalls).toBe(1)
   })
 
+  it('tracks a sub-agent context live and clears it when the tool ends', () => {
+    const running = run([
+      {
+        type: 'tool_execution_start',
+        tool_call_id: 'child-1',
+        tool_name: 'agent',
+        args: { description: '验证项目' },
+      },
+      {
+        type: 'tool_execution_update',
+        tool_call_id: 'child-1',
+        partial_result: '子 Agent 运行中 · 正在思考',
+        details: {
+          context_usage: {
+            context_tokens: 12_345,
+            output_tokens: 678,
+            estimated: true,
+          },
+        },
+      },
+    ])
+
+    expect(running.context.live).toBe(12_345)
+    expect(toolCalls(running.blocks)[0].childContext).toEqual({
+      contextTokens: 12_345,
+      outputTokens: 678,
+      estimated: true,
+    })
+
+    const ended = applyFrame(running, frame({
+      type: 'tool_execution_end',
+      tool_call_id: 'child-1',
+      tool_name: 'agent',
+      result: '验证完成',
+      is_error: false,
+    }))
+    expect(ended.context.live).toBe(0)
+    expect(toolCalls(ended.blocks)[0].childContext?.contextTokens).toBe(12_345)
+  })
+
   it('adds usage from the settled assistant message to the totals', () => {
     const state = run([
       {
@@ -148,6 +238,26 @@ describe('timeline reducer', () => {
     const assistant = onlyAssistant(state.blocks)
     expect(assistant.model).toBe('deepseek-v4-flash')
     expect(assistant.stopReason).toBe('stop')
+  })
+
+  it('stays busy across turn_end while tools are still running', () => {
+    const state = run([
+      { type: 'agent_start' },
+      { type: 'turn_start' },
+      stream({ type: 'text_start', content_index: 0 }),
+      stream({ type: 'text_delta', content_index: 0, delta: '先读文件' }),
+      { type: 'turn_end' },
+    ])
+
+    // 宿主每个工具批次之间都会发 `turn_end`（只有整轮跑完才发 `agent_end`，见
+    // `packages/fox_agent_core/src/agent_loop.py`）。这里要是降级成 `idle`，界面就会在
+    // 工具还在跑的时候解锁：排队消息被当成新 `prompt` 发出去，宿主回
+    // `RuntimeError: Harness is already processing`，那条消息既没被执行也从队列里消失。
+    expect(state.status).toBe('streaming')
+    expect(state.activity).toBe('工具执行中')
+
+    const ended = applyFrame(state, frame({ type: 'agent_end', messages: [] }))
+    expect(ended.status).toBe('idle')
   })
 
   it('settles idempotently when a run ends twice', () => {

@@ -43,7 +43,7 @@ function UserBubble({ block }: { block: UserBlock }) {
         </div>
         {block.queued ? (
           <Chip size="xs" tone="info">
-            {block.queued === 'steer' ? '已插入队列（打断式）' : '排队中（等当前回合结束）'}
+            {block.queued === 'steer' ? '插话中' : '排队中（当前任务结束后发送）'}
           </Chip>
         ) : null}
       </div>
@@ -71,7 +71,7 @@ function AssistantBlockView({ block }: { block: AssistantBlock }) {
         )
       ) : null}
 
-      {block.error ? (
+      {block.error && block.stopReason !== 'aborted' ? (
         <NoticePart tone="danger" title="本轮出错" description={block.error} />
       ) : null}
 

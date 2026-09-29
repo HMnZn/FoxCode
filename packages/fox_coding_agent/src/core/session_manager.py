@@ -350,13 +350,32 @@ class SessionManager:
 
         - compaction 条目：展开为 summary 文本 + retained_tail 消息。
         - message 条目：直接取 data。
+        - 空的失败/中止 assistant 条目保留在审计树中，但不再发给模型；OpenAI
+          兼容接口会拒绝既没有 content 也没有 tool_calls 的历史消息。这个情况最常见于
+          首个流式分片到达前立即中止并插话。
         - 其他类型条目：跳过（不影响消息序列）。
         """
         messages: list[Message] = []
+
+        def append_replayable(message: Message) -> None:
+            if isinstance(message, AssistantMessage):
+                if not message.content:
+                    return
+                # An interrupted reasoning stream is nonempty internally but
+                # has no assistant content/tool_calls on the provider wire.
+                # Keep it in the audit tree; never replay that unfinished turn.
+                if message.stop_reason in ("aborted", "error") and not any(
+                    isinstance(block, ToolCall)
+                    or (isinstance(block, TextContent) and block.text.strip())
+                    for block in message.content
+                ):
+                    return
+            messages.append(message.model_copy(deep=True))
+
         for entry in self.get_branch():
             if entry.type == "message":
                 if isinstance(entry.data, (UserMessage, AssistantMessage, ToolResultMessage)):
-                    messages.append(entry.data.model_copy(deep=True))
+                    append_replayable(entry.data)
             elif entry.type == "compaction" and isinstance(entry.data, dict):
                 summary = entry.data.get("summary", "")
                 if summary:
@@ -367,7 +386,7 @@ class SessionManager:
                     if isinstance(raw, dict):
                         msg = _deserialize_message(raw)
                         if isinstance(msg, (UserMessage, AssistantMessage, ToolResultMessage)):
-                            messages.append(msg)
+                            append_replayable(msg)
         return messages
 
     def move_to(self, entry_id: str | None) -> None:

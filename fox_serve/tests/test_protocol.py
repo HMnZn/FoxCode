@@ -64,6 +64,13 @@ class _FakeToolEnd:
 
 
 @dataclasses.dataclass
+class _FakeToolUpdate:
+    tool_call_id: str
+    partial_result: object
+    type: str = "tool_execution_update"
+
+
+@dataclasses.dataclass
 class _FakeMessageUpdate:
     assistant_message_event: object
     message: object = None
@@ -161,6 +168,22 @@ class EventPayloadTests(unittest.TestCase):
         assert payload is not None
         self.assertEqual(payload["result"], "done\n\n[exit 0]")
         self.assertFalse(payload["is_error"])
+        self.assertEqual(payload["details"], {"exit_code": 0})
+
+    def test_tool_execution_update_keeps_structured_progress_details(self) -> None:
+        payload = event_payload(_FakeToolUpdate(
+            "agent_1",
+            _FakeToolResult("子 Agent 运行中", {
+                "context_usage": {
+                    "context_tokens": 4321,
+                    "output_tokens": 123,
+                    "estimated": True,
+                },
+            }),
+        ))
+        assert payload is not None
+        self.assertEqual(payload["partial_result"], "子 Agent 运行中")
+        self.assertEqual(payload["details"]["context_usage"]["context_tokens"], 4321)
 
     def test_message_update_sends_only_delta_and_backend_usage(self) -> None:
         message = _AliasedModel({"role": "assistant"}, {"role": "role"})

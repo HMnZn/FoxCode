@@ -8,7 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from fox_ai.src import AssistantMessage, EventStream, StartEvent, TextContent, ToolCall, ToolResultMessage, UserMessage
+from fox_ai.src import AssistantMessage, EventStream, StartEvent, TextContent, ThinkingContent, ToolCall, ToolResultMessage, UserMessage
 from fox_ai.src.providers.faux import FAUX_MODEL, FauxScript, clear_scripts, faux_api_provider, push_script
 from fox_agent_core.src import (
     Agent, AgentOptions, AgentContext, AgentLoopConfig, AgentState, AgentToolResult, agent_loop, agent_loop_continue
@@ -117,6 +117,21 @@ class AgentTests(unittest.IsolatedAsyncioTestCase):
         users = [m.content[0].text for m in agent.state.messages if isinstance(m, UserMessage)]
         self.assertEqual(users, ["begin", "steer 1", "steer 2", "follow 1", "follow 2"])
         self.assertEqual(len(stream.contexts), 4)
+        self.assertFalse(agent.has_queued_messages())
+
+    async def test_promote_follow_ups_moves_every_pending_message_to_steering(self):
+        stream = scripted(FauxScript(text="ok"))
+        agent = make_agent(stream)
+        agent.follow_up("follow 1")
+        agent.follow_up("follow 2")
+
+        self.assertEqual(agent.promote_follow_ups(), 2)
+        agent.steer("interrupt now")
+        await agent.prompt("begin")
+
+        users = [m.content[0].text for m in agent.state.messages if isinstance(m, UserMessage)]
+        self.assertEqual(users, ["begin", "follow 1", "follow 2", "interrupt now"])
+        self.assertEqual(len(stream.contexts), 1)
         self.assertFalse(agent.has_queued_messages())
 
     async def test_continue_consumes_only_one_initial_steering(self):
@@ -336,6 +351,65 @@ class SessionAndHarnessTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(restored.get_entries()), count)
         with self.assertRaises(ValueError):
             restored.move_to("missing")
+
+    async def test_empty_aborted_assistant_is_audited_but_not_replayed(self):
+        """An immediate steer can abort before the first model delta arrives.
+
+        Keep that terminal event in the durable session for diagnostics, but do
+        not send an invalid ``assistant(content=[])`` back to OpenAI-compatible
+        providers on the resumed request.
+        """
+
+        file = self.path / "session.jsonl"
+        session = SessionManager(JsonlSessionStorage(file))
+        session.append_message(UserMessage(content="long request"))
+        session.append_message(
+            AssistantMessage(content=[], stop_reason="aborted", error_message="Operation aborted")
+        )
+        session.append_message(UserMessage(content="interrupt now"))
+
+        restored = SessionManager(JsonlSessionStorage(file))
+        self.assertEqual(len(restored.get_entries()), 3)
+        context = restored.build_context()
+        self.assertEqual([message.role for message in context], ["user", "user"])
+        self.assertEqual(context[-1].content, "interrupt now")
+
+        # The same guard applies when an old compaction retained an empty
+        # assistant message.
+        restored.append_compaction(
+            "summary",
+            [AssistantMessage(content=[], stop_reason="error", error_message="provider failed")],
+        )
+        compacted = restored.build_context()
+        self.assertEqual(len(compacted), 1)
+        self.assertIn("summary", compacted[0].content)
+
+    async def test_reasoning_only_abort_after_tools_can_resume_and_reload(self):
+        session = SessionManager(JsonlSessionStorage(self.path / "reasoning-abort.jsonl"))
+        session.append_message(UserMessage(content="make an html page"))
+        session.append_message(AssistantMessage(content=[call()], stop_reason="toolUse"))
+        session.append_message(ToolResultMessage(
+            tool_call_id="a", tool_name="echo", content=[TextContent(text="file read")],
+        ))
+        interrupted = AssistantMessage(
+            content=[ThinkingContent(thinking="I will now update that file"), TextContent(text="")],
+            stop_reason="aborted", error_message="Operation aborted",
+        )
+        session.append_message(interrupted)
+        stream = scripted(FauxScript(text="dynamic page ready"))
+        harness = AgentSession(AgentSessionConfig(
+            model=FAUX_MODEL, session=session, cwd=self.path, skills=[],
+            tools=[echo_tool()], stream_fn=stream,
+        ))
+        harness.steer("make it dynamic")
+        await harness.continue_()
+        self.assertEqual([m.role for m in stream.contexts[0].messages],
+                         ["user", "assistant", "toolResult", "user"])
+        restored = SessionManager(JsonlSessionStorage(self.path / "reasoning-abort.jsonl"))
+        self.assertTrue(any(e.type == "message" and e.data == interrupted for e in restored.get_entries()))
+        self.assertEqual(restored.build_context()[-1].content[0].text, "dynamic page ready")
+        restored.append_compaction("summary", [interrupted])
+        self.assertEqual(len(restored.build_context()), 1)
 
     async def test_harness_persists_tools_and_restores_configuration(self):
         file = self.path / "session.jsonl"

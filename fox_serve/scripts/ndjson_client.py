@@ -33,6 +33,18 @@ class Sidecar:
 
     def __init__(self, command: list[str], *, cwd: str, log_prefix: str = "") -> None:
         env = dict(os.environ)
+        # The child runs in the workspace selected by ``--cwd``.  Once that is
+        # different from this repository, ``python -m fox_serve`` can no longer
+        # discover the source package through the process working directory.
+        # Mirror desktop/electron/main.js and keep the repository root on the
+        # child import path so this diagnostic client works for real projects.
+        repo_root = str(Path(__file__).resolve().parents[2])
+        current_pythonpath = env.get("PYTHONPATH")
+        env["PYTHONPATH"] = (
+            repo_root
+            if not current_pythonpath
+            else os.pathsep.join((repo_root, current_pythonpath))
+        )
         # 与 desktop/electron/sidecar.js 一致：管道两端都按 UTF-8 收发。
         env["PYTHONIOENCODING"] = "utf-8"
         env["PYTHONUNBUFFERED"] = "1"
@@ -100,6 +112,11 @@ class Sidecar:
                     print(f"{self._prefix}非 JSON 行：{line[:200]}")
                     continue
                 self._handle(obj)
+            # EOF without a protocol response is also a failure.  In
+            # particular, an import/startup error used to leave host.info
+            # waiting for its full 60-second timeout even though the child had
+            # already exited.
+            self._fail_pending("sidecar 已退出，未返回协议响应")
         except Exception as exc:  # noqa: BLE001 - 读端断了就别让调用者干等
             print(f"{self._prefix}stdout 读取失败：{type(exc).__name__}: {exc}")
             self._fail_pending(f"sidecar stdout 读取失败：{type(exc).__name__}: {exc}")
@@ -203,7 +220,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--timeout", type=float, default=180.0, help="等待整轮结束的秒数")
     args = parser.parse_args(argv)
 
-    client = Sidecar(_default_command(args.cwd), cwd=args.cwd)
+    # Resolve once before both changing the child working directory and passing
+    # --cwd.  Passing the original relative value to a child that already runs
+    # inside it would otherwise duplicate the path (workspace/workspace).
+    target_cwd = str(Path(args.cwd).resolve())
+    client = Sidecar(_default_command(target_cwd), cwd=target_cwd)
     exit_code = 0
     try:
         info = client.request("host.info")

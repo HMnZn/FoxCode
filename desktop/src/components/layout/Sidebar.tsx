@@ -21,7 +21,8 @@ import { formatRelative } from '@/lib/format'
 import { pinnedFirst, usePins } from '@/store/pinStore'
 import { useSession } from '@/store/sessionStore'
 import { samePath, useWorkspace, workspaceLabel } from '@/store/workspaceStore'
-import { useUi, type View } from '@/store/uiStore'
+import { useUi, SIDEBAR_DEFAULT_WIDTH, type View } from '@/store/uiStore'
+import { Splitter } from '@/components/layout/Splitter'
 import type { SessionSummary } from '@/types/protocol'
 import { cn } from '@/lib/cn'
 
@@ -40,6 +41,8 @@ export function Sidebar() {
   const collapsed = useUi((state) => state.sidebarCollapsed)
   const view = useUi((state) => state.view)
   const setView = useUi((state) => state.setView)
+  const sidebarWidth = useUi((state) => state.sidebarWidth)
+  const setSidebarWidth = useUi((state) => state.setSidebarWidth)
   const host = useSession((state) => state.host)
   const sessions = useSession((state) => state.sessions)
   const openSession = useSession((state) => state.openSession)
@@ -171,8 +174,18 @@ export function Sidebar() {
   }
 
   return (
-    <nav aria-label="主导航" className="flex w-[320px] shrink-0 flex-col border-r border-line bg-surface">
-      <button
+    <nav
+      aria-label="主导航"
+      className="relative flex shrink-0 flex-col border-r border-line bg-surface"
+      style={{ width: sidebarWidth }}
+    >
+      {/* 往右拖变宽；手势只算出增量，宽度约束在 `uiStore`（中列永远留着能读的宽度）。 */}
+      <Splitter
+        label="调整侧栏宽度"
+        className="absolute top-0 -right-[2px] h-full"
+        onResize={(delta) => setSidebarWidth(useUi.getState().sidebarWidth + delta)}
+        onReset={() => setSidebarWidth(SIDEBAR_DEFAULT_WIDTH)}
+      />      <button
         type="button"
         aria-label="会话"
         onClick={() => setView('chat')}

@@ -4,7 +4,7 @@
  * 三种视角（差异 / 原文 / 渲染）都在这里，宿主读盘、渲染方式的选择见
  * `lib/preview.ts`；这个文件只负责把它们画出来。
  */
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { ArrowLeft, Copy, FolderOpen, RefreshCw } from 'lucide-react'
 import { Button, Chip, IconButton, Tabs, Tooltip, toast } from '@/components/ui'
 import { getBridge } from '@/bridge'
@@ -141,6 +141,31 @@ function SourceBody({ text, path, truncated }: { text: string; path: string; tru
  * - SVG：文本内联成 `data:` URL 交给浏览器画（`<img>` 里的 SVG 本来也不跑脚本）。
  * - Markdown / JSON：复用正文那两套渲染器，配色与聊天里一致。
  */
+const FIT_STYLE =
+  '<style>html,body{max-width:100%;overflow-x:hidden}' +
+  'img,svg,video,canvas{max-width:100% !important;height:auto !important}' +
+  'pre,table{max-width:100%;overflow-x:auto}</style>'
+
+/**
+ * iframe 里的页面不归我们的 CSS 管：一个按 1200px 画出来的 HTML/内联 SVG 会在
+ * 面板里横向溢出、右边永远看不到（用户报的「大图显示不全」有一半是这种页面）。
+ * 这里往 `srcDoc` 里插一段收敛样式：媒体元素缩到容器宽度，代码块和表格自己滚。
+ *
+ * 插在 `</head>` 之前 —— 排在页面自己的样式后面，同权重时我们说了算。
+ */
+export function fitHtml(html: string): string {
+  const close = /<\/head\s*>/i.exec(html)
+  if (close) {
+    return `${html.slice(0, close.index)}${FIT_STYLE}${html.slice(close.index)}`
+  }
+  const root = /<html[^>]*>/i.exec(html)
+  if (root) {
+    const at = root.index + root[0].length
+    return `${html.slice(0, at)}${FIT_STYLE}${html.slice(at)}`
+  }
+  return FIT_STYLE + html
+}
+
 function RenderBody({
   content,
   kind,
@@ -159,6 +184,19 @@ function RenderBody({
     }
   }, [content.binary, content.text, kind])
 
+  /**
+   * 图默认缩到容器里（`max-h-full` + `object-contain`）—— 大图以前只会横向被夹住，
+   * 竖着溢出就得滚，边缘还常常看不到。双击回到原始像素，再双击又收回来。
+   */
+  const [actual, setActual] = useState(false)
+  const fitClass = actual
+    ? 'm-auto max-w-none rounded-md'
+    : 'm-auto max-h-full max-w-full object-contain rounded-md'
+  const zoomProps = {
+    title: actual ? '双击回到「适应窗口」' : '双击查看原始大小',
+    onDoubleClick: () => setActual((value) => !value),
+  }
+
   if (kind === 'image') {
     const source = imageDataUrl(content)
     if (!source) {
@@ -174,8 +212,9 @@ function RenderBody({
         <img
           src={source}
           alt={path}
-          className="m-auto max-w-full rounded-md shadow-sm"
+          className={cn(fitClass, 'shadow-sm')}
           draggable={false}
+          {...zoomProps}
         />
       </div>
     )
@@ -188,7 +227,7 @@ function RenderBody({
   if (kind === 'svg') {
     return (
       <div className="scroll-quiet flex min-h-0 flex-1 overflow-auto bg-surface-2/40 p-3">
-        <img src={svgDataUrl(content.text)} alt={path} className="m-auto max-w-full" />
+        <img src={svgDataUrl(content.text)} alt={path} className={fitClass} {...zoomProps} />
       </div>
     )
   }
@@ -199,7 +238,7 @@ function RenderBody({
       <iframe
         title={`预览 ${path}`}
         sandbox=""
-        srcDoc={content.text}
+        srcDoc={fitHtml(content.text)}
         className="min-h-0 w-full flex-1 border-0 bg-white"
       />
     )

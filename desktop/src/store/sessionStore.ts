@@ -64,9 +64,12 @@ export interface SessionStore {
   refreshSessions(): Promise<void>
   send(command: HostCommand, opts?: { silent?: boolean }): Promise<unknown>
   prompt(text: string): Promise<void>
-  startRun(text: string): Promise<void>
-  steer(text: string): Promise<void>
+  startRun(text: string): Promise<boolean>
+  steer(text: string, promoteFollowUps?: boolean): Promise<void>
   followUp(text: string): Promise<void>
+  updateQueued(id: string, text: string): void
+  steerQueued(id: string): Promise<void>
+  drainQueue(): Promise<void>
   reconcile(): Promise<void>
   abort(): Promise<void>
   compact(): Promise<void>
@@ -120,14 +123,50 @@ const IDLE_SETTLE_MS = 8_000
 
 let idleStrikes = 0
 
+/**
+ * 刚被 `drainQueue()` 摘出队列、正在发的那一条。
+ *
+ * 宿主接受请求之后仍然可能在**帧**里回一句「已经在跑」——那时 `startRun` 早就成功返回了，
+ * 界面没有任何异常可抓。留着这条引用，收到那种错误帧就把它放回队首，而不是让用户的消息
+ * 消失在一个红色气泡里。
+ */
+let lastDrained: QueuedMessage | null = null
+
+/** 宿主/运行时「已经在跑另一轮了」的提示（`RuntimeError: Harness is already processing. ...`）。 */
+function isAlreadyProcessingError(text: string | undefined): boolean {
+  return !!text && /already processing|已经在处理|正在处理中/i.test(text)
+}
+
+/**
+ * 把那条**没被执行**的用户气泡撤掉（`drainQueue()` 发早了才会用到）。
+ *
+ * 从后往前找最后一条同文本、且不是排队/插话标记的用户块：那正是 `startRun()` 刚加进去的。
+ */
+function dropUnsentUserBlock(timeline: TimelineState, text: string): TimelineState {
+  let index = -1
+  for (let i = timeline.blocks.length - 1; i >= 0; i -= 1) {
+    const block = timeline.blocks[i]
+    if (block.kind === 'user' && block.queued === undefined && block.text === text) {
+      index = i
+      break
+    }
+  }
+  if (index < 0) return timeline
+  return { ...timeline, blocks: timeline.blocks.filter((_, i) => i !== index) }
+}
+
 /** 宿主在「没有正在运行的一轮」时拒绝插话的提示（见 `fox_serve/host.py::_require_running`）。 */
 function isIdleHostError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error)
   return message.includes('没有正在运行的一轮')
 }
 
+export function isBusyStatus(status: TimelineState['status']): boolean {
+  return BUSY_STATUSES.has(status)
+}
+
 export function isBusy(timeline: TimelineState): boolean {
-  return BUSY_STATUSES.has(timeline.status)
+  return isBusyStatus(timeline.status)
 }
 
 function describe(command: HostCommand): string {
@@ -136,6 +175,23 @@ function describe(command: HostCommand): string {
 
 function normalizedSessionPath(value: string | null | undefined): string {
   return (value ?? '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
+}
+
+/**
+ * The wire protocol spells commands as `/compact`, while every renderer
+ * consumer adds the slash when displaying or parsing one. Normalize at every
+ * bridge boundary: queue draining and reconciliation also refresh host info,
+ * so doing this only in `refreshHost()` lets a background poll silently break
+ * slash commands after the first queued message.
+ */
+function normalizeHost(host: HostInfo): HostInfo {
+  return {
+    ...host,
+    commands: host.commands.map((command) => ({
+      ...command,
+      name: command.name.replace(/^\//, ''),
+    })),
+  }
 }
 
 export const useSession = create<SessionStore>((set, get) => {
@@ -174,6 +230,26 @@ export const useSession = create<SessionStore>((set, get) => {
       })
 
       BRIDGE.onFrame((frame) => {
+        // 刚刚放出去的那条撞上了「已经在跑」：这是我们自己发早了（界面状态慢半拍），
+        // 不是一次真实失败。**不要**把这帧当错误画出来 —— 把那条消息收回队列、
+        // 撤掉它的用户气泡，等宿主真空闲再发（见 `lastDrained`）。
+        if (frame.type === 'error' && isAlreadyProcessingError(frame.error) && lastDrained) {
+          const entry = lastDrained
+          lastDrained = null
+          set((state) =>
+            state.queue.some((item) => item.id === entry.id)
+              ? state
+              : {
+                  queue: [entry, ...state.queue],
+                  timeline: dropUnsentUserBlock(state.timeline, entry.text),
+                },
+          )
+          toast.info({
+            title: '这条消息还在排队',
+            description: '宿主刚才还在跑上一轮，等它空下来再发',
+          })
+          return
+        }
         const timeline = applyFrame(useSession.getState().timeline, frame)
         set({ timeline })
         syncPermissionToasts(timeline.permissions.map((request) => request.id))
@@ -197,7 +273,12 @@ export const useSession = create<SessionStore>((set, get) => {
 
     refreshHost: async () => {
       try {
-        const host = await BRIDGE.info()
+        const host = normalizeHost(await BRIDGE.info())
+        /*
+          `fox serve` 的命令名带前导斜杠（`/new`），而界面各处（补全、命令面板、技能页）
+          都是「自己补一个斜杠」来显示的：不在这里归一化，真实宿主下会显示成 `//new`，
+          并且手敲的 `/new` 匹配不上命令表、被当成普通提问发出去。
+        */
         set((state) => ({
           host,
           // 用宿主估算的上下文占用补齐（新会话/刚打开的会话没有 usage 可依据）。
@@ -245,7 +326,7 @@ export const useSession = create<SessionStore>((set, get) => {
       const trimmed = text.trim()
       if (!trimmed) return
       if (isBusy(get().timeline)) {
-        await get().steer(trimmed)
+        await get().followUp(trimmed)
         return
       }
       await get().startRun(trimmed)
@@ -253,7 +334,7 @@ export const useSession = create<SessionStore>((set, get) => {
 
     startRun: async (text) => {
       const trimmed = text.trim()
-      if (!trimmed) return
+      if (!trimmed) return false
       idleStrikes = 0
       const startedAt = Date.now()
       set((state) => ({
@@ -271,12 +352,13 @@ export const useSession = create<SessionStore>((set, get) => {
       }))
       try {
         await get().send({ method: 'prompt', params: { message: trimmed } })
+        return true
       } catch {
         // 这一轮可能根本没发出去（桥断了 / 宿主拒绝）。对账也走同一座桥，桥断了
         // 它同样叫不醒界面 —— 所以这里必须自己收尾，否则又是「生成中就没有后续」。
         // 只有当**这一轮一帧都没来过**才敢这么判：帧来了说明宿主其实收到了。
         const timeline = get().timeline
-        if ((timeline.lastFrameAt ?? 0) >= startedAt) return
+        if ((timeline.lastFrameAt ?? 0) >= startedAt) return true
         set((state) => ({
           timeline: {
             ...state.timeline,
@@ -285,39 +367,46 @@ export const useSession = create<SessionStore>((set, get) => {
             stalled: false,
           },
         }))
+        return false
       }
     },
 
-    steer: async (text) => {
+    steer: async (text, promoteFollowUps = false) => {
       const trimmed = text.trim()
       if (!trimmed) return
       idleStrikes = 0
-      const entry: QueuedMessage = { id: uid('queue'), text: trimmed, mode: 'steer', at: Date.now() }
+      const at = Date.now()
       const blockId = uid('user')
+      // 插队**不进** `queue`：那个数组现在就是输入框上方那排小框，插队是立刻发出去的，
+      // 在框里出现一下再消失只会闪一下。失败与否都看 timeline 里那条「插话中」。
       set((state) => ({
-        queue: [...state.queue, entry],
         timeline: {
           ...state.timeline,
           blocks: [
-            ...state.timeline.blocks,
-            { kind: 'user', id: blockId, ts: entry.at, text: trimmed, queued: 'steer' },
+            ...state.timeline.blocks.map((block) =>
+              promoteFollowUps && block.kind === 'user' && block.queued === 'follow_up'
+                ? { ...block, queued: 'steer' as const }
+                : block,
+            ),
+            { kind: 'user', id: blockId, ts: at, text: trimmed, queued: 'steer' },
           ],
-          activity: '已插话，等待模型接收',
+          activity: promoteFollowUps ? '正在插话发送全部排队消息' : '已插话，等待模型接收',
         },
       }))
       try {
-        await get().send({ method: 'steer', params: { message: trimmed } })
+        await get().send({
+          method: 'steer',
+          params: { message: trimmed, promoteFollowUps, interrupt: promoteFollowUps },
+        })
       } catch (error) {
         if (!isIdleHostError(error)) {
-          // 其它失败（离线、宿主报错）已经由 `send` 弹了 toast：把排队标记撤掉，
-          // 但**保留**用户那条消息，免得输入凭空消失。
-          set((state) => ({ queue: state.queue.filter((item) => item.id !== entry.id) }))
+          // 其它失败（离线、宿主报错）已经由 `send` 弹了 toast：**保留**用户那条消息，
+          // 免得输入凭空消失。
           return
         }
         // 宿主说没有在跑的一轮：插话永远不会被消费（这正是「插入也不回去」）。
         // 撤回这条插队记录，当成一轮新消息发出去 —— 用户的期待是「我说了，它就该回」。
         set((state) => ({
-          queue: state.queue.filter((item) => item.id !== entry.id),
           timeline: {
             ...state.timeline,
             blocks: state.timeline.blocks.filter((block) => block.id !== blockId),
@@ -328,11 +417,17 @@ export const useSession = create<SessionStore>((set, get) => {
           description: '宿主没有在跑的一轮时，插话不会被消费',
         })
         await get().startRun(trimmed)
-        return
       }
-      set((state) => ({ queue: state.queue.filter((item) => item.id !== entry.id) }))
     },
 
+    /**
+     * 排队：只放在本机的队列里（输入框上方那些小框），不碰宿主。
+     *
+     * 之前这里直接发 `follow_up` 给宿主 —— 消息一进宿主的队列就改不了了，而排队
+     * 小框要能改、能删、能提前插队。所以现在**本机排队**，等这一轮结束由
+     * `drainQueue()` 逐条作为新一轮 prompt 发出去（正好就是「这个任务完成后接着
+     * 下一个任务」）。插队仍然走 `steer`（宿主侧中断当前请求后消费 steering 队列）。
+     */
     followUp: async (text) => {
       const trimmed = text.trim()
       if (!trimmed) return
@@ -343,40 +438,59 @@ export const useSession = create<SessionStore>((set, get) => {
         mode: 'follow_up',
         at: Date.now(),
       }
-      const blockId = uid('user')
       set((state) => ({
         queue: [...state.queue, entry],
-        timeline: {
-          ...state.timeline,
-          blocks: [
-            ...state.timeline.blocks,
-            { kind: 'user', id: blockId, ts: entry.at, text: trimmed, queued: 'follow_up' },
-          ],
-          activity: '已加入排队',
-        },
+        timeline: { ...state.timeline, activity: '已加入排队' },
       }))
+    },
+
+    updateQueued: (id, text) => {
+      const trimmed = text.trim()
+      if (!trimmed) return
+      set((state) => ({
+        queue: state.queue.map((item) => (item.id === id ? { ...item, text: trimmed } : item)),
+      }))
+    },
+
+    steerQueued: async (id) => {
+      const entry = get().queue.find((item) => item.id === id)
+      if (!entry) return
+      set((state) => ({ queue: state.queue.filter((item) => item.id !== id) }))
+      await get().steer(entry.text, true)
+    },
+
+    /**
+     * 一轮结束后把队首那条发出去。
+     *
+     * 一次只放一条：多条一起 `prompt` 会被宿主当成一轮里的同一句话，而用户要的是
+     * 「接着下一个任务」。发失败（宿主其实还没空）时放回队首，等下一次空闲重试。
+     *
+     * **发之前必须问宿主忙不忙**：界面自己的状态会慢半拍（带工具的一轮中间也有
+     * `turn_end`），真机上就是这样把排队消息发早了 —— 宿主回
+     * `RuntimeError: Harness is already processing. Use steer() or follow_up(...)`，
+     * 而请求本身是成功的（错误是**帧**不是请求异常），那条消息于是既没被执行、也
+     * 从队列里消失了。宿主说忙就什么都别动，等下一个空闲窗口。
+     */
+    drainQueue: async () => {
+      if (isBusy(get().timeline)) return
+      const entry = get().queue[0]
+      if (!entry) return
       try {
-        await get().send({ method: 'follow_up', params: { message: trimmed } })
-      } catch (error) {
-        if (!isIdleHostError(error)) {
-          set((state) => ({ queue: state.queue.filter((item) => item.id !== entry.id) }))
-          return
-        }
-        set((state) => ({
-          queue: state.queue.filter((item) => item.id !== entry.id),
-          timeline: {
-            ...state.timeline,
-            blocks: state.timeline.blocks.filter((block) => block.id !== blockId),
-          },
-        }))
-        toast.info({
-          title: '本轮已经结束，改为直接发送',
-          description: '宿主没有在跑的一轮时，排队消息不会被消费',
-        })
-        await get().startRun(trimmed)
-        return
+        const host = normalizeHost(await BRIDGE.info())
+        set({ host })
+        if (host.busy !== false) return
+      } catch {
+        return // 连不上宿主就先不发，等下一次空闲窗口
       }
-      set((state) => ({ queue: state.queue.filter((item) => item.id !== entry.id) }))
+      if (isBusy(get().timeline)) return
+      // 期间可能被删/被插队/被改写：以此刻队列里的那一条为准。
+      const fresh = get().queue.find((item) => item.id === entry.id)
+      if (!fresh) return
+      set((state) => ({ queue: state.queue.filter((item) => item.id !== fresh.id) }))
+      lastDrained = fresh
+      const sent = await get().startRun(fresh.text)
+      lastDrained = null
+      if (!sent) set((state) => ({ queue: [fresh, ...state.queue] }))
     },
 
     reconcile: async () => {
@@ -398,7 +512,7 @@ export const useSession = create<SessionStore>((set, get) => {
       // 2) 对账：界面锁着但宿主没有在跑的一轮 → 结束帧丢了，必须自己解锁。
       let host: HostInfo
       try {
-        host = await BRIDGE.info()
+        host = normalizeHost(await BRIDGE.info())
       } catch {
         return // 连接问题由 transport 事件负责提示，这里不要重复报错
       }

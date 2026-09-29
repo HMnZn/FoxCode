@@ -257,19 +257,29 @@ def event_payload(event: Any) -> dict[str, Any] | None:
             "args": to_jsonable(getattr(event, "args", None)),
         }
     if etype == "tool_execution_update":
-        return {
+        partial = getattr(event, "partial_result", None)
+        payload = {
             "type": etype,
             "tool_call_id": getattr(event, "tool_call_id", None),
-            "partial_result": partial_result_text(getattr(event, "partial_result", None)),
+            "partial_result": partial_result_text(partial),
         }
+        details = getattr(partial, "details", None)
+        if isinstance(details, dict) and details:
+            payload["details"] = to_jsonable(details, alias=False)
+        return payload
     if etype == "tool_execution_end":
-        return {
+        result = getattr(event, "result", None)
+        payload = {
             "type": etype,
             "tool_call_id": getattr(event, "tool_call_id", None),
             "tool_name": getattr(event, "tool_name", None),
-            "result": tool_result_text(getattr(event, "result", None)),
+            "result": tool_result_text(result),
             "is_error": bool(getattr(event, "is_error", False)),
         }
+        details = getattr(result, "details", None)
+        if isinstance(details, dict) and details:
+            payload["details"] = to_jsonable(details, alias=False)
+        return payload
     if etype in (
         "compaction_start",
         "compaction_update",

@@ -19,7 +19,7 @@ import { KeyValueList } from '@/components/content/JsonViewer'
 import { parseEditDiff, parseUnifiedDiff } from '@/components/content/DiffView'
 import type { ToolCallState } from '@/store/timeline'
 import { TOOL_STATUS_LABEL, type ToolStatus } from '@/types/protocol'
-import { formatDuration } from '@/lib/format'
+import { formatDuration, formatTokens } from '@/lib/format'
 import { toast } from '@/store/toastStore'
 import { cn } from '@/lib/cn'
 
@@ -175,6 +175,11 @@ export function ToolCallCard({ call, defaultExpanded }: ToolCallCardProps) {
           <Chip size="xs" tone={call.decision === 'deny' ? 'danger' : 'info'}>
             {DECISION_LABEL[call.decision] ?? call.decision}
           </Chip>
+        ) : null}
+        {call.name === 'agent' && call.childContext ? (
+          <span className="shrink-0 font-mono text-2xs tabular-nums text-info">
+            {formatTokens(call.childContext.contextTokens)} tokens
+          </span>
         ) : null}
         <span className="shrink-0 font-mono text-2xs tabular-nums text-fg-subtle">
           {elapsed > 400 ? formatDuration(elapsed) : ''}

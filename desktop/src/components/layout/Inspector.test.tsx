@@ -10,6 +10,7 @@ import { Inspector } from '@/components/layout/Inspector'
 import { useFiles } from '@/store/filesStore'
 import { FILES_TAB, HOME_TAB, useRail } from '@/store/railStore'
 import { useSession } from '@/store/sessionStore'
+import { useUi } from '@/store/uiStore'
 import { EMPTY_TIMELINE } from '@/store/timeline'
 
 function touchedTimeline() {
@@ -43,6 +44,13 @@ describe('Inspector · 文件标签', () => {
     element?.textContent === path
 
   beforeEach(() => {
+    // 面板宽度会被「给中列留 MAIN_MIN_WIDTH」夹住，所以给个够宽的窗口，
+    // 不然断言的是夹过之后的 300px（jsdom 默认 1024）。
+    Object.defineProperty(window, 'innerWidth', {
+      value: 1600,
+      configurable: true,
+      writable: true,
+    })
     useFiles.setState({
       changes: null,
       loading: false,
@@ -116,8 +124,8 @@ describe('Inspector · 文件标签', () => {
     expect(
       screen.getByText('// 打开页签、每次工具调用结束后都重新拉一次清单'),
     ).toBeTruthy()
-    // 工作台在有文件打开时变宽
-    expect(screen.getByLabelText('工作区面板').className).toContain('w-[520px]')
+    // 工作台在有文件打开时变宽（宽度走 inline style，拖拽会覆盖它）
+    expect(screen.getByLabelText('工作区面板').style.width).toBe('520px')
   })
 
   it('switches to the raw file and back to the list', async () => {
@@ -132,7 +140,7 @@ describe('Inspector · 文件标签', () => {
 
     fireEvent.click(screen.getByLabelText('返回文件列表'))
     expect(screen.getByText(pathRow('fox_serve/workspace_files.py'))).toBeTruthy()
-    expect(screen.getByLabelText('工作区面板').className).toContain('w-[360px]')
+    expect(screen.getByLabelText('工作区面板').style.width).toBe('360px')
   })
 
   it('lists the files this session touched and previews them as source', async () => {
@@ -163,7 +171,17 @@ describe('Inspector · 文件标签', () => {
     const image = await screen.findByRole('img', { name: 'desktop/artifacts/dsh-workbench-dark.png' })
     expect(image.getAttribute('src')).toMatch(/^data:image\/png;base64,/)
     expect(screen.queryByRole('tab', { name: '差异' })).toBeNull()
-    expect(screen.getByText('PNG · 1 KB')).toBeTruthy()
+    // 尺寸跟着演示图片走（1200×800 的示意图约 5 KB），所以这里只认形状不认具体数字。
+    expect(screen.getByText(/^PNG · [\d.]+ KB$/)).toBeTruthy()
+    // 大图要缩到看得全：默认「适应窗口」，双击才回到原始大小（6000×4000 的截图以前会溢出）。
+    expect(image.className).toContain('max-h-full')
+    expect(image.className).toContain('object-contain')
+    fireEvent.doubleClick(image)
+    const actual = screen.getByRole('img', {
+      name: 'desktop/artifacts/dsh-workbench-dark.png',
+    })
+    expect(actual.className).toContain('max-w-none')
+    expect(actual.className).not.toContain('max-h-full')
   })
 
   it('renders a non-image binary file as a fact instead of a preview', async () => {
@@ -172,5 +190,24 @@ describe('Inspector · 文件标签', () => {
     expect(await screen.findByText('二进制文件，无法预览差异')).toBeTruthy()
     fireEvent.click(screen.getByText('看原文'))
     expect(await screen.findByText('二进制文件，不能当文本预览。')).toBeTruthy()
+  })
+
+  it('drags the panel width step by step and resets on double click', async () => {
+    useUi.setState({ inspectorWidth: null, sidebarWidth: 320 })
+    render(<Inspector />)
+    const handle = screen.getByLabelText('调整工作区面板宽度')
+    const panel = screen.getByLabelText('工作区面板')
+    // 窗口 1600、还没拖过：文件列表标签是导航，按内容要 360。
+    expect(panel.style.width).toBe('360px')
+    fireEvent.keyDown(handle, { key: 'ArrowLeft' })
+    expect(panel.style.width).toBe('376px')
+    // 回归点：以前第二次就把增量丢了（`stored ?? width - delta`），拖一下之后再也拖不动。
+    fireEvent.keyDown(handle, { key: 'ArrowLeft' })
+    expect(panel.style.width).toBe('392px')
+    fireEvent.keyDown(handle, { key: 'ArrowRight' })
+    expect(panel.style.width).toBe('376px')
+    // 双击回到「跟着内容自动」
+    fireEvent.doubleClick(handle)
+    expect(panel.style.width).toBe('360px')
   })
 })

@@ -10,8 +10,11 @@ from __future__ import annotations
 import time
 import types
 import unittest
+import asyncio
+from pathlib import Path
 from typing import Any
 
+from fox_serve.approvals import PermissionPolicy
 from fox_serve.host import HostError, ServeHost
 
 
@@ -26,6 +29,15 @@ class _StubSession:
     def follow_up(self, message: str) -> None:
         self.follow_ups.append(message)
 
+    def promote_follow_ups(self) -> int:
+        promoted = len(self.follow_ups)
+        self.steers.extend(self.follow_ups)
+        self.follow_ups.clear()
+        return promoted
+
+    def has_queued_messages(self) -> bool:
+        return bool(self.steers or self.follow_ups)
+
 
 class _StubRuntime:
     """`host.info` 与 `_enqueue` 会碰到的属性，只装配这些。"""
@@ -38,6 +50,14 @@ class _StubRuntime:
         self.available_models: list[Any] = []
         self.project_trusted = True
         self.permission_mode = "workspace-modify"
+        self.aborted = False
+        self.continued = 0
+
+    def abort(self) -> None:
+        self.aborted = True
+
+    async def continue_(self) -> None:
+        self.continued += 1
 
 
 def _bare_host(runtime: Any | None = None) -> ServeHost:
@@ -51,6 +71,9 @@ def _bare_host(runtime: Any | None = None) -> ServeHost:
     host._seq = 0
     host._started_at = time.time()
     host._agent_running = False
+    host._tasks = set()
+    host._runtime_tasks = {}
+    host._running_runtimes = set()
     host._last_frame_at = time.time()
     host._log_line = lambda message: None
     host.frames: list[dict[str, Any]] = []
@@ -108,8 +131,41 @@ class SteerRefusalTests(unittest.IsolatedAsyncioTestCase):
         host = _bare_host(runtime)
         host._agent_running = True
         result = await host._cmd_steer({"message": "顺便看一眼"})
-        self.assertEqual(result, {"queued": "steer"})
+        self.assertEqual(result, {"queued": "steer", "promoted": 0, "interrupted": False})
         self.assertEqual(runtime.agent_session.steers, ["顺便看一眼"])
+
+    async def test_steer_can_promote_all_pending_follow_ups(self) -> None:
+        runtime = _StubRuntime()
+        runtime.agent_session.follow_ups = ["排队一", "排队二"]
+        host = _bare_host(runtime)
+        host._agent_running = True
+
+        result = await host._cmd_steer({
+            "message": "现在插话",
+            "promoteFollowUps": True,
+            "interrupt": True,
+        })
+        await asyncio.gather(*list(host._tasks))
+
+        self.assertEqual(result, {"queued": "steer", "promoted": 2, "interrupted": True})
+        self.assertEqual(runtime.agent_session.follow_ups, [])
+        self.assertEqual(runtime.agent_session.steers, ["排队一", "排队二", "现在插话"])
+        self.assertTrue(runtime.aborted)
+        self.assertEqual(runtime.continued, 1)
+
+    async def test_steer_resume_is_skipped_when_old_loop_already_consumed_it(self) -> None:
+        runtime = _StubRuntime()
+        host = _bare_host(runtime)
+        host._agent_running = True
+
+        # Reproduce the narrow race after _cmd_steer: the previous loop drained
+        # the queue and produced the inserted answer before the resume task got
+        # scheduled.  There is nothing left for continue_() to do.
+        runtime.agent_session.steers.clear()
+        await host._resume_after_steer(runtime)
+
+        self.assertEqual(runtime.continued, 0)
+        self.assertFalse(host._agent_running)
 
     async def test_follow_up_lands_in_the_session_queue_while_running(self) -> None:
         runtime = _StubRuntime()
@@ -124,6 +180,33 @@ class SteerRefusalTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(HostError) as caught:
             await host._cmd_steer({"message": "   "})
         self.assertIn("非空的 message", str(caught.exception))
+
+
+class DynamicToolPermissionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_uses_executing_context_for_extension_tool_permission(self) -> None:
+        host = _bare_host(_StubRuntime())
+        host._tools = {}  # noqa: SLF001 - reproduces the stale startup snapshot
+        host._policy = PermissionPolicy("workspace-modify", cwd=Path("C:/work"))  # noqa: SLF001
+
+        class _UnexpectedBroker:
+            async def ask(self, **_kwargs):
+                raise AssertionError("read-only extension tool must not request approval")
+
+        host._broker = _UnexpectedBroker()  # noqa: SLF001
+        agent_tool = types.SimpleNamespace(
+            name="agent",
+            required_permission="read-only",
+            permission_paths=None,
+        )
+        call = types.SimpleNamespace(id="call-agent", name="agent")
+        data = {
+            "tool_call": call,
+            "args": {"description": "delegate", "prompt": "work"},
+            "context": types.SimpleNamespace(tools=[agent_tool]),
+        }
+
+        self.assertIsNone(await host._before_tool_call(data))
+        self.assertIs(host._tools["agent"], agent_tool)  # noqa: SLF001
 
 
 class RunPromptTests(unittest.IsolatedAsyncioTestCase):

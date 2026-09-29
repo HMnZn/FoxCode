@@ -152,6 +152,9 @@ class ServeHost:
         self._running_runtimes: set[int] = set()
         #: 后台任务（`prompt` 这类长耗时操作），退出时统一取消。
         self._tasks: set[asyncio.Task[Any]] = set()
+        #: 每个 runtime 当前的前台运行任务。显式插话要先等旧请求完成取消清理，
+        #: 再从同一会话继续，不能和旧 prompt 并发改写 transcript。
+        self._runtime_tasks: dict[int, asyncio.Task[Any]] = {}
         #: 前端靠帧推进状态，所以「一轮到底还在不在跑」必须由宿主自己给出：
         #: 只在收到 `agent_start`/`agent_end`/`error` 时翻转（见 `_emit_frame`）。
         #: 少了这个信号，一轮如果在模型请求里静默卡住，前端会永远停在「生成中」。
@@ -433,7 +436,21 @@ class ServeHost:
             if not name:
                 return None
             args = payload.get("args")
-            tool = self._tools.get(name)
+            # Extensions may activate tools during ``session_start`` after the
+            # host's initial active-tool snapshot was built.  The executing
+            # AgentContext is authoritative and also belongs to the correct
+            # background runtime; falling back to the stale cache made tools
+            # such as ``agent`` look unknown and therefore ``full-access``.
+            execution_context = payload.get("context")
+            context_tools = getattr(execution_context, "tools", None) or ()
+            tool = next(
+                (item for item in context_tools if getattr(item, "name", None) == name),
+                None,
+            )
+            if tool is None:
+                tool = self._tools.get(name)
+            else:
+                self._tools[name] = tool
             required = str(getattr(tool, "required_permission", "full-access") or "full-access")
             permission_paths = getattr(tool, "permission_paths", None)
 
@@ -888,7 +905,15 @@ class ServeHost:
         running = getattr(self, "_running_runtimes", None)
         if running is not None:
             running.add(id(runtime))
-        self._spawn_task(self._run_prompt(message, runtime=runtime), name="prompt")
+        task = self._spawn_task(self._run_prompt(message, runtime=runtime), name="prompt")
+        marker = id(runtime)
+        self._runtime_tasks[marker] = task
+
+        def _clear_runtime_task(done: asyncio.Task[Any]) -> None:
+            if self._runtime_tasks.get(marker) is done:
+                self._runtime_tasks.pop(marker, None)
+
+        task.add_done_callback(_clear_runtime_task)
         return {"queued": "prompt"}
 
     async def _run_prompt(self, message: str, *, runtime: Any | None = None) -> None:
@@ -914,20 +939,76 @@ class ServeHost:
             if runtime is self._runtime:
                 self._agent_running = False
 
-    def _spawn_task(self, coro: Any, *, name: str) -> None:
+    def _spawn_task(self, coro: Any, *, name: str) -> asyncio.Task[Any]:
         task = asyncio.ensure_future(coro)
         task.set_name(f"fox_serve:{name}")
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
+        return task
 
     async def _cmd_steer(self, params: dict[str, Any]) -> dict[str, Any]:
-        self._require_runtime()
+        runtime = self._require_runtime()
         message = str(params.get("message") or "")
         if not message.strip():
             raise HostError("steer 需要一个非空的 message")
         self._require_running("steer")
+        promote_pending = bool(params.get("promoteFollowUps") or params.get("promote_follow_ups"))
+        interrupt = bool(params.get("interrupt"))
+        promoted = 0
+        if promote_pending:
+            session = getattr(runtime, "agent_session", None)
+            promote = getattr(session, "promote_follow_ups", None)
+            if promote is None:
+                promote = getattr(getattr(session, "agent", None), "promote_follow_ups", None)
+            if promote is None:
+                raise HostError("当前宿主不支持把排队消息提升为插话")
+            promoted = int(promote())
         self._enqueue("steer", message)
-        return {"queued": "steer"}
+        if interrupt:
+            runtime.abort()
+            self._spawn_task(self._resume_after_steer(runtime), name="steer-resume")
+        return {"queued": "steer", "promoted": promoted, "interrupted": interrupt}
+
+    async def _resume_after_steer(self, runtime: Any) -> None:
+        """中止当前请求清理完成后，消费 steering 队列继续同一会话。"""
+
+        marker = id(runtime)
+        previous = self._runtime_tasks.get(marker)
+        current = asyncio.current_task()
+        if previous is not None and previous is not current:
+            await asyncio.gather(asyncio.shield(previous), return_exceptions=True)
+        if self._closed:
+            return
+        self._runtime_tasks[marker] = current
+        self._running_runtimes.add(marker)
+        if runtime is self._runtime:
+            self._agent_running = True
+        try:
+            # The old loop may win the race and consume the steering message
+            # just before abort reaches it.  In that case it has already
+            # produced the inserted reply, and an unconditional continue_()
+            # would run once too many and fail with "Cannot continue from
+            # message role: assistant".  Only resume when work is still queued.
+            session = getattr(runtime, "agent_session", None)
+            queue_owner = getattr(session, "agent", None) or session
+            has_queued = getattr(queue_owner, "has_queued_messages", None)
+            if callable(has_queued) and not bool(has_queued()):
+                return
+            await runtime.continue_()
+        except asyncio.CancelledError:  # pragma: no cover - 退出时取消
+            raise
+        except Exception as exc:  # noqa: BLE001 - 与普通 prompt 一样转成可见错误帧
+            self._log(f"steer 续跑失败：{type(exc).__name__}: {exc}")
+            if runtime is self._runtime:
+                self._emit_frame({"type": "error", "error": f"{type(exc).__name__}: {exc}"})
+        finally:
+            if self._runtime_tasks.get(marker) is current:
+                self._runtime_tasks.pop(marker, None)
+            session = getattr(runtime, "agent_session", None)
+            if not bool(getattr(session, "is_running", False)):
+                self._running_runtimes.discard(marker)
+                if runtime is self._runtime:
+                    self._agent_running = False
 
     async def _cmd_follow_up(self, params: dict[str, Any]) -> dict[str, Any]:
         self._require_runtime()

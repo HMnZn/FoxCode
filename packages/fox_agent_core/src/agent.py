@@ -70,6 +70,13 @@ class _PendingMessageQueue:
         self._messages = self._messages[1:]
         return [first]
 
+    def drain_all(self) -> list[AgentMessage]:
+        """取走全部消息，不受逐条消费模式影响。"""
+
+        drained = list(self._messages)
+        self._messages.clear()
+        return drained
+
     def clear(self) -> None:
         self._messages.clear()
 
@@ -164,6 +171,7 @@ class Agent:
 
         self.steering_queue = _PendingMessageQueue(opts.steering_mode)
         self.follow_up_queue = _PendingMessageQueue(opts.follow_up_mode)
+        self._drain_all_steering_once = False
 
         self._listeners: list[Any] = []  # Callable[[AgentEvent, asyncio.Event|None], Any]
         self._active_run: dict[str, Any] | None = None
@@ -198,8 +206,30 @@ class Agent:
         for item in self._normalize_input(message):
             self.follow_up_queue.enqueue(item)
 
+    def promote_follow_ups(self) -> int:
+        """把尚未执行的 follow-up 全部提升为 steering。
+
+        桌面端默认把运行中的普通发送排到任务末尾；用户显式“插话”时，需要把
+        此前所有排队消息一起交给下一次模型请求，而不是在两个队列里留下旧消息。
+        """
+
+        pending = self.follow_up_queue.drain_all()
+        for item in pending:
+            self.steering_queue.enqueue(item)
+        # 显式插话的含义是“发送全部排队消息”，即使此刻 follow-up 为空，紧接着
+        # 入队的当前插话也应与已有 steering 在同一次模型请求中消费。
+        self._drain_all_steering_once = True
+        return len(pending)
+
+    def _drain_steering(self) -> list[AgentMessage]:
+        if self._drain_all_steering_once:
+            self._drain_all_steering_once = False
+            return self.steering_queue.drain_all()
+        return self.steering_queue.drain()
+
     def clear_steering_queue(self) -> None:
         self.steering_queue.clear()
+        self._drain_all_steering_once = False
 
     def clear_follow_up_queue(self) -> None:
         self.follow_up_queue.clear()
@@ -260,7 +290,7 @@ class Agent:
             raise RuntimeError("No messages to continue from")
         if isinstance(last, AssistantMessage):
             # 末尾是 assistant：尝试消费排队消息作为 prompt
-            queued = self.steering_queue.drain()
+            queued = self._drain_steering()
             if queued:
                 await self._run_prompt_messages(queued, skip_initial_steering=True)
                 return
@@ -326,7 +356,7 @@ class Agent:
             if _skip[0]:
                 _skip[0] = False
                 return []
-            return self.steering_queue.drain()
+            return self._drain_steering()
 
         async def _get_follow_up() -> list[AgentMessage]:
             return self.follow_up_queue.drain()

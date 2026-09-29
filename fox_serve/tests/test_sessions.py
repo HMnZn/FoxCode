@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import unittest
 from datetime import datetime
@@ -112,6 +113,24 @@ class SummaryTests(unittest.TestCase):
         self.assertGreaterEqual(
             newer.stat().st_mtime, older.stat().st_mtime
         )
+
+    def test_recency_uses_messages_not_preview_config_writes_or_file_mtime(self) -> None:
+        path = _write_session(self.sessions_dir, "preview")
+        lines = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+        lines[1]["timestamp"] = "2026-09-27T22:00:01+00:00"
+        lines[2]["timestamp"] = "2026-09-27T22:00:02+00:00"
+        path.write_text("\n".join(json.dumps(item) for item in lines), encoding="utf-8")
+        before = read_session_file(path).to_summary()
+        lines.append({"type": "active_tools_change", "timestamp": "2026-09-29T22:00:00+00:00", "data": ["read"]})
+        path.write_text("\n".join(json.dumps(item) for item in lines), encoding="utf-8")
+        os.utime(path, (2_000_000_000, 2_000_000_000))
+        self.assertEqual(read_session_file(path).to_summary()["updatedAt"], before["updatedAt"])
+        self.assertEqual(before["updatedAt"], _epoch_ms("2026-09-27T22:00:02+00:00", 0))
+        lines.append({"type": "message", "data": {
+            "role": "user", "timestamp": before["updatedAt"] + 60000, "content": [],
+        }})
+        path.write_text("\n".join(json.dumps(item) for item in lines), encoding="utf-8")
+        self.assertEqual(read_session_file(path).to_summary()["updatedAt"], before["updatedAt"] + 60000)
 
     def test_project_level_sessions_are_not_scanned(self) -> None:
         legacy = self.project / ".foxcode" / "sessions"

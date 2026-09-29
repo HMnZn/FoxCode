@@ -1,0 +1,109 @@
+/**
+ * composer 里的命令目录。
+ *
+ * 这一组盯两件事：
+ * 1. `/` 目录**刻意只有两项** —— 把工作区文件加进这条消息、压缩上下文。其余命令
+ *    （权限、模型、导出、技能…）在 Ctrl+K 面板与各自的页面里都有，堆在输入框上只会挡路；
+ *    但手敲真名（`/compact`、`/permission`…）仍然要照旧执行。
+ * 2. 「把文件加进这条消息」要真的能选出文件并把 `@路径` 接进草稿。
+ */
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { Composer } from '@/components/chat/Composer'
+import { useSession } from '@/store/sessionStore'
+import { EMPTY_TIMELINE } from '@/store/timeline'
+import { useUi } from '@/store/uiStore'
+
+const bridge = useSession.getState().bridge
+
+describe('Composer · 命令目录', () => {
+  beforeEach(async () => {
+    useSession.setState({ host: await bridge.info(), timeline: { ...EMPTY_TIMELINE }, queue: [] })
+  })
+
+  it('offers exactly the two commands worth having in the composer', () => {
+    const hostCommands = useSession.getState().host?.commands ?? []
+    expect(hostCommands.length).toBeGreaterThan(8) // 宿主那边命令很多，但不在 `/` 目录里铺开
+    useUi.setState({ drafts: { main: '/' } })
+    render(<Composer draftKey="main" />)
+
+    expect(screen.getByText('/文件')).toBeTruthy()
+    expect(screen.getByText('/压缩')).toBeTruthy()
+    expect(screen.getByText('2 条')).toBeTruthy()
+    for (const gone of ['/permission', '/model', '/export', '/thinking']) {
+      expect(screen.queryByText(gone)).toBeNull()
+    }
+
+    // 列表本身仍然能滚：固定最大高度 + overflow-y-auto。
+    const list = screen.getByText('/文件').closest('[class*="overflow-y-auto"]')
+    expect(list?.className).toContain('max-h-[min(46vh,320px)]')
+  })
+
+  it('runs 压缩 as the host compact command', async () => {
+    const send = vi.spyOn(bridge, 'send')
+    useUi.setState({ drafts: { main: '/压缩' } })
+    render(<Composer draftKey="main" />)
+
+    const box = screen.getByRole('textbox') as HTMLTextAreaElement
+    // 第一次回车是「补全」（列表开着时回车不发送），第二次回车才真的执行。
+    fireEvent.keyDown(box, { key: 'Enter' })
+    expect(box.value).toBe('/压缩 ')
+
+    fireEvent.keyDown(box, { key: 'Enter' })
+
+    await waitFor(() =>
+      expect(send).toHaveBeenCalledWith({
+        method: 'run_command',
+        params: { name: 'compact', arguments: '' },
+      }),
+    )
+    expect(box.value).toBe('')
+  })
+
+  it('still runs a host command typed by its real name', async () => {
+    const send = vi.spyOn(bridge, 'send')
+    // `/new` 不再出现在目录里，但手敲仍然要能用（目录只是不再宣传它们）。
+    useUi.setState({ drafts: { main: '/new' } })
+    render(<Composer draftKey="main" />)
+
+    fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' })
+
+    await waitFor(() =>
+      expect(send).toHaveBeenCalledWith({
+        method: 'run_command',
+        params: { name: 'new', arguments: '' },
+      }),
+    )
+  })
+
+  it('picks a workspace file and puts its @path into the draft', async () => {
+    useUi.setState({ drafts: { main: '/' } })
+    render(<Composer draftKey="main" />)
+
+    fireEvent.click(screen.getByText('/文件'))
+
+    const list = await screen.findByLabelText('工作区文件')
+    const file = await within(list).findByText('preview.png')
+    fireEvent.click(file)
+
+    // 选中的文件变成一个 `@路径` 引用：模型能拿它去 read，用户还能接着往下写。
+    await waitFor(() =>
+      expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('@preview.png '),
+    )
+  })
+
+  it('accepts a path typed next to /文件 without opening the picker', async () => {
+    const send = vi.spyOn(bridge, 'send')
+    useUi.setState({ drafts: { main: '/文件 desktop/package.json' } })
+    render(<Composer draftKey="main" />)
+
+    fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' })
+
+    await waitFor(() =>
+      expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe(
+        '@desktop/package.json ',
+      ),
+    )
+    expect(send.mock.calls.some(([command]) => command.method === 'files.list')).toBe(false)
+  })
+})
