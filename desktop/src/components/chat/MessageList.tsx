@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
-import { ArrowDown, ChevronRight, CornerDownLeft, Slash, Sparkles, Wrench } from 'lucide-react'
-import { Chip } from '@/components/ui'
+import { ArrowDown, Check, ChevronRight, CornerDownLeft, FileCheck2, Slash, Sparkles, Wrench, X } from 'lucide-react'
+import { Button, Chip } from '@/components/ui'
 import { FoxMascot } from '@/components/brand/Fox'
 import { Markdown, NoticePart, StreamingMarkdown, ThinkingPart } from '@/components/content'
 import { ToolCallCard } from '@/components/chat/ToolCallCard'
-import type { AssistantBlock, Block, RunStatus, ToolsBlock, UserBlock } from '@/store/timeline'
+import type { AssistantBlock, Block, PlanBlock, RunStatus, ToolsBlock, UserBlock } from '@/store/timeline'
+import { useSession } from '@/store/sessionStore'
 import { TOOL_STATUS_LABEL } from '@/types/protocol'
 import { formatCost, formatTokens } from '@/lib/format'
 import { cn } from '@/lib/cn'
@@ -38,8 +39,20 @@ function UserBubble({ block }: { block: UserBlock }) {
   return (
     <div className="flex justify-end">
       <div className="flex max-w-[70.2%] flex-col items-end gap-1.5">
-        <div className="rounded-xl bg-bubble px-4 py-2.5 text-[14px] leading-[22px] whitespace-pre-wrap text-fg">
-          {block.text}
+        <div className="flex max-w-full flex-col gap-2 rounded-xl bg-bubble px-3 py-2.5 text-[14px] leading-[22px] whitespace-pre-wrap text-fg">
+          {block.images?.length ? (
+            <div className="grid max-w-[520px] grid-cols-2 gap-2">
+              {block.images.map((image, index) => (
+                <img
+                  key={`${image.name}-${index}`}
+                  src={`data:${image.mimeType};base64,${image.data}`}
+                  alt={image.name || `图片 ${index + 1}`}
+                  className="max-h-64 min-h-20 w-full rounded-lg object-contain bg-canvas/40"
+                />
+              ))}
+            </div>
+          ) : null}
+          {block.text ? <span>{block.text}</span> : null}
         </div>
         {block.queued ? (
           <Chip size="xs" tone="info">
@@ -48,6 +61,63 @@ function UserBubble({ block }: { block: UserBlock }) {
         ) : null}
       </div>
     </div>
+  )
+}
+
+function PlanCard({ block }: { block: PlanBlock }) {
+  const answerPlan = useSession((state) => state.answerPlan)
+  const pending = !block.decision
+  const accepted = block.decision === 'accepted'
+  return (
+    <section className="overflow-hidden rounded-xl border border-info/30 bg-surface shadow-soft">
+      <div className="flex items-center gap-2 border-b border-line bg-info-soft/35 px-4 py-3">
+        <FileCheck2 size={16} className="text-info" aria-hidden="true" />
+        <h3 className="text-[14px] font-medium text-fg">实施计划</h3>
+        <Chip size="xs" tone={pending ? 'info' : accepted ? 'success' : 'neutral'}>
+          {pending ? '等待确认' : accepted ? '已批准' : '暂不实施'}
+        </Chip>
+      </div>
+      <div className="flex flex-col gap-4 px-4 py-4 text-[13px] leading-5 text-fg-muted">
+        <p className="text-fg">{block.plan.summary}</p>
+        <ol className="list-decimal space-y-1.5 pl-5">
+          {block.plan.steps.map((step, index) => <li key={`${index}-${step}`}>{step}</li>)}
+        </ol>
+        {block.plan.files?.length ? (
+          <div>
+            <div className="mb-1 text-2xs font-medium tracking-wide text-fg-subtle">涉及文件</div>
+            <div className="flex flex-wrap gap-1.5">
+              {block.plan.files.map((file) => <code key={file} className="rounded bg-surface-3 px-1.5 py-0.5 text-[11px]">{file}</code>)}
+            </div>
+          </div>
+        ) : null}
+        {block.plan.verification?.length ? (
+          <div>
+            <div className="mb-1 text-2xs font-medium tracking-wide text-fg-subtle">验证</div>
+            <ul className="list-disc space-y-1 pl-5">
+              {block.plan.verification.map((item) => <li key={item}>{item}</li>)}
+            </ul>
+          </div>
+        ) : null}
+        {block.plan.risks?.length ? (
+          <div>
+            <div className="mb-1 text-2xs font-medium tracking-wide text-warn">风险</div>
+            <ul className="list-disc space-y-1 pl-5">
+              {block.plan.risks.map((item) => <li key={item}>{item}</li>)}
+            </ul>
+          </div>
+        ) : null}
+        {pending ? (
+          <div className="flex justify-end gap-2 border-t border-line pt-3">
+            <Button variant="ghost" size="sm" onClick={() => void answerPlan(block.toolCallId, 'reject')}>
+              <X size={13} /> 暂不实施
+            </Button>
+            <Button size="sm" onClick={() => void answerPlan(block.toolCallId, 'accept')}>
+              <Check size={13} /> 开始实施
+            </Button>
+          </div>
+        ) : null}
+      </div>
+    </section>
   )
 }
 
@@ -195,6 +265,8 @@ function BlockView({ block }: { block: Block }) {
       return <AssistantBlockView block={block} />
     case 'tools':
       return <ToolsBlockView block={block} />
+    case 'plan':
+      return <PlanCard block={block} />
     case 'notice':
       return (
         <NoticePart

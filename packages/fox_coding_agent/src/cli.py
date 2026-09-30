@@ -15,6 +15,7 @@ from fox_coding_agent.src import AgentSessionRuntime, SettingsManager
 from fox_coding_agent.src.core.model_config import ModelConfig
 from fox_coding_agent.src.core.model_registry import ModelRegistry
 from fox_coding_agent.src.core.permissions import PERMISSION_MODES
+from fox_coding_agent.src.core.interaction import INTERACTION_MODES
 from fox_coding_agent.src.core.trust import ProjectTrustManager
 
 THINKING_LEVELS = ("off", "minimal", "low", "medium", "high", "xhigh")
@@ -36,6 +37,8 @@ def build_parser():
     parser.add_argument("--list-models", action="store_true", help="列出用户 models.json 中可切换的模型后退出")
     parser.add_argument("--permission", choices=PERMISSION_MODES,
                         help="权限：仅查看、工作区内修改或完全访问；默认读取 settings.json")
+    parser.add_argument("--mode", choices=INTERACTION_MODES,
+                        help="交互模式：自动判断、普通执行或只读规划")
     trust = parser.add_mutually_exclusive_group()
     trust.add_argument("--trust-project", dest="project_trust", action="store_true",
                        help="信任并记录当前项目，允许加载项目资源和执行工具")
@@ -105,7 +108,7 @@ def _print_models(runtime):
 
 
 async def _interactive(runtime):
-    print(f"FoxCode · {runtime.permission_mode} · /help 查看命令，/exit 退出")
+    print(f"FoxCode · {runtime.permission_mode} · {runtime.interaction_mode} · {runtime.execution_mode} · /help 查看命令，/exit 退出")
     while True:
         try:
             line = input("fox> ").strip()
@@ -123,7 +126,7 @@ async def _interactive(runtime):
             if command in ("exit", "quit"):
                 return
             if command == "help":
-                print("/new /resume FILE /fork [ENTRY_ID] /cwd DIR /reload /trust /untrust /permission [read-only|workspace-modify|full-access] /compact /usage /export FILE /tools [names] /model [provider/id] /thinking [off|minimal|low|medium|high|xhigh] /skill NAME [args] /prompt NAME [args] /exit")
+                print("/new /resume FILE /fork [ENTRY_ID] /cwd DIR /reload /trust /untrust /permission [read-only|workspace-modify|full-access] /mode [auto|default|plan] /sandbox [local|sandbox] /compact /usage /export FILE /tools [names] /model [provider/id] /thinking [off|minimal|low|medium|high|xhigh] /skill NAME [args] /prompt NAME [args] /exit")
                 for name, (_, description) in runtime.agent_session.extensions.api.commands.items():
                     print(f"/{name}: {description}")
             elif command == "new":
@@ -153,6 +156,14 @@ async def _interactive(runtime):
                 if arguments:
                     await runtime.set_permission_mode(arguments)
                 print(f"权限: {runtime.permission_mode}")
+            elif command == "mode":
+                if arguments:
+                    runtime.set_interaction_mode(arguments)
+                print(f"交互模式: {runtime.interaction_mode}（当前: {runtime.effective_interaction_mode}）")
+            elif command == "sandbox":
+                if arguments:
+                    runtime.set_execution_mode(arguments)
+                print(f"执行环境: {runtime.execution_mode}")
             elif command == "reload":
                 await runtime.reload()
                 print("配置、资源和扩展已重载")
@@ -225,6 +236,8 @@ async def run(args, *, stream_fn=None):
     overrides = {}
     if args.permission:
         overrides["permission_mode"] = args.permission
+    if args.mode:
+        overrides["interaction_mode"] = args.mode
     # Require explicit model selection or settings for new sessions; no arbitrary paid default.
     project_trusted = initial_trusted
     if model is None and session_file is None:
@@ -243,6 +256,7 @@ async def run(args, *, stream_fn=None):
             raise ValueError(f"Session belongs to {runtime.cwd}; omit --cwd to restore it, or create a new session")
         print(f"Session: {runtime.session_file}", file=sys.stderr)
         print(f"Permission: {runtime.permission_mode}", file=sys.stderr)
+        print(f"Interaction mode: {runtime.interaction_mode}", file=sys.stderr)
         if not runtime.project_trusted:
             print("Project is untrusted: project resources and tools are disabled; use --trust-project or /trust",
                   file=sys.stderr)
@@ -252,7 +266,9 @@ async def run(args, *, stream_fn=None):
             print(f"Resource: {diagnostic}", file=sys.stderr)
         if args.json:
             _emit({"type": "session_start", "session_file": runtime.session_file,
-                   "cwd": runtime.cwd, "permission": runtime.permission_mode})
+                   "cwd": runtime.cwd, "permission": runtime.permission_mode,
+                   "interaction_mode": runtime.interaction_mode,
+                   "effective_interaction_mode": runtime.effective_interaction_mode})
 
             def on_event(event, cancel_event):
                 _emit(event)

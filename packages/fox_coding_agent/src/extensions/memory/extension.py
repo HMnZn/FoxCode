@@ -251,7 +251,7 @@ def create_memory_extension(config: MemoryExtensionConfig | None = None):
             # extension owns activation of its model-facing tools. This keeps
             # the host free of memory-specific names and makes activation work
             # for built-in, file-based, and SDK-loaded extension instances.
-            active = [tool.name for tool in context.active_tools]
+            active = [tool.name for tool in context.selected_tools]
             missing = [name for name in MEMORY_TOOL_NAMES if name not in active]
             if missing:
                 context.activate_tools([*active, *missing])

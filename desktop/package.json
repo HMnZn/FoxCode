@@ -10,6 +10,8 @@
     "dev:web": "vite",
     "build": "tsc -p tsconfig.json && vite build",
     "build:web": "vite build",
+    "dist": "npm run build && electron-builder",
+    "dist:mac": "npm run build && electron-builder --mac dmg zip --x64 --arm64",
     "start": "electron .",
     "shot": "node scripts/shot.mjs",
     "icon": "node scripts/make-icon.mjs",
@@ -36,10 +38,36 @@
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.1.1",
     "electron": "^44.4.5",
+    "electron-builder": "^26.0.12",
     "jsdom": "^30.1.1",
     "tailwindcss": "^4.3.3",
     "typescript": "^5.9.3",
     "vite": "^8.3.1",
     "vitest": "^5.0.2"
+  },
+  "build": {
+    "appId": "com.foxcode.studio",
+    "productName": "FoxCode Studio",
+    "asar": true,
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "package.json"
+    ],
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "icon": "build/icon.png",
+      "target": ["dmg", "zip"],
+      "minimumSystemVersion": "12.0",
+      "hardenedRuntime": false
+    },
+    "dmg": {
+      "title": "FoxCode Studio ${version}",
+      "artifactName": "${productName}-${version}-${arch}.${ext}"
+    }
   }
 }

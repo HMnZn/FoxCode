@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from fox_ai.src import Model
+from fox_ai.src import Model, TextContent, UserMessage
 from fox_agent_core.src._async import maybe_await, cancellable
 import asyncio
 from .agent_session import AgentSession, AgentSessionConfig
@@ -18,6 +18,9 @@ from .tools import create_all_tools
 from .system_prompt import build_system_prompt
 from .extensions import ExtensionRunner, ExtensionContext
 from .permissions import PERMISSION_MODES, check_tool_permission
+from .interaction import is_plan_safe_tool
+from .sandbox import check_sandbox_tool
+from .paths import UserPaths
 
 
 class AgentSessionRuntime:
@@ -102,7 +105,7 @@ class AgentSessionRuntime:
     def _session_layout(manager: SettingsManager) -> SessionLayout:
         # SessionLayout has no cwd/default-root fallback.  SettingsManager's
         # explicit user directory is the sole owner of all transcripts.
-        return SessionLayout(manager.user_dir / "sessions")
+        return SessionLayout(UserPaths.from_root(manager.user_dir).sessions)
 
     @classmethod
     def latest_session(cls, cwd: str | Path = ".", *, user_dir=None,
@@ -169,14 +172,28 @@ class AgentSessionRuntime:
         stream_options = {**settings.stream_options, **self._stream_options}
         authenticated_stream = self.model_runtime.authenticated_stream(api_key_env=settings.api_key_env)
         async def before(data, cancel):
-            if not project_trusted:
-                return {"block": True, "reason": (
-                    "Project is not trusted; restart with --trust-project before executing tools"
-                )}
             call = data["tool_call"]
             tool = agent_session.get_tool(call.name)
             if tool is None:
                 return {"block": True, "reason": f"Tool '{call.name}' is not registered"}
+            # submit_plan only packages text already produced by the model; it
+            # reads no project data and changes no external state. Keeping it
+            # available lets an untrusted workspace still show the approval
+            # card, while every actual project tool remains blocked.
+            if not project_trusted and call.name != "submit_plan":
+                return {"block": True, "reason": (
+                    "Project is not trusted; restart with --trust-project before executing tools"
+                )}
+            if (agent_session.effective_interaction_mode == "plan"
+                    and not is_plan_safe_tool(tool)):
+                return {"block": True, "reason": (
+                    f"Tool '{call.name}' is blocked while Plan mode is active; "
+                    "switch to Default mode before implementation"
+                )}
+            if agent_session.execution_mode == "sandbox":
+                sandbox_reason = check_sandbox_tool(tool, data["args"], cwd)
+                if sandbox_reason:
+                    return {"block": True, "reason": sandbox_reason}
             reason = check_tool_permission(tool, data["args"], cwd, settings.permission_mode)
             if reason:
                 return {"block": True, "reason": reason}
@@ -195,11 +212,11 @@ class AgentSessionRuntime:
         async def transform_context(messages, cancel):
             return await extensions.transform_context(messages, agent_session.extension_context)
 
-        def prompt_builder(active, skills, workdir):
+        def prompt_builder(active, skills, workdir, interaction_mode):
             return build_system_prompt(cwd=workdir, tools=active, skills=skills, resources=resources,
                 custom_prompt=settings.system_prompt or resources.system_prompt_override,
                 append_prompt=settings.append_system_prompt, guidelines=extensions.api.guidelines,
-                permission_mode=settings.permission_mode)
+                permission_mode=settings.permission_mode, interaction_mode=interaction_mode)
 
         agent_session = AgentSession(AgentSessionConfig(
             model=model, cwd=cwd, session=session, tools=tools, skills=resources.skills,
@@ -209,6 +226,8 @@ class AgentSessionRuntime:
             tool_execution=settings.tool_execution, stream_fn=authenticated_stream,
             stream_options=stream_options, before_tool_call=before, after_tool_call=after,
             summary_fn=self._summary_fn, transform_context=transform_context,
+            interaction_mode=settings.interaction_mode,
+            execution_mode=settings.execution_mode,
         ))
         agent_session.extensions = extensions
         agent_session.extension_context = ExtensionContext(
@@ -219,12 +238,13 @@ class AgentSessionRuntime:
             permission_mode=settings.permission_mode,
             services=extensions.api.services,
         )
-        if settings.tools is not None and [t.name for t in agent_session.state.tools] != settings.tools:
+        selected_names = list(agent_session.selected_tool_names)
+        if settings.tools is not None and selected_names != settings.tools:
             agent_session.set_active_tools(settings.tools)
         elif settings.tools is None and os.name != "nt" and "powershell" in available:
             # Keep saved choices; hide Windows-specific commands only for brand-new sessions.
             if not had_tool_selection:
-                agent_session.set_active_tools([t.name for t in agent_session.state.tools if t.name != "powershell"])
+                agent_session.set_active_tools([name for name in selected_names if name != "powershell"])
         return agent_session
 
     def _install(self, cwd, path, settings, loader, resources, agent_session, project_trusted):
@@ -269,6 +289,18 @@ class AgentSessionRuntime:
     @property
     def permission_mode(self):
         return self.settings_manager.settings.permission_mode
+
+    @property
+    def interaction_mode(self):
+        return self.agent_session.interaction_mode
+
+    @property
+    def effective_interaction_mode(self):
+        return self.agent_session.effective_interaction_mode
+
+    @property
+    def execution_mode(self):
+        return self.agent_session.execution_mode
 
     def export_session(self, path: str | Path, *, format: str | None = None) -> Path:
         """Export the current session tree as JSON or active transcript as Markdown."""
@@ -330,20 +362,53 @@ class AgentSessionRuntime:
     async def prompt(self, message):
         self._ensure_available()
         self.agent_session.ensure_idle()
+        native_message = message if isinstance(message, UserMessage) else None
+        hook_message = message
+        if native_message is not None:
+            hook_message = (
+                native_message.content
+                if isinstance(native_message.content, str)
+                else "\n".join(
+                    block.text for block in native_message.content if isinstance(block, TextContent)
+                )
+            )
+        if isinstance(hook_message, str):
+            self.agent_session.prepare_interaction_for_prompt(hook_message)
         self._preparing = True
         self._hook_cancel = asyncio.Event()
         try:
             await cancellable(self._start_extensions(), self._hook_cancel)
-            outcomes = await cancellable(self.agent_session.extensions.emit("before_prompt", {"message": message},
+            outcomes = await cancellable(self.agent_session.extensions.emit("before_prompt", {"message": hook_message},
                 self.agent_session.extension_context), self._hook_cancel)
             for outcome in outcomes:
                 if outcome and "message" in outcome:
-                    message = outcome["message"]
+                    hook_message = outcome["message"]
         finally:
             self._preparing = False
             self._hook_cancel = None
+        if native_message is not None and isinstance(hook_message, str):
+            blocks = [] if isinstance(native_message.content, str) else list(native_message.content)
+            images = [block for block in blocks if not isinstance(block, TextContent)]
+            message = UserMessage(
+                content=([TextContent(text=hook_message)] if hook_message else []) + images,
+                timestamp=native_message.timestamp,
+            )
+        else:
+            message = hook_message
         self._persist_new(self.agent_session, self.session_file)
         await self.agent_session.prompt(message)
+
+    def set_interaction_mode(self, mode: str):
+        """Select automatic, normal execution, or read-only planning for this branch."""
+
+        self._ensure_available()
+        return self.agent_session.set_interaction_mode(mode)
+
+    def set_execution_mode(self, mode: str):
+        """Select direct host execution or the native project sandbox."""
+
+        self._ensure_available()
+        return self.agent_session.set_execution_mode(mode)
 
     async def continue_(self):
         await self._prepare_start()

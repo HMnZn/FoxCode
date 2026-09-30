@@ -10,7 +10,8 @@ from typing import Any, Literal, Protocol
 
 SessionEntryType = Literal[
     "message", "compaction", "branch_summary", "thinking_level_change",
-    "model_change", "active_tools_change", "label", "session_info",
+    "model_change", "active_tools_change", "interaction_mode_change", "label", "session_info",
+    "plan_decision", "execution_mode_change",
 ]
 
 

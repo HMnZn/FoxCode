@@ -97,7 +97,7 @@ class CodingToolTests(Workspace, unittest.IsolatedAsyncioTestCase):
         )
         text = result.content[0].text
         self.assertIn("中文正常", text)
-        self.assertIn(str(self.project / ".foxcode" / "tmp").lower(), text.lower())
+        self.assertIn(str(self.project / ".foxcode" / "artifacts" / "tmp").lower(), text.lower())
 
         script = self.project / "中文脚本.ps1"
         await WriteTool(self.project).execute(
@@ -117,7 +117,7 @@ class CodingToolTests(Workspace, unittest.IsolatedAsyncioTestCase):
     async def test_wsl_bash_uses_mnt_workspace_temp(self):
         tool = BashTool(self.project)
         result = await tool.execute("bash", {"command": "printf '%s' \"$TEMP\""})
-        expected = "/mnt/" + str(self.project / ".foxcode" / "tmp")[0].lower()
+        expected = "/mnt/" + str(self.project / ".foxcode" / "artifacts" / "tmp")[0].lower()
         self.assertTrue(result.content[0].text.startswith(expected + "/"))
         self.assertIn("Windows bash may be WSL", tool.description)
 

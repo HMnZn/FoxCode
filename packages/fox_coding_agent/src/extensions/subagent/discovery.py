@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from ...core.skills import parse_frontmatter
+from ...core.paths import ProjectPaths, UserPaths
 from .models import SubAgentCatalog, SubAgentDefinition, SubAgentDiagnostic, built_in_agents
 
 
@@ -61,9 +62,9 @@ def discover_subagents(
 ) -> SubAgentCatalog:
     """Load built-ins, then user profiles, then trusted-project overrides."""
     catalog = SubAgentCatalog(definitions=built_in_agents())
-    _load_directory(Path(user_dir).expanduser().resolve() / "agents", catalog)
+    _load_directory(UserPaths.from_root(user_dir).agents, catalog)
     if project_trusted:
-        _load_directory(Path(cwd).expanduser().resolve() / ".foxcode" / "agents", catalog)
+        _load_directory(ProjectPaths.from_root(cwd).agents, catalog)
     return catalog
 
 

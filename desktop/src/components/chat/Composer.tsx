@@ -6,10 +6,13 @@ import {
   FileText,
   FolderOpen,
   FolderTree,
+  ImagePlus,
   Slash,
+  ShieldCheck,
   Sparkles,
   Square,
   Zap,
+  X,
 } from 'lucide-react'
 import {
   Button,
@@ -28,10 +31,15 @@ import { useUi } from '@/store/uiStore'
 import { samePath, useWorkspace, workspaceName } from '@/store/workspaceStore'
 import { formatBytes, shortPath } from '@/lib/format'
 import {
+  INTERACTION_LABEL,
+  INTERACTION_MODES,
+  EXECUTION_LABEL,
+  EXECUTION_MODES,
   PERMISSION_LABEL,
   PERMISSION_MODES,
   THINKING_LEVELS,
   type CommandInfo,
+  type PromptImage,
   type ThinkingLevel,
   type WorkspaceDirectory,
 } from '@/types/protocol'
@@ -63,6 +71,31 @@ const THINKING_LABEL: Record<ThinkingLevel, string> = {
 }
 
 const MAX_HEIGHT = 260
+const MAX_IMAGES = 4
+const MAX_IMAGE_BYTES = 8 * 1024 * 1024
+const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif'])
+
+function readImage(file: File): Promise<PromptImage> {
+  return new Promise((resolve, reject) => {
+    if (!IMAGE_TYPES.has(file.type)) {
+      reject(new Error(`不支持 ${file.type || file.name}，请选择 PNG/JPEG/WebP/GIF`))
+      return
+    }
+    if (file.size > MAX_IMAGE_BYTES) {
+      reject(new Error(`${file.name} 超过 8 MiB`))
+      return
+    }
+    const reader = new FileReader()
+    reader.onerror = () => reject(reader.error ?? new Error(`无法读取 ${file.name}`))
+    reader.onload = () => {
+      const value = String(reader.result ?? '')
+      const comma = value.indexOf(',')
+      if (comma < 0) reject(new Error(`${file.name} 不是有效图片`))
+      else resolve({ name: file.name, mimeType: file.type, data: value.slice(comma + 1), size: file.size })
+    }
+    reader.readAsDataURL(file)
+  })
+}
 
 export interface ComposerProps {
   draftKey: string
@@ -93,6 +126,9 @@ export function Composer({ draftKey, className, hero = false }: ComposerProps) {
   const invokeSkill = useSession((s) => s.invokeSkill)
   const setThinking = useSession((s) => s.setThinking)
   const setPermissionMode = useSession((s) => s.setPermissionMode)
+  const setInteractionMode = useSession((s) => s.setInteractionMode)
+  const setExecutionMode = useSession((s) => s.setExecutionMode)
+  const implementPlan = useSession((s) => s.implementPlan)
   const selectModel = useSession((s) => s.selectModel)
   const bridge = useSession((s) => s.bridge)
   const recentWorkspaces = useWorkspace((s) => s.recent)
@@ -100,10 +136,13 @@ export function Composer({ draftKey, className, hero = false }: ComposerProps) {
   const openWorkspace = useWorkspace((s) => s.open)
 
   const busy = timeline.status === 'streaming' || timeline.status === 'compacting'
+  const hasPendingPlan = timeline.blocks.some((block) => block.kind === 'plan' && !block.decision)
   const [picker, setPicker] = useState<number | null>(null)
   const [dir, setDir] = useState<WorkspaceDirectory | null>(null)
   const [dirIndex, setDirIndex] = useState(0)
+  const [images, setImages] = useState<PromptImage[]>([])
   const area = useRef<HTMLTextAreaElement>(null)
+  const imageInput = useRef<HTMLInputElement>(null)
   const list = useRef<HTMLDivElement>(null)
   const dirList = useRef<HTMLDivElement>(null)
 
@@ -197,10 +236,25 @@ export function Composer({ draftKey, className, hero = false }: ComposerProps) {
     else insertMention(entry.path)
   }
 
+  const addImages = async (files: File[]) => {
+    const room = MAX_IMAGES - images.length
+    if (room <= 0) {
+      toast.warn({ title: `每条消息最多 ${MAX_IMAGES} 张图片` })
+      return
+    }
+    try {
+      const additions = await Promise.all(files.slice(0, room).map(readImage))
+      setImages((current) => [...current, ...additions].slice(0, MAX_IMAGES))
+      if (files.length > room) toast.warn({ title: `只添加了前 ${room} 张图片` })
+    } catch (error) {
+      toast.danger({ title: '图片添加失败', description: error instanceof Error ? error.message : String(error) })
+    }
+  }
+
   const submit = (interrupt = false) => {
     const text = value.trim()
-    if (!text) return
-    if (text.startsWith('/')) {
+    if (!text && images.length === 0) return
+    if (text.startsWith('/') && images.length === 0) {
       const [name, ...rest] = text.slice(1).split(/\s+/)
       if (name === SLASH_FILE) {
         const path = rest.join(' ').trim()
@@ -216,13 +270,15 @@ export function Composer({ draftKey, className, hero = false }: ComposerProps) {
         return
       }
     }
+    const attachments = images
     setDraft(draftKey, '')
+    setImages([])
     if (busy) {
-      if (interrupt) void steer(text, true)
-      else void followUp(text)
+      if (interrupt) void steer(text, true, attachments)
+      else void followUp(text, attachments)
       return
     }
-    void prompt(text)
+    void prompt(text, attachments)
   }
 
   const accept = (index: number) => {
@@ -427,12 +483,40 @@ export function Composer({ draftKey, className, hero = false }: ComposerProps) {
 
         <QueuedMessages className="rounded-t-panel border-b border-line/70" />
 
+        {images.length ? (
+          <div className="flex gap-2 overflow-x-auto border-b border-line/70 px-3 py-2">
+            {images.map((image, index) => (
+              <div key={`${image.name}-${index}`} className="group relative size-16 shrink-0 overflow-hidden rounded-lg bg-surface-3">
+                <img
+                  src={`data:${image.mimeType};base64,${image.data}`}
+                  alt={image.name}
+                  className="size-full object-cover"
+                />
+                <button
+                  type="button"
+                  aria-label={`移除 ${image.name}`}
+                  onClick={() => setImages((current) => current.filter((_, item) => item !== index))}
+                  className="absolute right-1 top-1 grid size-5 place-items-center rounded-full bg-canvas/85 text-fg opacity-0 shadow group-hover:opacity-100 focus:opacity-100"
+                >
+                  <X size={12} />
+                </button>
+              </div>
+            ))}
+          </div>
+        ) : null}
+
         <textarea
           ref={area}
           value={value}
           rows={1}
           spellCheck={false}
           onChange={(event) => setDraft(draftKey, event.target.value)}
+          onPaste={(event) => {
+            const files = Array.from(event.clipboardData.files).filter((file) => file.type.startsWith('image/'))
+            if (!files.length) return
+            event.preventDefault()
+            void addImages(files)
+          }}
           onKeyDown={onKeyDown}
           placeholder={busy
             ? '运行中 — Enter 排队（结束后自动发送），Ctrl/Cmd + Enter 立即插队'
@@ -447,6 +531,29 @@ export function Composer({ draftKey, className, hero = false }: ComposerProps) {
         />
 
         <div className="flex min-w-0 flex-wrap items-center gap-2 px-2 pt-0.5 pb-2">
+          <input
+            ref={imageInput}
+            type="file"
+            accept="image/png,image/jpeg,image/webp,image/gif"
+            multiple
+            className="hidden"
+            onChange={(event) => {
+              void addImages(Array.from(event.target.files ?? []))
+              event.target.value = ''
+            }}
+          />
+          <Tooltip content="添加图片（也可直接粘贴）" side="top">
+            <IconButton
+              label="添加图片"
+              variant="soft"
+              size="sm"
+              className="rounded-full"
+              disabled={images.length >= MAX_IMAGES}
+              onClick={() => imageInput.current?.click()}
+            >
+              <ImagePlus size={14} />
+            </IconButton>
+          </Tooltip>
           <Tooltip content="插入命令前缀" side="top">
             <IconButton
               label="插入命令前缀"
@@ -555,6 +662,36 @@ export function Composer({ draftKey, className, hero = false }: ComposerProps) {
             </Menu>
           </Tooltip>
 
+          <Menu
+            placement="top"
+            align="end"
+            label="执行环境"
+            triggerClassName={cn(
+              'rounded-sm border-transparent bg-transparent px-2 text-[12px] hover:border-transparent hover:bg-interactive',
+              host?.executionMode === 'sandbox' && 'text-success',
+            )}
+            trigger={host ? (
+              <span className="inline-flex items-center gap-1">
+                {host.executionMode === 'sandbox' ? <ShieldCheck size={12} /> : null}
+                {EXECUTION_LABEL[host.executionMode]}
+              </span>
+            ) : '环境 —'}
+          >
+            {EXECUTION_MODES.map((mode) => (
+              <MenuItem
+                key={mode}
+                label={EXECUTION_LABEL[mode]}
+                hint={mode === 'sandbox'
+                  ? host?.sandbox.shell
+                    ? `${host.sandbox.backend} · 项目内写入 · 禁止网络`
+                    : '文件隔离；当前平台将禁用 shell'
+                  : '直接在宿主系统执行'}
+                selected={host?.executionMode === mode}
+                onSelect={() => void setExecutionMode(mode)}
+              />
+            ))}
+          </Menu>
+
           <span className="ml-auto flex items-center gap-2 text-2xs text-fg-subtle">
             {approxTokens ? <span className="font-mono tabular-nums">≈{approxTokens} tok</span> : null}
             {busy ? (
@@ -566,6 +703,31 @@ export function Composer({ draftKey, className, hero = false }: ComposerProps) {
           </span>
 
           <span className="hidden items-center gap-1.5 md:flex">
+            <Menu
+              placement="top"
+              align="end"
+              label="交互模式"
+              triggerClassName={cn(
+                'rounded-sm border-transparent bg-transparent px-2 text-[12px] hover:border-transparent hover:bg-interactive',
+                host?.effectiveInteractionMode === 'plan' && 'text-accent',
+              )}
+              trigger={host
+                ? host.interactionMode === 'auto'
+                  ? `自动 · ${host.effectiveInteractionMode === 'plan' ? '计划' : '执行'}`
+                  : INTERACTION_LABEL[host.interactionMode]
+                : '模式 —'}
+            >
+              {INTERACTION_MODES.map((mode) => (
+                <MenuItem
+                  key={mode}
+                  label={INTERACTION_LABEL[mode]}
+                  hint={mode === 'auto' ? '按每条请求判断' : mode === 'plan' ? '只读分析与规划' : '允许实施任务'}
+                  selected={host?.interactionMode === mode}
+                  onSelect={() => void setInteractionMode(mode)}
+                />
+              ))}
+            </Menu>
+
             <Menu
               placement="top"
               align="end"
@@ -623,6 +785,17 @@ export function Composer({ draftKey, className, hero = false }: ComposerProps) {
             </Menu>
           </span>
 
+          {!busy && host?.effectiveInteractionMode === 'plan' && !hasPendingPlan ? (
+            <Button
+              variant="secondary"
+              size="sm"
+              iconLeft={<Sparkles size={13} />}
+              onClick={() => void implementPlan()}
+            >
+              开始实施
+            </Button>
+          ) : null}
+
           {busy ? (
             <Button
               variant="danger"
@@ -639,7 +812,7 @@ export function Composer({ draftKey, className, hero = false }: ComposerProps) {
             size="sm"
             aria-label="发送"
             className="size-8 rounded-full px-0"
-            disabled={!value.trim()}
+            disabled={!value.trim() && images.length === 0}
             iconLeft={<ArrowUp size={15} />}
             title={busy ? '加入排队（这一轮结束后自动发送）· Ctrl/Cmd+Enter 立即插队' : '发送'}
             onClick={() => submit(false)}

@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 
 #: 线协议版本；前端 `PROTOCOL_VERSION` 必须与它相等。
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 3
 
 #: 这些字段名承载「消息」，序列化时使用 camelCase 别名。
 _MESSAGE_FIELDS = frozenset({"message", "messages", "tool_results", "streaming_message"})

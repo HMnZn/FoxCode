@@ -26,6 +26,7 @@ from pathlib import Path
 from xml.sax.saxutils import escape, quoteattr
 
 import yaml
+from .paths import ProjectPaths, UserPaths
 
 MAX_NAME_LENGTH = 64
 MAX_DESCRIPTION_LENGTH = 1024
@@ -300,10 +301,10 @@ def load_skills(options: LoadSkillsOptions) -> SkillLoadResult:
 
     if options.include_defaults:
         # 用户级
-        user_skills_dir = os.path.join(user_dir, "skills")
+        user_skills_dir = UserPaths.from_root(user_dir).skills
         _add(load_skills_from_dir(user_skills_dir), "user")
         # 项目级
-        project_skills_dir = os.path.join(cwd, CONFIG_DIR_NAME, "skills")
+        project_skills_dir = ProjectPaths.from_root(cwd).skills
         _add(load_skills_from_dir(project_skills_dir), "project")
 
     # 显式路径

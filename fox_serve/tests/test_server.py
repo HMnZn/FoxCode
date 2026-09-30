@@ -36,7 +36,7 @@ class FakeHost:
     async def handle(self, method: str, params: dict[str, Any]) -> Any:
         self.calls.append((method, params))
         if method == "host.info":
-            return {"transport": "sidecar", "protocolVersion": 1, "cwd": str(Path.cwd())}
+            return {"transport": "sidecar", "protocolVersion": 3, "cwd": str(Path.cwd())}
         if method == "prompt":
             # 模拟「整轮还没结束」：等测试放行，期间另一个请求要先被处理。
             await self.gate.wait()
@@ -77,7 +77,7 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(out[0]["event"], "transport")
         self.assertEqual(out[0]["status"]["state"], "ready")
         response = [item for item in out if item.get("id") == "c1"][0]
-        self.assertEqual(response["result"]["protocolVersion"], 1)
+        self.assertEqual(response["result"]["protocolVersion"], 3)
 
     async def test_unknown_method_and_host_exception_become_errors(self) -> None:
         out, _host = await self._run(

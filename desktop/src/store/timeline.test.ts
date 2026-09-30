@@ -61,6 +61,45 @@ describe('timeline reducer', () => {
     expect(state.status).toBe('streaming')
   })
 
+  it('keeps native image parts on the user block', () => {
+    const state = run([{
+      type: 'message_end',
+      message: {
+        role: 'user',
+        content: [
+          { type: 'text', text: '看这张图' },
+          { type: 'image', data: 'aGVsbG8=', mimeType: 'image/png' },
+        ],
+      },
+    }])
+    const block = state.blocks[0]
+    expect(block.kind).toBe('user')
+    expect(block.kind === 'user' && block.images?.[0].mimeType).toBe('image/png')
+  })
+
+  it('turns submit_plan into an actionable card and records the decision', () => {
+    const state = run([
+      { type: 'tool_execution_start', tool_call_id: 'plan-1', tool_name: 'submit_plan', args: {} },
+      {
+        type: 'tool_execution_end',
+        tool_call_id: 'plan-1',
+        tool_name: 'submit_plan',
+        result: 'ready',
+        is_error: false,
+        details: {
+          kind: 'plan',
+          plan: { summary: '完成多模态支持', steps: ['接通协议', '补测试'] },
+        },
+      },
+      { type: 'plan_decision', tool_call_id: 'plan-1', decision: 'accepted' },
+    ])
+    expect(state.blocks).toHaveLength(1)
+    const plan = state.blocks[0]
+    expect(plan.kind).toBe('plan')
+    expect(plan.kind === 'plan' && plan.plan.steps).toEqual(['接通协议', '补测试'])
+    expect(plan.kind === 'plan' && plan.decision).toBe('accepted')
+  })
+
   it('settles an existing queued bubble when the backend consumes it', () => {
     const queued: TimelineState = {
       ...EMPTY_TIMELINE,

@@ -1,5 +1,7 @@
 # FoxCode · Mini Coding Agent
 
+FoxCode 现在将交互模式、权限策略与执行环境分成三个独立维度。桌面端可选择本机执行或项目隔离沙盒；统一目录与测试产物规则见 [沙盒与文件系统设计](docs/FILESYSTEM_AND_SANDBOX.md)。
+
 `fox_ai` 提供统一模型协议；`fox_agent_core` 提供循环、状态与通用 Harness；`fox_coding_agent` 提供 AgentSession、SessionManager、Tools、Skill、信任、Extensions 和 CLI。仓库是三个独立分发包组成的 uv workspace，依赖方向为 `fox-coding-agent → fox-agent-core → fox-ai`。
 
 现已增加可复用的 `AgentSessionRuntime`、`SettingsManager`、`ResourceLoader`，以及独立 `fox_coding_agent` CLI。分层设计、配置示例与恢复语义见 [架构指南·宿主运行时与 CLI](packages/fox_coding_agent/ARCHITECTURE_GUIDE.md#ch01)。
@@ -25,13 +27,14 @@ uv run fox --resume --compact
 {
   "model": "provider/model-id",
   "permission_mode": "workspace-modify",
+  "execution_mode": "sandbox",
   "extensions": ["module:fox_coding_agent.src.extensions.memory:setup"],
   "stream_options": {"max_tokens": 8192},
   "tools": ["read", "write", "edit", "grep", "find", "ls"]
 }
 ```
 
-`permission_mode` 控制工作区与系统操作：`read-only` 禁止修改项目，`workspace-modify` 在界面中显示为“工作区修改”，允许修改工作区文件并从工作区执行 shell，`full-access` 允许写入任意路径。扩展可以把自身管理的数据声明为 `extension-state`；这类状态操作不受三档工作区权限影响，但仍要求项目已信任。命令行 `--permission` 只覆盖本次进程。
+`permission_mode` 控制能力授权：`read-only` 禁止修改，`workspace-modify` 允许项目内直接文件写入，本机 shell 与越界写入逐次审批，`full-access` 允许系统级操作。`execution_mode` 独立控制运行边界：`local` 直接使用宿主，`sandbox` 将文件工具限制在项目内，并在 Linux/macOS 有原生后端时隔离 shell 与网络；后端不可用时 shell 被禁用。扩展可以把自身管理的数据声明为 `extension-state`，但未声明沙盒支持的扩展工具在沙盒中仍会被拒绝。
 
 面试准备先读内核的 13 章，再读编码宿主的 9 章，分别理解通用机制与项目策略。
 
@@ -55,7 +58,7 @@ fox CLI / Notebook
                     └── fox_ai  OpenAI / Anthropic / Faux 流式接口
 ```
 
-连续对话中支持 `/help`、`/new`、`/resume 文件`、`/fork [条目 ID]`、`/cwd 目录`、`/reload`、`/trust`、`/untrust`、`/permission`、`/compact`、`/usage`、`/export`、`/tools`、`/model`、`/thinking`、`/skill 名称`、`/prompt 名称` 和扩展命令。`/fork` 会创建新的持久化 Session 并切换过去；原 Session 不再被后续消息修改。
+连续对话中支持 `/help`、`/new`、`/resume 文件`、`/fork [条目 ID]`、`/cwd 目录`、`/reload`、`/trust`、`/untrust`、`/permission`、`/mode [auto|default|plan]`、`/compact`、`/usage`、`/export`、`/tools`、`/model`、`/thinking`、`/skill 名称`、`/prompt 名称` 和扩展命令。`auto` 会按每条请求自动判断是否进入只读 Plan 模式；桌面端在 `submit_plan` 后显示结构化确认卡片，只有用户选择“开始实施”才发起执行轮次。桌面输入支持原生 PNG/JPEG/WebP/GIF 多模态消息，并持久化为 `ImageContent`。`/fork` 会创建新的持久化 Session 并切换过去，原 Session 不再被后续消息修改。macOS 桌面开发和 `.dmg`/`.zip` 打包见 [desktop/README.md](desktop/README.md)。
 
 扩展示例：[project_info.py](examples/extensions/project_info.py)。`settings.json` 的 `extensions` 数组支持 Python 文件、`module:<包>[:callable]` 和 `entrypoint:<name>`；加入后可执行 `fox --command project-info`。详细 API 与边界见[宿主指南·第六章](packages/fox_coding_agent/ARCHITECTURE_GUIDE.md#ch06)。
 
@@ -159,7 +162,7 @@ asyncio.run(main())
 | `ls` | `path?`, `limit?` | 列出目录，包含隐藏条目 |
 | `powershell` | `command`, `timeout?` | PowerShell 命令，支持超时、取消和输出上限 |
 
-Windows 上 `bash` 需要 Git Bash，或自行传入 `BashTool(cwd, shell=...)`。单独使用工具类时，`cwd` 只用于解析相对路径，不是沙箱；通过 Runtime 使用时由 `permission_mode` 统一拦截。SDK 还可在 `before_tool_call` 中追加策略。文件工具限制单个文本文件 10 MiB，输出限制约 20000 字符。
+Windows 上 `bash` 需要 Git Bash，或自行传入 `BashTool(cwd, shell=...)`。本机执行时 `cwd` 只用于解析相对路径；沙盒执行时文件工具自身会拒绝任何解析后越过项目根目录的路径。SDK 还可在 `before_tool_call` 中追加策略。文件工具限制单个文本文件 10 MiB，输出限制约 20000 字符。
 
 批次默认并行；只要存在标记为 `sequential` 的工具，整批串行。`write/edit/bash` 默认为串行，避免同批文件修改互相竞争。参数按 JSON Schema 校验，错误作为工具结果交给模型。
 

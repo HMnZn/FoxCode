@@ -19,7 +19,7 @@ from uuid import uuid4
 
 from fox_agent_core.src._async import maybe_await
 
-RESERVED_COMMANDS = {"help", "exit", "quit", "new", "resume", "fork", "cwd", "reload", "compact", "tools", "model", "thinking", "skill", "prompt", "trust", "untrust", "permission", "export", "usage"}
+RESERVED_COMMANDS = {"help", "exit", "quit", "new", "resume", "fork", "cwd", "reload", "compact", "tools", "model", "thinking", "skill", "prompt", "trust", "untrust", "permission", "mode", "export", "usage"}
 
 
 @dataclass(frozen=True)
@@ -44,6 +44,16 @@ class ExtensionContext:
     def active_tools(self) -> tuple:
         """Current model-facing tools as an immutable extension view."""
         return tuple(self.agent_session.state.tools)
+
+    @property
+    def selected_tools(self) -> tuple:
+        """User-selected tools before an interaction policy narrows them."""
+
+        names = getattr(self.agent_session, "selected_tool_names", ())
+        return tuple(
+            tool for name in names
+            if (tool := self.agent_session.get_tool(name)) is not None
+        )
 
     def activate_tools(self, names) -> None:
         """Select static or dynamically registered tools while the session is idle."""

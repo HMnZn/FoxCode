@@ -58,6 +58,9 @@ function resolveShell() {
       env,
     }
   }
+  if (process.platform === 'darwin') {
+    return { shell: process.env.SHELL || '/bin/zsh', args: ['-l'], env }
+  }
   return { shell: process.env.SHELL || '/bin/bash', args: [], env }
 }
 

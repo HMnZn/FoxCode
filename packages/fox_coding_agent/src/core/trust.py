@@ -6,12 +6,14 @@ import json
 import os
 import tempfile
 from pathlib import Path
+from .paths import UserPaths
 
 
 class ProjectTrustManager:
     def __init__(self, user_dir: str | Path | None = None) -> None:
-        self.user_dir = Path(user_dir).expanduser().resolve() if user_dir else Path.home() / ".foxcode"
-        self.path = self.user_dir / "trust.json"
+        paths = UserPaths.from_root(user_dir)
+        self.user_dir = paths.root
+        self.path = paths.trust
         self._decisions: dict[str, bool] = {}
         self.reload()
 

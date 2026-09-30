@@ -334,9 +334,9 @@ def create_subagent_extension(config: SubAgentExtensionConfig | None = None):
         def session_start(data, context):
             service.bind(context)
             if config.auto_activate_tool and tool.name not in {
-                item.name for item in context.active_tools
+                item.name for item in context.selected_tools
             }:
-                active = [item.name for item in context.active_tools]
+                active = [item.name for item in context.selected_tools]
                 context.activate_tools([*active, tool.name])
 
         async def session_shutdown(data, context):

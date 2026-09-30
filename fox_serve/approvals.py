@@ -15,7 +15,8 @@
 
 于是 `read-only`（只读工具放行、其余直接拒绝）／`workspace-modify`（界面显示为
 “工作区修改”，工作区内写入和 shell 放行、越界文件写入弹审批）／
-`full-access`（全部放行）三档语义都能工作，
+`full-access`（全部放行）三档语义都能工作。工作区模式下，本机 shell 每次审批；
+只有原生沙盒已经约束进程时才直接放行，
 并且「本会话总是允许」有地方可记。
 """
 
@@ -182,6 +183,7 @@ class PermissionPolicy:
         required: str = "full-access",
         args: Any = None,
         permission_paths: Any = None,
+        sandboxed: bool = False,
     ) -> PolicyDecision:
         required = required if required in _RANK else "full-access"
         need = _RANK[required]
@@ -210,11 +212,17 @@ class PermissionPolicy:
         if self.is_allowed(tool_name):
             return PolicyDecision("allow", "policy", f"本会话已允许 {tool_name}")
 
-        if is_shell:
+        if is_shell and sandboxed:
             return PolicyDecision(
                 "allow",
                 "policy",
-                f"工作区修改模式允许从当前工作区执行 {tool_name}",
+                f"原生沙盒已约束 {tool_name} 的文件系统和网络访问",
+            )
+        if is_shell:
+            return PolicyDecision(
+                "ask",
+                "always-ask",
+                f"本机 shell 无法仅靠路径参数证明不会越过工作区；需要逐次确认 {tool_name}",
             )
 
         outside = [path for path in paths if not inside_workspace(path, self.cwd)]

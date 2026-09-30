@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import sys
 import time
@@ -41,10 +42,17 @@ from .protocol import (
     to_jsonable,
 )
 from fox_coding_agent.src.core.session_layout import session_id_from_path
+from fox_coding_agent.src.core.paths import ProjectPaths, UserPaths
+from fox_coding_agent.src.core.sandbox import detect_sandbox
+from fox_ai.src import ImageContent, TextContent, ToolResultMessage, UserMessage
 from .sessions import MAX_LABEL_LENGTH, SessionIndex, branch_label
 
 #: 默认的用户级目录（与 CLI 一致：`packages/fox_coding_agent/src/core/settings.py`）。
 DEFAULT_USER_DIR = Path.home() / ".foxcode"
+MAX_PROMPT_IMAGES = 4
+MAX_PROMPT_IMAGE_BYTES = 8 * 1024 * 1024
+MAX_PROMPT_IMAGES_BYTES = 20 * 1024 * 1024
+PROMPT_IMAGE_MIMES = frozenset({"image/png", "image/jpeg", "image/webp", "image/gif"})
 
 #: `run_command` 的内置命令表（对齐 `packages/fox_coding_agent/src/cli.py:126` 的用法）。
 BUILTIN_COMMANDS: tuple[dict[str, str], ...] = (
@@ -56,6 +64,8 @@ BUILTIN_COMMANDS: tuple[dict[str, str], ...] = (
     {"name": "/trust", "description": "信任当前项目", "argumentHint": ""},
     {"name": "/untrust", "description": "取消信任当前项目", "argumentHint": ""},
     {"name": "/permission", "description": "切换权限档位", "argumentHint": "MODE"},
+    {"name": "/mode", "description": "切换自动、执行或计划模式", "argumentHint": "[auto|default|plan]"},
+    {"name": "/sandbox", "description": "切换本机或沙盒执行环境", "argumentHint": "[local|sandbox]"},
     {"name": "/compact", "description": "压缩当前会话上下文", "argumentHint": ""},
     {"name": "/usage", "description": "查看累计用量", "argumentHint": ""},
     {"name": "/export", "description": "导出会话", "argumentHint": "FILE"},
@@ -100,6 +110,53 @@ def tool_call_parts(payload: dict[str, Any]) -> list[dict[str, Any]]:
         for part in content
         if isinstance(part, dict) and part.get("type") == "toolCall" and part.get("id")
     ]
+
+
+def prompt_message(message: Any, options: Any = None) -> tuple[UserMessage | str, str]:
+    """Validate renderer images and build a native multimodal user message."""
+
+    text = message if isinstance(message, str) else ""
+    raw_attachments = options.get("attachments", []) if isinstance(options, dict) else []
+    if raw_attachments is None:
+        raw_attachments = []
+    if not isinstance(raw_attachments, list):
+        raise HostError("attachments 必须是数组")
+    if len(raw_attachments) > MAX_PROMPT_IMAGES:
+        raise HostError(f"每条消息最多附加 {MAX_PROMPT_IMAGES} 张图片")
+
+    images: list[ImageContent] = []
+    total = 0
+    for index, item in enumerate(raw_attachments, 1):
+        if not isinstance(item, dict):
+            raise HostError(f"第 {index} 个图片附件格式无效")
+        mime = str(item.get("mimeType") or item.get("mime_type") or "").lower()
+        if mime not in PROMPT_IMAGE_MIMES:
+            raise HostError(f"不支持的图片类型：{mime or '(空)'}")
+        data = item.get("data")
+        if not isinstance(data, str) or not data:
+            raise HostError(f"第 {index} 个图片附件缺少 base64 data")
+        if data.startswith("data:"):
+            marker = data.find(",")
+            data = data[marker + 1:] if marker >= 0 else ""
+        if len(data) > ((MAX_PROMPT_IMAGE_BYTES + 2) // 3) * 4 + 8:
+            raise HostError(f"第 {index} 张图片超过 8 MiB")
+        try:
+            decoded = base64.b64decode(data, validate=True)
+        except (ValueError, TypeError) as exc:
+            raise HostError(f"第 {index} 个图片附件不是有效 base64") from exc
+        if len(decoded) > MAX_PROMPT_IMAGE_BYTES:
+            raise HostError(f"第 {index} 张图片超过 8 MiB")
+        total += len(decoded)
+        if total > MAX_PROMPT_IMAGES_BYTES:
+            raise HostError("图片附件总大小超过 20 MiB")
+        images.append(ImageContent(data=data, mimeType=mime))
+
+    if not text.strip() and not images:
+        raise HostError("需要一个非空的 message 或至少一张图片")
+    if not images:
+        return text, text
+    content = ([TextContent(text=text)] if text.strip() else []) + images
+    return UserMessage(content=content, timestamp=int(time.time() * 1000)), text
 
 
 class HostError(RuntimeError):
@@ -298,6 +355,7 @@ class ServeHost:
                 "session_file": str(getattr(runtime, "session_file", "") or ""),
                 "cwd": str(getattr(runtime, "cwd", self.cwd)),
                 "permission": self._policy.mode,
+                "execution": getattr(runtime, "execution_mode", "local"),
             }
         )
 
@@ -459,6 +517,7 @@ class ServeHost:
                 required=required,
                 args=args,
                 permission_paths=permission_paths,
+                sandboxed=getattr(tool, "execution_environment", "local") == "sandbox",
             )
             if decision.action == "allow":
                 return None
@@ -522,6 +581,10 @@ class ServeHost:
             # 当前上下文占用的量级估算：前端在还没拿到任何 usage 之前先用它显示进度。
             "contextTokens": self._context_tokens(),
             "permissionMode": self._policy.mode,
+            "executionMode": getattr(runtime, "execution_mode", "local"),
+            "sandbox": detect_sandbox().as_dict(),
+            "interactionMode": getattr(runtime, "interaction_mode", "auto"),
+            "effectiveInteractionMode": getattr(runtime, "effective_interaction_mode", "default"),
             "thinkingLevel": thinking,
             "model": self._model_info(getattr(runtime.state, "model", None)),
             "availableModels": [
@@ -545,6 +608,10 @@ class ServeHost:
             "runtimePermissionMode": getattr(runtime, "permission_mode", None),
             "policy": self._policy.snapshot(),
             "hostPid": __import__("os").getpid(),
+            "paths": {
+                "user": UserPaths.from_root(getattr(self, "user_dir", DEFAULT_USER_DIR)).public(),
+                "project": ProjectPaths.from_root(runtime.cwd).public(),
+            },
         }
 
     # ---- 会话 ----
@@ -875,9 +942,20 @@ class ServeHost:
                         "tool_name": payload.get("toolName") or "",
                         "result": content_text(payload),
                         "is_error": bool(payload.get("isError")),
+                        "details": payload.get("details"),
                     }
                 )
             count += 1
+        for entry in entries:
+            if str(getattr(entry, "type", "")) != "plan_decision":
+                continue
+            data = getattr(entry, "data", None)
+            if isinstance(data, dict):
+                self._emit_frame({
+                    "type": "plan_decision",
+                    "tool_call_id": data.get("tool_call_id"),
+                    "decision": data.get("decision"),
+                })
         if tool_frames and settle:
             self._emit_frame({"type": "agent_end"})
         return count
@@ -886,10 +964,8 @@ class ServeHost:
 
     async def _cmd_prompt(self, params: dict[str, Any]) -> dict[str, Any]:
         runtime = self._require_runtime()
-        message = params.get("message")
-        if not isinstance(message, str) or not message.strip():
-            raise HostError("prompt 需要一个非空的 message")
         options = params.get("options") or {}
+        message, routing_text = prompt_message(params.get("message"), options)
         queue_as = str(options.get("queueAs") or options.get("queue_as") or "").strip()
         if queue_as == "steer":
             self._enqueue("steer", message)
@@ -897,6 +973,15 @@ class ServeHost:
         if queue_as in ("follow_up", "followUp"):
             self._enqueue("follow_up", message)
             return {"queued": "follow_up"}
+
+        # Resolve automatic planning before the background task starts so an
+        # immediate host.info already reflects the effective mode. The runtime
+        # repeats this check after extension preprocessing as a safe no-op.
+        if not self._agent_running:
+            session = getattr(runtime, "agent_session", None)
+            prepare_mode = getattr(session, "prepare_interaction_for_prompt", None)
+            if callable(prepare_mode):
+                prepare_mode(routing_text)
 
         # 一轮对话可能要跑几分钟，而前端 sidecar 客户端对单个请求有超时。
         # 所以这里立刻返回，把这一轮放到后台 task 里跑：进度/结束全部由帧
@@ -914,9 +999,14 @@ class ServeHost:
                 self._runtime_tasks.pop(marker, None)
 
         task.add_done_callback(_clear_runtime_task)
-        return {"queued": "prompt"}
+        return {
+            "queued": "prompt",
+            "effectiveInteractionMode": getattr(
+                runtime, "effective_interaction_mode", "default"
+            ),
+        }
 
-    async def _run_prompt(self, message: str, *, runtime: Any | None = None) -> None:
+    async def _run_prompt(self, message: Any, *, runtime: Any | None = None) -> None:
         runtime = runtime or self._runtime
         if runtime is None:
             self._agent_running = False
@@ -948,9 +1038,7 @@ class ServeHost:
 
     async def _cmd_steer(self, params: dict[str, Any]) -> dict[str, Any]:
         runtime = self._require_runtime()
-        message = str(params.get("message") or "")
-        if not message.strip():
-            raise HostError("steer 需要一个非空的 message")
+        message, _ = prompt_message(params.get("message"), params)
         self._require_running("steer")
         promote_pending = bool(params.get("promoteFollowUps") or params.get("promote_follow_ups"))
         interrupt = bool(params.get("interrupt"))
@@ -1012,9 +1100,7 @@ class ServeHost:
 
     async def _cmd_follow_up(self, params: dict[str, Any]) -> dict[str, Any]:
         self._require_runtime()
-        message = str(params.get("message") or "")
-        if not message.strip():
-            raise HostError("follow_up 需要一个非空的 message")
+        message, _ = prompt_message(params.get("message"), params)
         self._require_running("follow_up")
         self._enqueue("follow_up", message)
         return {"queued": "follow_up"}
@@ -1030,7 +1116,7 @@ class ServeHost:
         if not self._agent_running:
             raise HostError(f"当前没有正在运行的一轮，{kind} 不会被消费；请直接发送这条消息")
 
-    def _enqueue(self, kind: str, message: str) -> None:
+    def _enqueue(self, kind: str, message: Any) -> None:
         """`steer` / `follow_up` 是同步入队（`harness.py:89-93`），运行中插话走这里。"""
 
         runtime = self._require_runtime()
@@ -1044,7 +1130,8 @@ class ServeHost:
         if target is None:
             raise HostError(f"当前宿主不支持 {kind}（运行中插话）")
         target(message)
-        self._log(f"{kind} 已入队：{message[:60]}")
+        preview = message if isinstance(message, str) else content_text(message_payload(message))
+        self._log(f"{kind} 已入队：{preview[:60]}")
 
     async def _cmd_abort(self, _params: dict[str, Any]) -> dict[str, Any]:
         runtime = self._require_runtime()
@@ -1131,6 +1218,92 @@ class ServeHost:
         self._log(f"权限档位 → {mode}（宿主内部仍为 full-access，静态检查不会抢先拒绝）")
         return {"permissionMode": mode}
 
+    async def _cmd_interaction_set(self, params: dict[str, Any]) -> dict[str, Any]:
+        runtime = self._require_runtime()
+        try:
+            mode = runtime.set_interaction_mode(str(params.get("mode") or ""))
+        except (RuntimeError, ValueError) as exc:
+            raise HostError(str(exc)) from exc
+        self._tools = {
+            str(getattr(tool, "name", "")): tool
+            for tool in (getattr(runtime.state, "tools", None) or [])
+        }
+        self._log(f"交互模式 → {mode}（当前生效：{runtime.effective_interaction_mode}）")
+        return {
+            "interactionMode": mode,
+            "effectiveInteractionMode": runtime.effective_interaction_mode,
+        }
+
+    async def _cmd_execution_set(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Switch the current branch between direct and sandboxed execution."""
+
+        runtime = self._require_runtime()
+        if self._agent_running:
+            raise HostError("运行中不能切换执行环境")
+        try:
+            mode = runtime.set_execution_mode(str(params.get("mode") or ""))
+        except (RuntimeError, ValueError) as exc:
+            raise HostError(str(exc)) from exc
+        capability = detect_sandbox()
+        if mode == "sandbox":
+            detail = capability.detail if capability.shell else f"{capability.detail} shell 将被禁用"
+            self._log(f"执行环境 → sandbox（{detail}）")
+        else:
+            self._log("执行环境 → local")
+        return {"executionMode": mode, "sandbox": capability.as_dict()}
+
+    async def _cmd_plan_answer(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Resolve a submitted plan and optionally start its implementation."""
+
+        runtime = self._require_runtime()
+        tool_call_id = str(params.get("id") or params.get("toolCallId") or "").strip()
+        raw_decision = str(params.get("decision") or "").strip().lower()
+        aliases = {"accept": "accepted", "accepted": "accepted", "yes": "accepted",
+                   "reject": "rejected", "rejected": "rejected", "no": "rejected"}
+        decision = aliases.get(raw_decision)
+        if not tool_call_id or decision is None:
+            raise HostError("plan.answer 需要有效的 id 和 accept/reject decision")
+        if self._agent_running:
+            raise HostError("计划仍在生成，请等待规划结束后再选择")
+
+        session = getattr(runtime, "session", None)
+        if session is None:
+            raise HostError("当前会话不可用")
+        found = False
+        previous = None
+        for entry in session.get_branch(include_ancestors=True):
+            if entry.type == "message" and isinstance(entry.data, ToolResultMessage):
+                details = entry.data.details
+                if (entry.data.tool_call_id == tool_call_id and isinstance(details, dict)
+                        and details.get("kind") == "plan"):
+                    found = True
+            elif entry.type == "plan_decision" and isinstance(entry.data, dict):
+                if entry.data.get("tool_call_id") == tool_call_id:
+                    previous = entry.data.get("decision")
+        if not found:
+            raise HostError(f"找不到待确认的计划：{tool_call_id}")
+        if previous is not None:
+            if previous == decision:
+                return {"id": tool_call_id, "decision": decision, "duplicate": True}
+            raise HostError("这个计划已经作出选择，不能重复修改")
+
+        session.append_plan_decision(tool_call_id, decision)
+        self._emit_frame({
+            "type": "plan_decision", "tool_call_id": tool_call_id, "decision": decision,
+        })
+        if decision == "rejected":
+            return {"id": tool_call_id, "decision": decision, "queued": False}
+
+        # Manual Plan mode is a sticky selection, so approval explicitly leaves
+        # it. Auto remains sticky and routes the implementation instruction to
+        # Default mode for this turn.
+        if getattr(runtime, "interaction_mode", "auto") == "plan":
+            runtime.set_interaction_mode("default")
+        result = await self._cmd_prompt({
+            "message": "用户已批准上一条结构化计划。现在严格按照该计划开始实施并完成验证。"
+        })
+        return {"id": tool_call_id, "decision": decision, **result}
+
     async def _cmd_trust_set(self, params: dict[str, Any]) -> dict[str, Any]:
         runtime = self._require_runtime()
         trusted = bool(params.get("trusted"))
@@ -1166,7 +1339,7 @@ class ServeHost:
             return {"cwd": str(runtime.cwd), "unchanged": True}
         if getattr(self, "_running_runtimes", set()):
             raise HostError("仍有会话正在运行，请等待任务结束后再切换工作区")
-        marker = target / ".foxcode"
+        marker = ProjectPaths.from_root(target).control
         try:
             await asyncio.to_thread(marker.mkdir, parents=True, exist_ok=True)
         except OSError as exc:
@@ -1273,6 +1446,8 @@ class ServeHost:
             "trust": self._builtin_trust,
             "untrust": self._builtin_untrust,
             "permission": self._builtin_permission,
+            "mode": self._builtin_mode,
+            "sandbox": self._builtin_sandbox,
             "compact": self._cmd_compact,
             "usage": self._builtin_usage,
             "export": self._builtin_export,
@@ -1315,6 +1490,26 @@ class ServeHost:
             assert self._policy is not None
             return {"permissionMode": self._policy.mode}
         return await self._cmd_permission_set({"mode": arguments})
+
+    async def _builtin_mode(self, params: dict[str, Any]) -> Any:
+        runtime = self._require_runtime()
+        arguments = str(params.get("arguments") or "").strip()
+        if not arguments:
+            return {
+                "interactionMode": runtime.interaction_mode,
+                "effectiveInteractionMode": runtime.effective_interaction_mode,
+            }
+        return await self._cmd_interaction_set({"mode": arguments})
+
+    async def _builtin_sandbox(self, params: dict[str, Any]) -> Any:
+        runtime = self._require_runtime()
+        arguments = str(params.get("arguments") or "").strip()
+        if not arguments:
+            return {
+                "executionMode": runtime.execution_mode,
+                "sandbox": detect_sandbox().as_dict(),
+            }
+        return await self._cmd_execution_set({"mode": arguments})
 
     async def _builtin_usage(self, _params: dict[str, Any]) -> Any:
         runtime = self._require_runtime()
@@ -1496,7 +1691,7 @@ class ServeHost:
         user_dir = Path(getattr(runtime, "user_dir", self.user_dir))
         cwd = Path(getattr(runtime, "cwd", self.cwd))
         user_path = Path(getattr(manager, "user_path", user_dir / "settings.json"))
-        project_path = Path(getattr(manager, "project_path", cwd / ".foxcode" / "settings.json"))
+        project_path = Path(getattr(manager, "project_path", ProjectPaths.from_root(cwd).settings))
         trusted = bool(getattr(runtime, "project_trusted", self.project_trusted))
         return user_path, project_path, trusted
 

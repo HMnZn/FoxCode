@@ -23,6 +23,7 @@ import importlib.util
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
+from fox_coding_agent.src.core.paths import ProjectPaths, UserPaths
 
 #: 配置里 `extensions` 数组的两种作用域。项目级存在时整体覆盖用户级。
 SCOPES: tuple[str, str] = ("project", "user")
@@ -243,8 +244,8 @@ def discover(
             )
 
     for origin, directory in (
-        ("user", user_dir / EXTENSION_SUBDIR),
-        ("project", cwd / PROJECT_DIR / EXTENSION_SUBDIR),
+        ("user", UserPaths.from_root(user_dir).extensions),
+        ("project", ProjectPaths.from_root(cwd).extensions),
     ):
         if not directory.is_dir():
             continue

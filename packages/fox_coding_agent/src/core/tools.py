@@ -19,6 +19,8 @@ from pathspec import GitIgnoreSpec
 from fox_ai.src import TextContent
 from fox_agent_core.src._async import cancellable, check_cancelled
 from fox_agent_core.src.types import AgentToolResult, ToolExecutionMode
+from .paths import ProjectPaths
+from .sandbox import EXECUTION_MODES, sandbox_shell_command
 
 MAX_OUTPUT_CHARS = 20000
 MAX_FILE_BYTES = 10 * 1024 * 1024
@@ -40,13 +42,26 @@ def _schema(properties: dict, required: list[str]) -> dict:
 
 class _FileTool:
     execution_mode: ToolExecutionMode = "sequential"
+    sandbox_safe = True
 
     def __init__(self, cwd: str | Path = ".") -> None:
         self.cwd = Path(cwd).expanduser().resolve()
+        self.execution_environment = "local"
+
+    def set_execution_mode(self, mode: str) -> None:
+        if mode not in EXECUTION_MODES:
+            raise ValueError(f"Execution mode must be one of: {', '.join(EXECUTION_MODES)}")
+        self.execution_environment = mode
 
     def _path(self, value: str) -> Path:
         path = Path(value).expanduser()
-        return (self.cwd / path).resolve() if not path.is_absolute() else path.resolve()
+        resolved = (self.cwd / path).resolve() if not path.is_absolute() else path.resolve()
+        if self.execution_environment == "sandbox":
+            try:
+                resolved.relative_to(self.cwd)
+            except ValueError as exc:
+                raise PermissionError(f"Sandbox blocks access outside the project: {value}") from exc
+        return resolved
 
     def _read(self, path: Path) -> str:
         with path.open("rb") as handle:
@@ -85,6 +100,7 @@ class ReadTool(_FileTool):
     name = "read"
     label = "Read file"
     required_permission = "read-only"
+    permission_paths = ("path",)
     execution_mode = "parallel"
     description = "Read a UTF-8 text file, with optional 1-based offset and line limit."
     parameters = _schema({"path": {"type": "string", "minLength": 1},
@@ -178,14 +194,33 @@ class BashTool(_FileTool):
     def _environment(self) -> dict[str, str]:
         """Keep command-created temporary artifacts inside the workspace."""
 
-        environment = os.environ.copy()
-        temp_dir = self.cwd / ".foxcode" / "tmp"
-        temp_dir.mkdir(parents=True, exist_ok=True)
+        paths = ProjectPaths.from_root(self.cwd)
+        paths.ensure_artifacts()
+        if self.execution_environment == "sandbox":
+            allowed = {
+                "PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "COMSPEC",
+                "LANG", "LANGUAGE", "LC_ALL", "LC_CTYPE", "TERM", "COLORTERM", "TZ",
+                "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE",
+            }
+            environment = {key: value for key, value in os.environ.items() if key.upper() in allowed}
+            environment.update({
+                "HOME": str(paths.home), "USERPROFILE": str(paths.home),
+                "XDG_CACHE_HOME": str(paths.cache), "PIP_CACHE_DIR": str(paths.cache / "pip"),
+                "NPM_CONFIG_CACHE": str(paths.cache / "npm"),
+            })
+        else:
+            environment = os.environ.copy()
+        temp_dir = paths.temp
         temp_value = str(temp_dir)
         if self._uses_wsl and len(temp_value) >= 3 and temp_value[1:3] == ":\\":
             drive = temp_value[0].lower()
             temp_value = f"/mnt/{drive}/{temp_value[3:].replace(chr(92), '/')}"
-        environment.update({"TMPDIR": temp_value, "TEMP": temp_value, "TMP": temp_value})
+        environment.update({
+            "TMPDIR": temp_value, "TEMP": temp_value, "TMP": temp_value,
+            "FOXCODE_ARTIFACTS_DIR": str(paths.artifacts),
+            "FOXCODE_TEST_ARTIFACTS_DIR": str(paths.tests),
+            "COVERAGE_FILE": str(paths.tests / ".coverage"),
+        })
         if self._uses_wsl:
             # WSL only imports explicitly listed custom Windows variables.
             inherited = [item for item in environment.get("WSLENV", "").split(":") if item]
@@ -198,6 +233,8 @@ class BashTool(_FileTool):
     async def execute(self, tool_call_id, params, cancel_event=None, on_update=None):
         check_cancelled(cancel_event)
         command = self._command(params["command"])
+        if self.execution_environment == "sandbox":
+            command = sandbox_shell_command(command, self.cwd)
         timeout = params.get("timeout", 120)
         if not 0 < timeout <= 600:
             raise ValueError("timeout must be between 0 and 600 seconds")
@@ -327,6 +364,7 @@ class LsTool(_FileTool):
     name = "ls"
     label = "List directory"
     required_permission = "read-only"
+    permission_paths = ("path",)
     execution_mode = "parallel"
     description = "List immediate directory entries, including hidden files; directories end with /."
     parameters = _schema({"path": {"type": "string"},
@@ -353,6 +391,7 @@ class FindTool(_FileTool):
     name = "find"
     label = "Find files"
     required_permission = "read-only"
+    permission_paths = ("path",)
     execution_mode = "parallel"
     description = "Find files by glob, respecting nested .gitignore; skips symlinks and agent/dependency directories."
     parameters = _schema({"pattern": {"type": "string", "minLength": 1}, "path": {"type": "string"},
@@ -378,6 +417,7 @@ class GrepTool(_FileTool):
     name = "grep"
     label = "Search contents"
     required_permission = "read-only"
+    permission_paths = ("path",)
     execution_mode = "parallel"
     description = ("Search contents with path:line output. Regex uses ripgrep (rg); without rg, set literal=true. "
                    "Directory searches respect .gitignore. Output and match counts are capped.")

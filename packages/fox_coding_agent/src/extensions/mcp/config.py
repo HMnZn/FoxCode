@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
+from ...core.paths import ProjectPaths, UserPaths
 
 
 _SERVER_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
@@ -138,11 +139,22 @@ def load_mcp_config(
     *,
     project_trusted: bool,
 ) -> McpConfigResult:
-    """Merge user configuration and trusted-project overrides."""
+    """Merge user configuration and trusted-project overrides.
+
+    A server that does not declare ``cwd`` runs in the active project directory,
+    so relative side effects (screenshots, downloads, logs) land inside the
+    project instead of the process working directory or the user home.
+    """
     result = McpConfigResult()
-    _merge_file(Path(user_dir).expanduser().resolve() / "mcp.json", result)
+    user_paths = UserPaths.from_root(user_dir)
+    project_paths = ProjectPaths.from_root(cwd)
+    _merge_file(user_paths.mcp, result)
     if project_trusted:
-        _merge_file(Path(cwd).expanduser().resolve() / ".foxcode" / "mcp.json", result)
+        _merge_file(project_paths.mcp, result)
+    project = Path(cwd).expanduser().resolve()
+    for name, server in result.servers.items():
+        if server.cwd is None:
+            result.servers[name] = replace(server, cwd=project)
     return result
 
 

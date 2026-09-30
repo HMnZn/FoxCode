@@ -164,6 +164,66 @@ class ReplayTest(unittest.TestCase):
         host._replay_current_session()  # noqa: SLF001
         self.assertEqual(self._kinds(frames), ["message_end", "message_end"])
 
+    def test_replay_restores_plan_card_details_and_decision(self) -> None:
+        plan = {
+            "summary": "增加原生图片输入",
+            "steps": ["扩展协议", "接入模型消息"],
+            "files": ["fox_serve/host.py"],
+            "verification": ["运行服务端测试"],
+        }
+        entries = [
+            _Entry("message", {"role": "user", "content": _text("先规划再实现")}),
+            _Entry(
+                "message",
+                {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "toolCall",
+                            "id": "plan_1",
+                            "name": "submit_plan",
+                            "arguments": plan,
+                        }
+                    ],
+                },
+            ),
+            _Entry(
+                "message",
+                {
+                    "role": "toolResult",
+                    "toolCallId": "plan_1",
+                    "toolName": "submit_plan",
+                    "isError": False,
+                    "content": _text("计划已提交"),
+                    "details": {"kind": "plan", "plan": plan},
+                },
+            ),
+            _Entry(
+                "plan_decision",
+                {"tool_call_id": "plan_1", "decision": "accepted"},
+            ),
+        ]
+        host, frames = self._host(entries)
+        host._replay_current_session()  # noqa: SLF001
+
+        self.assertEqual(
+            self._kinds(frames),
+            [
+                "message_end",
+                "message_end",
+                "tool_execution_start",
+                "message_end",
+                "tool_execution_end",
+                "plan_decision",
+                "agent_end",
+            ],
+        )
+        self.assertEqual(frames[4]["frame"]["details"], {"kind": "plan", "plan": plan})
+        decision = frames[5]["frame"]
+        self.assertEqual(decision["type"], "plan_decision")
+        self.assertEqual(decision["tool_call_id"], "plan_1")
+        self.assertEqual(decision["decision"], "accepted")
+
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

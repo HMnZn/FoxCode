@@ -3,7 +3,7 @@
 参考上游 ``packages/coding-agent/src/core/session-manager.ts``，保留精简的历史树与持久化接口。
 
 会话以**树结构**存储条目（message / compaction / branch_summary / thinking_level_change
-/ model_change / active_tools_change / label 等）。每个条目有 id、parent_id、
+/ model_change / active_tools_change / interaction_mode_change / label 等）。每个条目有 id、parent_id、
 timestamp。从叶节点回溯到根（或到 compaction）构成当前上下文。
 
 提供两种后端：
@@ -308,11 +308,40 @@ class SessionManager:
         self._storage.append_entry(entry)
         return entry
 
+    def append_interaction_mode_change(self, mode: str) -> SessionEntry:
+        entry = SessionEntry(
+            self._storage.create_entry_id(), self.leaf_id,
+            self._storage.create_timestamp(), "interaction_mode_change", mode,
+        )
+        self._storage.append_entry(entry)
+        return entry
+
+    def append_execution_mode_change(self, mode: str) -> SessionEntry:
+        entry = SessionEntry(
+            self._storage.create_entry_id(), self.leaf_id,
+            self._storage.create_timestamp(), "execution_mode_change", mode,
+        )
+        self._storage.append_entry(entry)
+        return entry
+
+    def append_plan_decision(self, tool_call_id: str, decision: str) -> SessionEntry:
+        if decision not in ("accepted", "rejected"):
+            raise ValueError("Plan decision must be accepted or rejected")
+        entry = SessionEntry(
+            self._storage.create_entry_id(), self.leaf_id,
+            self._storage.create_timestamp(), "plan_decision",
+            {"tool_call_id": str(tool_call_id), "decision": decision},
+        )
+        self._storage.append_entry(entry)
+        return entry
+
     def build_settings(self) -> dict[str, Any]:
         """恢复当前分支上的配置，包含压缩点之前的配置条目。"""
         settings = {}
         keys = {"model_change": "model", "thinking_level_change": "thinking_level",
-                "active_tools_change": "active_tools"}
+                "active_tools_change": "active_tools",
+                "interaction_mode_change": "interaction_mode",
+                "execution_mode_change": "execution_mode"}
         for entry in self.get_branch(include_ancestors=True):
             if entry.type in keys:
                 settings[keys[entry.type]] = copy.deepcopy(entry.data)

@@ -15,7 +15,9 @@ from pathlib import Path
 from typing import Any
 
 from fox_serve.approvals import PermissionPolicy
-from fox_serve.host import HostError, ServeHost
+from fox_serve.host import HostError, ServeHost, prompt_message
+from fox_ai.src import ImageContent, TextContent, ToolResultMessage, UserMessage
+from fox_coding_agent.src.core.session_manager import SessionManager
 
 
 class _StubSession:
@@ -50,6 +52,9 @@ class _StubRuntime:
         self.available_models: list[Any] = []
         self.project_trusted = True
         self.permission_mode = "workspace-modify"
+        self.interaction_mode = "auto"
+        self.effective_interaction_mode = "default"
+        self.execution_mode = "local"
         self.aborted = False
         self.continued = 0
 
@@ -58,6 +63,19 @@ class _StubRuntime:
 
     async def continue_(self) -> None:
         self.continued += 1
+
+    def set_interaction_mode(self, mode: str) -> str:
+        if mode not in ("auto", "default", "plan"):
+            raise ValueError("invalid interaction mode")
+        self.interaction_mode = mode
+        self.effective_interaction_mode = "plan" if mode == "plan" else "default"
+        return mode
+
+    def set_execution_mode(self, mode: str) -> str:
+        if mode not in ("local", "sandbox"):
+            raise ValueError("invalid execution mode")
+        self.execution_mode = mode
+        return mode
 
 
 def _bare_host(runtime: Any | None = None) -> ServeHost:
@@ -74,6 +92,7 @@ def _bare_host(runtime: Any | None = None) -> ServeHost:
     host._tasks = set()
     host._runtime_tasks = {}
     host._running_runtimes = set()
+    host._tools = {}
     host._last_frame_at = time.time()
     host._log_line = lambda message: None
     host.frames: list[dict[str, Any]] = []
@@ -182,6 +201,58 @@ class SteerRefusalTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("非空的 message", str(caught.exception))
 
 
+class NativeImagePromptTests(unittest.TestCase):
+    def test_images_become_native_content_blocks(self) -> None:
+        encoded = "aGVsbG8="
+        message, text = prompt_message("inspect this", {
+            "attachments": [{
+                "name": "shot.png", "mimeType": "image/png", "data": encoded, "size": 5,
+            }],
+        })
+        self.assertIsInstance(message, UserMessage)
+        self.assertEqual(text, "inspect this")
+        self.assertTrue(any(isinstance(block, ImageContent) for block in message.content))
+
+    def test_image_only_prompt_is_allowed_and_bad_base64_is_rejected(self) -> None:
+        message, text = prompt_message("", {
+            "attachments": [{"mimeType": "image/jpeg", "data": "aGVsbG8="}],
+        })
+        self.assertIsInstance(message, UserMessage)
+        self.assertEqual(text, "")
+        with self.assertRaises(HostError):
+            prompt_message("", {"attachments": [{"mimeType": "image/png", "data": "%%%"}]})
+
+
+class PlanAnswerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_accept_is_persisted_leaves_manual_plan_and_queues_implementation(self) -> None:
+        runtime = _StubRuntime()
+        runtime.interaction_mode = "plan"
+        runtime.effective_interaction_mode = "plan"
+        runtime.session = SessionManager()
+        runtime.session.append_message(ToolResultMessage(
+            toolCallId="plan-1",
+            toolName="submit_plan",
+            content=[TextContent(text="Plan")],
+            details={"kind": "plan", "plan": {"summary": "S", "steps": ["A"]}},
+        ))
+        host = _bare_host(runtime)
+        prompts = []
+
+        async def queue_prompt(params):
+            prompts.append(params)
+            return {"queued": "prompt"}
+
+        host._cmd_prompt = queue_prompt
+        result = await host._cmd_plan_answer({"id": "plan-1", "decision": "accept"})
+
+        self.assertEqual(result["decision"], "accepted")
+        self.assertEqual(runtime.interaction_mode, "default")
+        self.assertEqual(len(prompts), 1)
+        decisions = [entry for entry in runtime.session.get_entries() if entry.type == "plan_decision"]
+        self.assertEqual(decisions[0].data["decision"], "accepted")
+        self.assertEqual(host.frames[-1]["frame"]["type"], "plan_decision")
+
+
 class DynamicToolPermissionTests(unittest.IsolatedAsyncioTestCase):
     async def test_uses_executing_context_for_extension_tool_permission(self) -> None:
         host = _bare_host(_StubRuntime())
@@ -258,8 +329,29 @@ class HostInfoBusyTests(unittest.IsolatedAsyncioTestCase):
         host = self._info_host()
         info = await host._cmd_host_info({})
         self.assertIs(info["busy"], False)
+        self.assertEqual(info["interactionMode"], "auto")
+        self.assertEqual(info["effectiveInteractionMode"], "default")
         self.assertIsInstance(info["lastFrameAt"], int)
         self.assertGreater(info["lastFrameAt"], 0)
+
+    async def test_manual_interaction_mode_is_reported(self) -> None:
+        host = self._info_host()
+        result = await host._cmd_interaction_set({"mode": "plan"})
+        self.assertEqual(result, {
+            "interactionMode": "plan",
+            "effectiveInteractionMode": "plan",
+        })
+        info = await host._cmd_host_info({})
+        self.assertEqual(info["interactionMode"], "plan")
+        self.assertEqual(info["effectiveInteractionMode"], "plan")
+
+    async def test_execution_mode_can_be_selected_and_reported(self) -> None:
+        host = self._info_host()
+        result = await host._cmd_execution_set({"mode": "sandbox"})
+        self.assertEqual(result["executionMode"], "sandbox")
+        info = await host._cmd_host_info({})
+        self.assertEqual(info["executionMode"], "sandbox")
+        self.assertIn("backend", info["sandbox"])
 
     async def test_reports_busy_while_a_run_is_in_flight(self) -> None:
         host = self._info_host()

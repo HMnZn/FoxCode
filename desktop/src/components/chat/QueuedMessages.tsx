@@ -83,14 +83,14 @@ export function QueuedMessages({ className }: QueuedMessagesProps) {
             <button
               type="button"
               title="点击修改这条排队消息"
-              aria-label={`修改排队消息：${item.text}`}
+              aria-label={`修改排队消息：${item.text || `图片 ${item.attachments?.length ?? 0} 张`}`}
               onClick={() => {
                 setDraft(item.text)
                 setEditing(item.id)
               }}
               className="min-w-0 flex-1 truncate text-left text-[12.5px] leading-5 text-fg-muted hover:text-fg"
             >
-              {item.text}
+              {item.text || `图片 ${item.attachments?.length ?? 0} 张`}
             </button>
           )}
 

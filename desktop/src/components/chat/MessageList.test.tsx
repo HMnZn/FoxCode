@@ -1,7 +1,8 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen } from '@testing-library/react'
 import { MessageList } from './MessageList'
-import type { ToolCallState, ToolsBlock } from '@/store/timeline'
+import type { Block, PlanBlock, ToolCallState, ToolsBlock } from '@/store/timeline'
+import { useSession } from '@/store/sessionStore'
 
 function call(name: string, id: string, status: ToolCallState['status'] = 'success'): ToolCallState {
   return { id, name, args: { path: 'packages/fox_agent_core/README.md' }, status, startedAt: 0, updates: [] }
@@ -11,7 +12,7 @@ function toolsBlock(calls: ToolCallState[]): ToolsBlock {
   return { kind: 'tools', id: 't1', ts: 0, calls }
 }
 
-function renderBlocks(blocks: ToolsBlock[]) {
+function renderBlocks(blocks: Block[]) {
   return render(<MessageList blocks={blocks} status="idle" />)
 }
 
@@ -59,5 +60,26 @@ describe('MessageList tool group', () => {
 
     renderBlocks([toolsBlock([call('edit', 'c2', 'error')])])
     expect(screen.getAllByText('1 失败').length).toBeGreaterThan(0)
+  })
+
+  it('renders a plan confirmation card and sends an explicit answer', () => {
+    const answerPlan = vi.fn(async () => undefined)
+    useSession.setState({ answerPlan })
+    const plan: PlanBlock = {
+      kind: 'plan', id: 'p1', ts: 0, toolCallId: 'call-plan',
+      plan: {
+        summary: '实现原生图片输入',
+        steps: ['接通协议', '补齐界面'],
+        files: ['fox_serve/host.py'],
+        risks: ['控制消息大小'],
+        verification: ['运行完整测试'],
+      },
+    }
+    renderBlocks([plan])
+
+    expect(screen.getByText('实现原生图片输入')).toBeTruthy()
+    expect(screen.getByText('控制消息大小')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: /开始实施/ }))
+    expect(answerPlan).toHaveBeenCalledWith('call-plan', 'accept')
   })
 })

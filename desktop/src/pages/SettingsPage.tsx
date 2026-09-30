@@ -16,6 +16,7 @@ import {
   RefreshCw,
   Scissors,
   ShieldAlert,
+  ShieldCheck,
   Sparkles,
 } from 'lucide-react'
 import { Button, Chip, SegmentedControl, Select, Switch, toast } from '@/components/ui'
@@ -28,8 +29,11 @@ import {
   PERMISSION_HINT,
   PERMISSION_LABEL,
   PERMISSION_MODES,
+  EXECUTION_LABEL,
+  EXECUTION_MODES,
   THINKING_LEVELS,
   type PermissionMode,
+  type ExecutionMode,
   type ThinkingLevel,
 } from '@/types/protocol'
 
@@ -47,11 +51,12 @@ const THEME_OPTIONS: ReadonlyArray<{ value: 'dark' | 'light'; label: string }> =
   { value: 'light', label: '浅色' },
 ]
 
-type SectionId = 'session' | 'model' | 'permission' | 'appearance' | 'demo'
+type SectionId = 'session' | 'model' | 'execution' | 'permission' | 'appearance' | 'demo'
 
 const SECTION_NAV: ReadonlyArray<{ id: SectionId; label: string; icon: typeof Cpu }> = [
   { id: 'session', label: '会话', icon: FolderOpen },
   { id: 'model', label: '模型', icon: Cpu },
+  { id: 'execution', label: '执行环境', icon: ShieldCheck },
   { id: 'permission', label: '权限', icon: ShieldAlert },
   { id: 'appearance', label: '外观', icon: Sparkles },
   { id: 'demo', label: '演示宿主', icon: Info },
@@ -66,6 +71,7 @@ export function SettingsPage() {
   const selectModel = useSession((state) => state.selectModel)
   const setThinking = useSession((state) => state.setThinking)
   const setPermissionMode = useSession((state) => state.setPermissionMode)
+  const setExecutionMode = useSession((state) => state.setExecutionMode)
 
   const recentWorkspaces = useWorkspace((state) => state.recent)
   const applying = useWorkspace((state) => state.applying)
@@ -341,6 +347,47 @@ export function SettingsPage() {
           </Row>
         </Section>
 
+        <Section
+          id="execution"
+          title="执行环境"
+          hint="权限决定能做什么；执行环境决定代码在什么边界内运行"
+        >
+          <div className="grid gap-2 md:grid-cols-2">
+            {EXECUTION_MODES.map((mode) => (
+              <ExecutionCard
+                key={mode}
+                mode={mode}
+                current={host?.executionMode}
+                shellAvailable={host?.sandbox.shell ?? false}
+                backend={host?.sandbox.backend}
+                onSelect={() => void setExecutionMode(mode)}
+              />
+            ))}
+          </div>
+          {host?.executionMode === 'sandbox' ? (
+            <div className="flex items-start gap-2 rounded-lg border border-success/40 bg-success-soft p-3 text-2xs text-success">
+              <ShieldCheck size={13} className="mt-px shrink-0" aria-hidden="true" />
+              <span>
+                文件工具被限制在项目目录内；测试、日志和临时文件写入{' '}
+                <span className="font-mono">.foxcode/artifacts/</span>。
+                {host.sandbox.shell
+                  ? ` shell 由 ${host.sandbox.backend} 隔离，并关闭网络。`
+                  : ' 当前系统没有可用的原生进程沙盒，因此 shell 工具被禁用。'}
+              </span>
+            </div>
+          ) : null}
+          <Row label="用户配置根目录" hint="设置、模型、凭据、MCP、技能、扩展与会话">
+            <span className="max-w-[480px] truncate font-mono text-2xs text-fg-muted">
+              {host?.paths?.user.root ?? '—'}
+            </span>
+          </Row>
+          <Row label="项目产物目录" hint="测试报告、覆盖率、截图、日志与临时文件">
+            <span className="max-w-[480px] truncate font-mono text-2xs text-fg-muted">
+              {host?.paths?.project.artifacts ?? '.foxcode/artifacts'}
+            </span>
+          </Row>
+        </Section>
+
         <Section id="permission" title="权限" hint="这里只调整运行时的权限档位，最终仍由粒度更细的检查决定">
           <div className="grid gap-2 md:grid-cols-3">
             {PERMISSION_MODES.map((mode) => (
@@ -484,6 +531,50 @@ function PermissionCard({
         {active && <Check size={12} className="ml-auto text-accent" aria-hidden="true" />}
       </span>
       <span className="text-2xs leading-relaxed text-fg-subtle">{PERMISSION_HINT[mode]}</span>
+      <span className="mt-1 font-mono text-2xs text-fg-subtle">{mode}</span>
+    </button>
+  )
+}
+
+function ExecutionCard({
+  mode,
+  current,
+  shellAvailable,
+  backend,
+  onSelect,
+}: {
+  mode: ExecutionMode
+  current: ExecutionMode | undefined
+  shellAvailable: boolean
+  backend?: string
+  onSelect: () => void
+}) {
+  const active = current === mode
+  const hint = mode === 'local'
+    ? '直接使用宿主文件系统和网络，实际能力仍受权限档位控制'
+    : shellAvailable
+      ? `项目目录内写入、网络隔离；shell 后端：${backend}`
+      : '文件工具严格限制在项目内；缺少原生后端时禁用 shell'
+  return (
+    <button
+      type="button"
+      onClick={onSelect}
+      aria-pressed={active}
+      className={[
+        'flex flex-col gap-1.5 rounded-lg border p-3 text-left transition-colors',
+        active
+          ? 'border-accent bg-accent-soft'
+          : 'border-line bg-surface-2 hover:border-line-strong hover:bg-surface-3',
+      ].join(' ')}
+    >
+      <span className="flex items-center gap-2">
+        {mode === 'sandbox' ? <ShieldCheck size={13} className="text-success" /> : <Cpu size={13} />}
+        <span className={`text-xs font-medium ${active ? 'text-accent' : 'text-fg'}`}>
+          {EXECUTION_LABEL[mode]}
+        </span>
+        {active && <Check size={12} className="ml-auto text-accent" aria-hidden="true" />}
+      </span>
+      <span className="text-2xs leading-relaxed text-fg-subtle">{hint}</span>
       <span className="mt-1 font-mono text-2xs text-fg-subtle">{mode}</span>
     </button>
   )

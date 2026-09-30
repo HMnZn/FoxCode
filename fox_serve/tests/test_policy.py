@@ -62,13 +62,20 @@ class PolicyTests(unittest.TestCase):
         self.assertEqual(decision.reason, "outside-workspace")
         self.assertEqual(decision.path, str(self.cwd.parent / "elsewhere.md"))
 
-    def test_workspace_modify_allows_shell_without_prompt(self) -> None:
+    def test_workspace_modify_asks_for_unsandboxed_shell(self) -> None:
         policy = PermissionPolicy("workspace-modify", cwd=self.cwd)
         decision = policy.evaluate(
             tool_name="bash", required="full-access", args={"command": "git log --oneline"}
         )
+        self.assertEqual(decision.action, "ask")
+        self.assertEqual(decision.reason, "always-ask")
+
+    def test_workspace_modify_allows_natively_sandboxed_shell(self) -> None:
+        policy = PermissionPolicy("workspace-modify", cwd=self.cwd)
+        decision = policy.evaluate(
+            tool_name="bash", required="full-access", args={"command": "pytest"}, sandboxed=True
+        )
         self.assertEqual(decision.action, "allow")
-        self.assertEqual(decision.reason, "policy")
 
     def test_full_access_mode_allows_everything(self) -> None:
         policy = PermissionPolicy("full-access", cwd=self.cwd)

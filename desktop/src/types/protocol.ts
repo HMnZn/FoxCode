@@ -20,9 +20,12 @@
 /* Primitives                                                          */
 /* ------------------------------------------------------------------ */
 
-export const PROTOCOL_VERSION = 1 as const
+export const PROTOCOL_VERSION = 3 as const
 
 export type PermissionMode = 'read-only' | 'workspace-modify' | 'full-access'
+export type InteractionMode = 'auto' | 'default' | 'plan'
+export type ExecutionMode = 'local' | 'sandbox'
+export type EffectiveInteractionMode = 'default' | 'plan'
 export type ThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
 export type StopReason = 'pending' | 'stop' | 'length' | 'toolUse' | 'error' | 'aborted'
 export type StreamEndReason = 'stop' | 'length' | 'toolUse'
@@ -32,6 +35,8 @@ export type ShutdownReason = 'reload' | 'switch' | 'fork' | 'close'
 export type RecoveryKind = 'context_overflow_retry' | 'model_retry'
 
 export const PERMISSION_MODES: PermissionMode[] = ['read-only', 'workspace-modify', 'full-access']
+export const INTERACTION_MODES: InteractionMode[] = ['auto', 'default', 'plan']
+export const EXECUTION_MODES: ExecutionMode[] = ['local', 'sandbox']
 export const THINKING_LEVELS: ThinkingLevel[] = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh']
 
 export const PERMISSION_LEVEL: Record<PermissionMode, number> = {
@@ -48,8 +53,19 @@ export const PERMISSION_LABEL: Record<PermissionMode, string> = {
 
 export const PERMISSION_HINT: Record<PermissionMode, string> = {
   'read-only': '只能读取文件与搜索，任何写入/执行都会被拒绝',
-  'workspace-modify': '可修改工作区文件并执行 shell；工作区外的直接文件写入需要确认',
+  'workspace-modify': '可修改项目文件；本机 shell 与工作区外写入需要确认，沙盒 shell 可直接执行',
   'full-access': '可执行 shell 并写入任意路径（钩子仍可拦截）',
+}
+
+export const INTERACTION_LABEL: Record<InteractionMode, string> = {
+  auto: '自动模式',
+  default: '执行模式',
+  plan: '计划模式',
+}
+
+export const EXECUTION_LABEL: Record<ExecutionMode, string> = {
+  local: '本机执行',
+  sandbox: '沙盒执行',
 }
 
 /* ------------------------------------------------------------------ */
@@ -66,6 +82,13 @@ export interface ThinkingContent {
   thinking: string
 }
 
+export interface ImageContent {
+  type: 'image'
+  /** Raw base64 bytes. The MIME is transported separately, matching fox_ai.ImageContent. */
+  data: string
+  mimeType: string
+}
+
 export interface ToolCallContent {
   type: 'toolCall'
   id: string
@@ -75,7 +98,7 @@ export interface ToolCallContent {
   namespace?: string | null
 }
 
-export type Content = TextContent | ThinkingContent | ToolCallContent
+export type Content = TextContent | ImageContent | ThinkingContent | ToolCallContent
 
 export interface UsageCost {
   input: number
@@ -168,7 +191,7 @@ export type AssistantStreamEvent =
 /* ------------------------------------------------------------------ */
 
 export type HostEvent =
-  | { type: 'session_start'; session_file: string; cwd: string; permission: PermissionMode }
+  | { type: 'session_start'; session_file: string; cwd: string; permission: PermissionMode; execution?: ExecutionMode }
   | { type: 'session_shutdown'; reason: ShutdownReason }
   | { type: 'agent_start' }
   | { type: 'agent_end'; messages?: Message[] }
@@ -201,6 +224,7 @@ export type HostEvent =
       is_error: boolean
       details?: Record<string, unknown>
     }
+  | { type: 'plan_decision'; tool_call_id: string; decision: PlanDecision }
   | { type: 'compaction_start'; automatic?: boolean; preTokens?: number }
   | {
       type: 'compaction_update'
@@ -382,6 +406,15 @@ export interface HostInfo {
   cwd: string
   sessionFile: string
   permissionMode: PermissionMode
+  executionMode: ExecutionMode
+  sandbox: {
+    backend: 'bubblewrap' | 'sandbox-exec' | 'file-policy' | string
+    shell: boolean
+    networkIsolated: boolean
+    detail: string
+  }
+  interactionMode: InteractionMode
+  effectiveInteractionMode: EffectiveInteractionMode
   thinkingLevel: ThinkingLevel
   model: ModelInfo
   availableModels: ModelInfo[]
@@ -405,7 +438,29 @@ export interface HostInfo {
   /** 宿主最近发出一帧的时间（epoch 毫秒），用来判断「真的没输出了」。 */
   lastFrameAt?: number
   sidecarError?: string
+  paths?: {
+    user: Record<string, string>
+    project: Record<string, string>
+  }
 }
+
+export interface PromptImage {
+  name: string
+  mimeType: string
+  /** Raw base64, without a data: URL prefix. */
+  data: string
+  size: number
+}
+
+export interface SubmittedPlan {
+  summary: string
+  steps: string[]
+  files?: string[]
+  risks?: string[]
+  verification?: string[]
+}
+
+export type PlanDecision = 'accepted' | 'rejected'
 
 export interface UsageTotals {
   input: number
@@ -438,7 +493,7 @@ export const EMPTY_TOTALS: UsageTotals = {
 export interface PromptOptions {
   /** Sent through `steer()` instead of `prompt()` when the runtime is busy. */
   queueAs?: 'prompt' | 'steer' | 'follow_up'
-  attachments?: string[]
+  attachments?: PromptImage[]
 }
 
 /** 工作区里一个文件的改动类型（宿主按 git 状态码归一后给的字面量）。 */
@@ -539,9 +594,9 @@ export type HostCommand =
   | { method: 'prompt'; params: { message: string; options?: PromptOptions } }
   | {
       method: 'steer'
-      params: { message: string; promoteFollowUps?: boolean; interrupt?: boolean }
+      params: { message: string; attachments?: PromptImage[]; promoteFollowUps?: boolean; interrupt?: boolean }
     }
-  | { method: 'follow_up'; params: { message: string } }
+  | { method: 'follow_up'; params: { message: string; attachments?: PromptImage[] } }
   | { method: 'abort' }
   | { method: 'compact' }
   | { method: 'run_command'; params: { name: string; arguments?: string } }
@@ -549,6 +604,9 @@ export type HostCommand =
   | { method: 'model.select'; params: { reference: string } }
   | { method: 'thinking.set'; params: { level: ThinkingLevel } }
   | { method: 'permission.set'; params: { mode: PermissionMode } }
+  | { method: 'interaction.set'; params: { mode: InteractionMode } }
+  | { method: 'execution.set'; params: { mode: ExecutionMode } }
+  | { method: 'plan.answer'; params: { id: string; decision: 'accept' | 'reject' } }
   | { method: 'trust.set'; params: { trusted: boolean } }
   | { method: 'cwd.change'; params: { cwd: string } }
   | { method: 'permission.answer'; params: PermissionAnswer }

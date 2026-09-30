@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { applyFrame, EMPTY_TIMELINE } from '@/store/timeline'
 import { useSession } from '@/store/sessionStore'
 import type { HostInfo, SessionSummary } from '@/types/protocol'
+import { PROTOCOL_VERSION } from '@/types/protocol'
 
 /**
  * 这一组用例盯的都是「界面卡住之后怎么自己回来」的行为 —— 也就是 m05802 报的那几件事：
@@ -280,7 +281,7 @@ describe('sessionStore recovery', () => {
             type: 'agent_start',
             seq: 1,
             ts: Date.now(),
-            v: 1,
+            v: PROTOCOL_VERSION,
           }),
         }))
         throw new Error('写入超时')

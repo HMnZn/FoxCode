@@ -879,6 +879,7 @@ uv run fox --trust-project --permission workspace-modify --interactive
 | `tools` | `string[] \| null` | `null` 使用平台默认；空数组禁用；名称必须唯一且存在 |
 | `extensions` | `string[]`，默认空 | 显式加载扩展文件、`module:` 模块或 `entrypoint:` 包入口 |
 | `permission_mode` | `read-only` / `workspace-modify` / `full-access` | 工作区与系统工具权限；默认 `full-access` 以保持 SDK 兼容，`extension-state` 独立于此模式 |
+| `execution_mode` | `local` / `sandbox` | 工具执行边界；沙盒限制项目路径，并只在原生进程后端可用时开放 shell |
 | `max_turns` | 正整数，默认 `100` | 一次 Agent 操作的最大轮数 |
 | `model_retry_attempts` | `0..5`，默认 `1` | 对可安全重试的空响应错误最多恢复几次 |
 | `tool_execution` | `parallel` / `sequential` | 同一轮多个工具调用的执行策略 |
@@ -899,6 +900,7 @@ uv run fox --trust-project --permission workspace-modify --interactive
   },
   "tool_execution": "parallel",
   "permission_mode": "workspace-modify",
+  "execution_mode": "sandbox",
   "extensions": ["module:fox_coding_agent.src.extensions.memory:setup"]
 }
 ```

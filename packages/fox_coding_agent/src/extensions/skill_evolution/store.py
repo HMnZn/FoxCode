@@ -9,6 +9,7 @@ import re
 import tempfile
 import time
 from pathlib import Path
+from ...core.paths import ProjectPaths, UserPaths
 from typing import Any
 
 import yaml
@@ -129,8 +130,8 @@ class SkillEvolutionStore:
         self.proposals_path = self.state_dir / "proposals.json"
         self.provenance_path = self.state_dir / "provenance.jsonl"
         self.history_dir = self.state_dir / "history"
-        self.project_skills_dir = self.cwd / ".foxcode" / "skills"
-        self.user_skills_dir = self.user_dir / "skills"
+        self.project_skills_dir = ProjectPaths.from_root(self.cwd).skills
+        self.user_skills_dir = UserPaths.from_root(self.user_dir).skills
 
     def _read_proposals(self) -> list[EvolutionProposal]:
         if not self.proposals_path.is_file():
@@ -171,6 +172,19 @@ class SkillEvolutionStore:
         exact = next((skill for skill in skills if skill.name == candidate.name), None)
         if exact is not None:
             return "merge", exact.name, 1.0
+        derived = sorted(
+            (
+                skill for skill in skills
+                if candidate.name.startswith(f"{skill.name}-")
+            ),
+            key=lambda skill: len(skill.name),
+            reverse=True,
+        )
+        if derived:
+            # Extractors sometimes append a learned subtopic to an explicitly named
+            # existing Skill. Prefer evolving the longest matching parent over
+            # creating a near-duplicate Skill directory.
+            return "merge", derived[0].name, 0.95
         query = "\n".join((candidate.name, candidate.description, candidate.when_to_use))
         ranked = sorted(
             (

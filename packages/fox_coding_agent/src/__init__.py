@@ -15,6 +15,14 @@ from .core.permissions import (
     EXTENSION_STATE_ACTIONS, PERMISSION_DOMAINS, PERMISSION_MODES,
     ExtensionStateAction, PermissionDomain, PermissionMode, check_tool_permission,
 )
+from .core.interaction import (
+    EffectiveInteractionMode, INTERACTION_MODES, InteractionMode,
+    infer_interaction_mode, is_plan_safe_tool, resolve_interaction_mode,
+)
+from .core.sandbox import (
+    EXECUTION_MODES, ExecutionMode, SandboxCapability, detect_sandbox,
+)
+from .core.paths import ProjectPaths, UserPaths
 from .core.resources import ResourceLoader, ResourceProvider, Resources, ContextFile, PromptTemplate
 from .core.tools import (ReadTool, WriteTool, EditTool, BashTool, PowerShellTool,
                          GrepTool, FindTool, LsTool, create_coding_tools, create_all_tools)

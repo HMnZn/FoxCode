@@ -15,6 +15,7 @@ import type {
   ModelInfo,
   PermissionDecision,
   PermissionRequest,
+  PromptImage,
   SessionSummary,
   SkillInfo,
   CommandInfo,
@@ -274,6 +275,8 @@ const COMMANDS: CommandInfo[] = [
   { name: 'trust', description: '信任当前项目' },
   { name: 'untrust', description: '取消信任当前项目' },
   { name: 'permission', description: '切换权限档位', argumentHint: 'MODE' },
+  { name: 'mode', description: '切换自动、执行或计划模式', argumentHint: '[auto|default|plan]' },
+  { name: 'sandbox', description: '切换本机或沙盒执行环境', argumentHint: '[local|sandbox]' },
   { name: 'compact', description: '压缩当前会话上下文' },
   { name: 'usage', description: '查看累计用量' },
   { name: 'export', description: '导出会话', argumentHint: 'FILE' },
@@ -486,6 +489,9 @@ export class MockHost implements FoxBridge {
     model: MODELS[0],
     thinking: 'medium' as HostInfo['thinkingLevel'],
     permission: 'workspace-modify' as HostInfo['permissionMode'],
+    execution: 'local' as HostInfo['executionMode'],
+    interaction: 'auto' as HostInfo['interactionMode'],
+    effectiveInteraction: 'default' as HostInfo['effectiveInteractionMode'],
     trusted: true,
   }
 
@@ -528,6 +534,15 @@ export class MockHost implements FoxBridge {
       cwd: this.state.cwd,
       sessionFile: this.state.sessionFile,
       permissionMode: this.state.permission,
+      executionMode: this.state.execution,
+      sandbox: {
+        backend: 'file-policy',
+        shell: false,
+        networkIsolated: false,
+        detail: '演示宿主不执行真实 shell。',
+      },
+      interactionMode: this.state.interaction,
+      effectiveInteractionMode: this.state.effectiveInteraction,
       thinkingLevel: this.state.thinking,
       model: this.state.model,
       availableModels: MODELS,
@@ -538,6 +553,10 @@ export class MockHost implements FoxBridge {
       projectTrusted: this.state.trusted,
       contextTokens: 18_000,
       sidecarConnected: false,
+      paths: {
+        user: { root: 'C:\\Users\\Qin\\.foxcode' },
+        project: { root: this.state.cwd, artifacts: `${this.state.cwd}\\.foxcode\\artifacts` },
+      },
       // 演示宿主也要给这两个字段：前端的「生成中自愈」逻辑靠它对账，
       // 少一个字段就会在演示模式下退化（mock 里 running 就是脚本还在跑）。
       busy: this.running || this.busy,
@@ -797,7 +816,7 @@ export class MockHost implements FoxBridge {
       case 'session.export':
         return { path: command.params.path }
       case 'prompt':
-        return this.prompt(command.params.message)
+        return this.prompt(command.params.message, command.params.options?.attachments)
       case 'steer':
         return this.enqueue(command.params.message, 'steer')
       case 'follow_up':
@@ -830,6 +849,27 @@ export class MockHost implements FoxBridge {
         return null
       case 'permission.set':
         this.state.permission = command.params.mode
+        return null
+      case 'interaction.set':
+        this.ensureIdle()
+        this.state.interaction = command.params.mode
+        this.state.effectiveInteraction = command.params.mode === 'plan' ? 'plan' : 'default'
+        return null
+      case 'execution.set':
+        this.ensureIdle()
+        this.state.execution = command.params.mode
+        return null
+      case 'plan.answer':
+        this.emit({
+          type: 'plan_decision',
+          tool_call_id: command.params.id,
+          decision: command.params.decision === 'accept' ? 'accepted' : 'rejected',
+        })
+        if (command.params.decision === 'accept') {
+          if (this.state.interaction === 'plan') this.state.interaction = 'default'
+          this.state.effectiveInteraction = 'default'
+          void this.prompt('用户已批准上一条结构化计划。现在开始实施。')
+        }
         return null
       case 'trust.set':
         this.state.trusted = command.params.trusted
@@ -1049,8 +1089,13 @@ export class MockHost implements FoxBridge {
     }
   }
 
-  private async prompt(message: string): Promise<void> {
+  private async prompt(message: string, attachments: PromptImage[] = []): Promise<void> {
     this.ensureIdle()
+    if (this.state.interaction === 'auto') {
+      const planning = /(?:规划|计划|设计思路|设计方案|技术方案|架构方案|\bplan(?:ning)?\b|\bproposal\b)/i.test(message)
+      const implementing = /(?:开始|直接)?\s*(?:实施|执行|实现|修复|修改|新增|添加|删除|重构|完成)|\b(?:implement|execute|fix|modify|edit|add|remove|refactor|build)\b/i.test(message)
+      this.state.effectiveInteraction = planning && !implementing ? 'plan' : 'default'
+    }
     const generation = ++this.generation
     this.busy = true
     this.running = true
@@ -1064,8 +1109,46 @@ export class MockHost implements FoxBridge {
     this.emit({ type: 'turn_start' })
     this.emit({
       type: 'message_end',
-      message: { role: 'user', content: [{ type: 'text', text: message }] },
+      message: {
+        role: 'user',
+        content: [
+          ...(message ? [{ type: 'text' as const, text: message }] : []),
+          ...attachments.map((image) => ({
+            type: 'image' as const, data: image.data, mimeType: image.mimeType,
+          })),
+        ],
+      },
     })
+
+    if (this.state.effectiveInteraction === 'plan') {
+      const toolId = `mock-plan-${generation}`
+      this.emit({
+        type: 'tool_execution_start', tool_call_id: toolId, tool_name: 'submit_plan', args: {},
+      })
+      this.emit({
+        type: 'tool_execution_end',
+        tool_call_id: toolId,
+        tool_name: 'submit_plan',
+        result: '结构化实施计划已提交。',
+        is_error: false,
+        details: {
+          kind: 'plan',
+          plan: {
+            summary: '先确认改动边界，再按顺序实施并验证。',
+            steps: ['检查相关模块与现有测试', '完成最小范围实现', '运行聚焦测试并检查回归'],
+            files: ['相关实现文件', '对应测试文件'],
+            risks: ['保持现有行为兼容'],
+            verification: ['类型检查', '聚焦单元测试'],
+          },
+        },
+      })
+      this.emit({ type: 'turn_end' })
+      this.emit({ type: 'agent_end', messages: [] })
+      this.busy = false
+      this.running = false
+      this.touchSession()
+      return
+    }
 
     const toolCalls: { id: string; name: string; arguments: Record<string, unknown> }[] = []
 
@@ -1310,6 +1393,19 @@ export class MockHost implements FoxBridge {
       const mode = args.trim() as HostInfo['permissionMode']
       if (['read-only', 'workspace-modify', 'full-access'].includes(mode)) this.state.permission = mode
       return this.state.permission
+    }
+    if (name === 'mode') {
+      const mode = args.trim() as HostInfo['interactionMode']
+      if (['auto', 'default', 'plan'].includes(mode)) {
+        this.state.interaction = mode
+        this.state.effectiveInteraction = mode === 'plan' ? 'plan' : 'default'
+      }
+      return this.state.interaction
+    }
+    if (name === 'sandbox') {
+      const mode = args.trim() as HostInfo['executionMode']
+      if (['local', 'sandbox'].includes(mode)) this.state.execution = mode
+      return this.state.execution
     }
     if (name === 'trust') {
       this.state.trusted = args.trim() !== 'off'

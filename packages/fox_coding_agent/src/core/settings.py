@@ -11,6 +11,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 from fox_agent_core.src.harness import CompactionSettings
+from .paths import ProjectPaths, UserPaths
 
 
 def merge_settings(base: dict, override: dict) -> dict:
@@ -36,6 +37,8 @@ class RuntimeSettings(BaseModel):
     tools: list[str] | None = None
     extensions: list[str] = Field(default_factory=list)
     permission_mode: Literal["read-only", "workspace-modify", "full-access"] = "full-access"
+    interaction_mode: Literal["auto", "default", "plan"] = "auto"
+    execution_mode: Literal["local", "sandbox"] = "local"
     max_turns: int = Field(default=100, gt=0)
     model_retry_attempts: int = Field(default=1, ge=0, le=5)
     tool_execution: Literal["parallel", "sequential"] = "parallel"
@@ -51,9 +54,11 @@ class SettingsManager:
     def __init__(self, cwd: str | Path = ".", *, user_dir: str | Path | None = None,
                  overrides: dict | None = None, project_trusted: bool = True):
         self.cwd = Path(cwd).expanduser().resolve()
-        self.user_dir = Path(user_dir).expanduser().resolve() if user_dir else Path.home() / ".foxcode"
-        self.user_path = self.user_dir / "settings.json"
-        self.project_path = self.cwd / ".foxcode" / "settings.json"
+        self.user_paths = UserPaths.from_root(user_dir)
+        self.project_paths = ProjectPaths.from_root(self.cwd)
+        self.user_dir = self.user_paths.root
+        self.user_path = self.user_paths.settings
+        self.project_path = self.project_paths.settings
         self.overrides = copy.deepcopy(overrides or {})
         self.project_trusted = project_trusted
         self.reload()

@@ -5,6 +5,9 @@ import type {
   Message,
   PermissionDecision,
   PermissionRequest,
+  PlanDecision,
+  PromptImage,
+  SubmittedPlan,
   ToolStatus,
   Usage,
 } from '@/types/protocol'
@@ -19,7 +22,17 @@ export interface UserBlock {
   id: string
   ts: number
   text: string
+  images?: PromptImage[]
   queued?: 'steer' | 'follow_up'
+}
+
+export interface PlanBlock {
+  kind: 'plan'
+  id: string
+  ts: number
+  toolCallId: string
+  plan: SubmittedPlan
+  decision?: PlanDecision
 }
 
 export interface AssistantBlock {
@@ -75,7 +88,7 @@ export interface NoticeBlock {
   description?: string
 }
 
-export type Block = UserBlock | AssistantBlock | ToolsBlock | NoticeBlock
+export type Block = UserBlock | AssistantBlock | ToolsBlock | NoticeBlock | PlanBlock
 
 export type RunStatus =
   | 'idle'
@@ -388,6 +401,47 @@ function messageText(message: Message): string {
   return message.content.map((part) => part.text).join('\n')
 }
 
+function messageImages(message: Message): PromptImage[] {
+  if (message.role !== 'user') return []
+  return message.content.flatMap((part, index) =>
+    part.type === 'image'
+      ? [{ name: `图片 ${index + 1}`, mimeType: part.mimeType, data: part.data, size: 0 }]
+      : [],
+  )
+}
+
+function submittedPlan(details: Record<string, unknown> | undefined): SubmittedPlan | undefined {
+  if (details?.kind !== 'plan' || !details.plan || typeof details.plan !== 'object') return undefined
+  const plan = details.plan as Record<string, unknown>
+  if (typeof plan.summary !== 'string' || !Array.isArray(plan.steps)) return undefined
+  const list = (key: string): string[] | undefined => {
+    const value = plan[key]
+    return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : undefined
+  }
+  return {
+    summary: plan.summary,
+    steps: list('steps') ?? [],
+    files: list('files'),
+    risks: list('risks'),
+    verification: list('verification'),
+  }
+}
+
+export function applyPlanDecision(
+  state: TimelineState,
+  toolCallId: string,
+  decision: PlanDecision,
+): TimelineState {
+  return {
+    ...state,
+    blocks: state.blocks.map((block) =>
+      block.kind === 'plan' && block.toolCallId === toolCallId
+        ? { ...block, decision }
+        : block,
+    ),
+  }
+}
+
 /* ------------------------------------------------------------------ */
 /* Reducer                                                             */
 /* ------------------------------------------------------------------ */
@@ -599,6 +653,7 @@ function foldFrame(state: TimelineState, frame: HostFrame): TimelineState {
       const message = frame.message
       if (message.role === 'user') {
         const text = messageText(message)
+        const images = messageImages(message)
         const queuedIndex = state.blocks.findIndex(
           (block) => block.kind === 'user' && block.queued && block.text === text,
         )
@@ -616,7 +671,7 @@ function foldFrame(state: TimelineState, frame: HostFrame): TimelineState {
         if (last && last.kind === 'user' && last.text === text) return state
         return {
           ...state,
-          blocks: [...state.blocks, { kind: 'user', id: uid('user'), ts, text }],
+          blocks: [...state.blocks, { kind: 'user', id: uid('user'), ts, text, images }],
         }
       }
       if (message.role === 'assistant') {
@@ -688,6 +743,9 @@ function foldFrame(state: TimelineState, frame: HostFrame): TimelineState {
     }
 
     case 'tool_execution_start': {
+      if (frame.tool_name === 'submit_plan') {
+        return { ...state, status: 'streaming', activity: '正在整理计划' }
+      }
       const existing = findTool(state.blocks, frame.tool_call_id)
       if (existing) {
         return {
@@ -758,6 +816,27 @@ function foldFrame(state: TimelineState, frame: HostFrame): TimelineState {
     }
 
     case 'tool_execution_end': {
+      if (frame.tool_name === 'submit_plan' && !frame.is_error) {
+        const plan = submittedPlan(frame.details)
+        if (plan) {
+          const existingPlan = state.blocks.some(
+            (block) => block.kind === 'plan' && block.toolCallId === frame.tool_call_id,
+          )
+          return {
+            ...state,
+            activity: '计划等待确认',
+            blocks: existingPlan
+              ? state.blocks
+              : [...state.blocks, {
+                  kind: 'plan',
+                  id: uid('plan'),
+                  ts,
+                  toolCallId: frame.tool_call_id,
+                  plan,
+                }],
+          }
+        }
+      }
       const existing = findTool(state.blocks, frame.tool_call_id)
       const denied = existing?.decision === 'deny'
       const result =
@@ -804,6 +883,9 @@ function foldFrame(state: TimelineState, frame: HostFrame): TimelineState {
           },
         ],
       }
+
+    case 'plan_decision':
+      return applyPlanDecision(state, frame.tool_call_id, frame.decision)
 
     case 'compaction_update':
       return {

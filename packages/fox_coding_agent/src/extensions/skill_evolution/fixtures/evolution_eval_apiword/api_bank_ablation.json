@@ -1,0 +1,1069 @@
+{
+  "claim_boundary": "request generation only; external APIs were not executed",
+  "data": {
+    "path": "C:\\Users\\Qin\\Desktop\\coding_agent\\FoxCode\\packages\\fox_coding_agent\\src\\extensions\\skill_evolution\\data\\API-Bank\\test-data\\level-2-api.json",
+    "sample_count": 8
+  },
+  "effect": {
+    "exact_request_accuracy_delta": 0.625,
+    "parameter_value_recall_delta": 0.625
+  },
+  "kind": "api-request-skill-ablation",
+  "model": "deepseek/deepseek-v4-flash",
+  "results": [
+    {
+      "api_name_correct": false,
+      "attempts": [
+        {
+          "attempt": 1,
+          "error": null,
+          "stop_reason": "stop",
+          "usage": {
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "cacheWrite1h": null,
+            "cost": {
+              "cacheRead": 0.0,
+              "cacheWrite": 0.0,
+              "input": 3.248e-05,
+              "output": 4.2000000000000004e-06,
+              "total": 3.668e-05
+            },
+            "input": 232,
+            "output": 15,
+            "reasoning": null,
+            "totalTokens": 247
+          }
+        }
+      ],
+      "error": null,
+      "expected_output": "API-Request: [ToolSearcher(keywords='history October 6th')]",
+      "expected_request": {
+        "api_name": "ToolSearcher",
+        "parameters": {
+          "keywords": "history October 6th"
+        }
+      },
+      "file": "QueryHistoryToday-level-3-3.jsonl",
+      "id": 0,
+      "parameter_names_correct": false,
+      "parameter_value_recall": 0.0,
+      "parseable": false,
+      "passed": false,
+      "predicted_request": null,
+      "prediction": "[ToolSearcher(keywords='October 6th in history')]",
+      "stop_reason": "stop",
+      "usage": {
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "cacheWrite1h": null,
+        "cost": {
+          "cacheRead": 0.0,
+          "cacheWrite": 0.0,
+          "input": 3.248e-05,
+          "output": 4.2000000000000004e-06,
+          "total": 3.668e-05
+        },
+        "input": 232,
+        "output": 15,
+        "reasoning": null,
+        "totalTokens": 247
+      },
+      "variant": "baseline"
+    },
+    {
+      "api_name_correct": false,
+      "attempts": [
+        {
+          "attempt": 1,
+          "error": null,
+          "stop_reason": "stop",
+          "usage": {
+            "cacheRead": 128,
+            "cacheWrite": 0,
+            "cacheWrite1h": null,
+            "cost": {
+              "cacheRead": 3.584e-06,
+              "cacheWrite": 0.0,
+              "input": 2.856e-05,
+              "output": 3.920000000000001e-06,
+              "total": 3.6064e-05
+            },
+            "input": 204,
+            "output": 14,
+            "reasoning": null,
+            "totalTokens": 346
+          }
+        }
+      ],
+      "error": null,
+      "expected_output": "API-Request: [QueryHistoryToday(date='10-06')]",
+      "expected_request": {
+        "api_name": "QueryHistoryToday",
+        "parameters": {
+          "date": "10-06"
+        }
+      },
+      "file": "QueryHistoryToday-level-3-3.jsonl",
+      "id": 1,
+      "parameter_names_correct": false,
+      "parameter_value_recall": 0.0,
+      "parseable": false,
+      "passed": false,
+      "predicted_request": null,
+      "prediction": "[ToolSearcher(keywords='history October 6th')]",
+      "stop_reason": "stop",
+      "usage": {
+        "cacheRead": 128,
+        "cacheWrite": 0,
+        "cacheWrite1h": null,
+        "cost": {
+          "cacheRead": 3.584e-06,
+          "cacheWrite": 0.0,
+          "input": 2.856e-05,
+          "output": 3.920000000000001e-06,
+          "total": 3.6064e-05
+        },
+        "input": 204,
+        "output": 14,
+        "reasoning": null,
+        "totalTokens": 346
+      },
+      "variant": "baseline"
+    },
+    {
+      "api_name_correct": false,
+      "attempts": [
+        {
+          "attempt": 1,
+          "error": null,
+          "stop_reason": "stop",
+          "usage": {
+            "cacheRead": 128,
+            "cacheWrite": 0,
+            "cacheWrite1h": null,
+            "cost": {
+              "cacheRead": 3.584e-06,
+              "cacheWrite": 0.0,
+              "input": 2.856e-05,
+              "output": 5.040000000000001e-06,
+              "total": 3.7184e-05
+            },
+            "input": 204,
+            "output": 18,
+            "reasoning": null,
+            "totalTokens": 350
+          }
+        }
+      ],
+      "error": null,
+      "expected_output": "API-Request: [QueryHistoryToday(date='10-06')]",
+      "expected_request": {
+        "api_name": "QueryHistoryToday",
+        "parameters": {
+          "date": "10-06"
+        }
+      },
+      "file": "QueryHistoryToday-level-3-3.jsonl",
+      "id": 2,
+      "parameter_names_correct": false,
+      "parameter_value_recall": 0.0,
+      "parseable": true,
+      "passed": false,
+      "predicted_request": {
+        "api_name": "ToolSearcher",
+        "parameters": {
+          "keywords": "history October 6th"
+        }
+      },
+      "prediction": "API-Request: [ToolSearcher(keywords='history October 6th')]",
+      "stop_reason": "stop",
+      "usage": {
+        "cacheRead": 128,
+        "cacheWrite": 0,
+        "cacheWrite1h": null,
+        "cost": {
+          "cacheRead": 3.584e-06,
+          "cacheWrite": 0.0,
+          "input": 2.856e-05,
+          "output": 5.040000000000001e-06,
+          "total": 3.7184e-05
+        },
+        "input": 204,
+        "output": 18,
+        "reasoning": null,
+        "totalTokens": 350
+      },
+      "variant": "baseline"
+    },
+    {
+      "api_name_correct": false,
+      "attempts": [
+        {
+          "attempt": 1,
+          "error": null,
+          "stop_reason": "stop",
+          "usage": {
+            "cacheRead": 128,
+            "cacheWrite": 0,
+            "cacheWrite1h": null,
+            "cost": {
+              "cacheRead": 3.584e-06,
+              "cacheWrite": 0.0,
+              "input": 2.8700000000000003e-05,
+              "output": 9.24e-06,
+              "total": 4.1524000000000004e-05
+            },
+            "input": 205,
+            "output": 33,
+            "reasoning": null,
+            "totalTokens": 366
+          }
+        }
+      ],
+      "error": null,
+      "expected_output": "API-Request: [GetUserToken(username='user2', password='user2pass')]",
+      "expected_request": {
+        "api_name": "GetUserToken",
+        "parameters": {
+          "password": "user2pass",
+          "username": "user2"
+        }
+      },
+      "file": "QueryReminder-level-3-1.jsonl",
+      "id": 0,
+      "parameter_names_correct": false,
+      "parameter_value_recall": 0.0,
+      "parseable": false,
+      "passed": false,
+      "predicted_request": null,
+      "prediction": "[ApiName(key1='value1', key2='value2', ...)]\n\n[GetUserToken(username='user2', password='user2pass')]",
+      "stop_reason": "stop",
+      "usage": {
+        "cacheRead": 128,
+        "cacheWrite": 0,
+        "cacheWrite1h": null,
+        "cost": {
+          "cacheRead": 3.584e-06,
+          "cacheWrite": 0.0,
+          "input": 2.8700000000000003e-05,
+          "output": 9.24e-06,
+          "total": 4.1524000000000004e-05
+        },
+        "input": 205,
+        "output": 33,
+        "reasoning": null,
+        "totalTokens": 366
+      },
+      "variant": "baseline"
+    },
+    {
+      "api_name_correct": false,
+      "attempts": [
+        {
+          "attempt": 1,
+          "error": null,
+          "stop_reason": "stop",
+          "usage": {
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "cacheWrite1h": null,
+            "cost": {
+              "cacheRead": 0.0,
+              "cacheWrite": 0.0,
+              "input": 3.2340000000000005e-05,
+              "output": 5.32e-06,
+              "total": 3.766e-05
+            },
+            "input": 231,
+            "output": 19,
+            "reasoning": null,
+            "totalTokens": 250
+          }
+        }
+      ],
+      "error": null,
+      "expected_output": "API-Request: [ToolSearcher(keywords='Query Stock')]",
+      "expected_request": {
+        "api_name": "ToolSearcher",
+        "parameters": {
+          "keywords": "Query Stock"
+        }
+      },
+      "file": "QueryStock-level-3-1.jsonl",
+      "id": 0,
+      "parameter_names_correct": false,
+      "parameter_value_recall": 0.0,
+      "parseable": false,
+      "passed": false,
+      "predicted_request": null,
+      "prediction": "[ToolSearcher(keywords='stock price Microsoft 4th February 2022')]",
+      "stop_reason": "stop",
+      "usage": {
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "cacheWrite1h": null,
+        "cost": {
+          "cacheRead": 0.0,
+          "cacheWrite": 0.0,
+          "input": 3.2340000000000005e-05,
+          "output": 5.32e-06,
+          "total": 3.766e-05
+        },
+        "input": 231,
+        "output": 19,
+        "reasoning": null,
+        "totalTokens": 250
+      },
+      "variant": "baseline"
+    },
+    {
+      "api_name_correct": false,
+      "attempts": [
+        {
+          "attempt": 1,
+          "error": null,
+          "stop_reason": "stop",
+          "usage": {
+            "cacheRead": 128,
+            "cacheWrite": 0,
+            "cacheWrite1h": null,
+            "cost": {
+              "cacheRead": 3.584e-06,
+              "cacheWrite": 0.0,
+              "input": 3.1780000000000004e-05,
+              "output": 4.2000000000000004e-06,
+              "total": 3.9564e-05
+            },
+            "input": 227,
+            "output": 15,
+            "reasoning": null,
+            "totalTokens": 370
+          }
+        }
+      ],
+      "error": null,
+      "expected_output": "API-Request: [QueryStock(stock_code='MSFT', date='2022-02-04')]",
+      "expected_request": {
+        "api_name": "QueryStock",
+        "parameters": {
+          "date": "2022-02-04",
+          "stock_code": "MSFT"
+        }
+      },
+      "file": "QueryStock-level-3-1.jsonl",
+      "id": 1,
+      "parameter_names_correct": false,
+      "parameter_value_recall": 0.0,
+      "parseable": true,
+      "passed": false,
+      "predicted_request": {
+        "api_name": "ToolSearcher",
+        "parameters": {
+          "keywords": "Query Stock"
+        }
+      },
+      "prediction": "API-Request: [ToolSearcher(keywords='Query Stock')]",
+      "stop_reason": "stop",
+      "usage": {
+        "cacheRead": 128,
+        "cacheWrite": 0,
+        "cacheWrite1h": null,
+        "cost": {
+          "cacheRead": 3.584e-06,
+          "cacheWrite": 0.0,
+          "input": 3.1780000000000004e-05,
+          "output": 4.2000000000000004e-06,
+          "total": 3.9564e-05
+        },
+        "input": 227,
+        "output": 15,
+        "reasoning": null,
+        "totalTokens": 370
+      },
+      "variant": "baseline"
+    },
+    {
+      "api_name_correct": false,
+      "attempts": [
+        {
+          "attempt": 1,
+          "error": null,
+          "stop_reason": "stop",
+          "usage": {
+            "cacheRead": 128,
+            "cacheWrite": 0,
+            "cacheWrite1h": null,
+            "cost": {
+              "cacheRead": 3.584e-06,
+              "cacheWrite": 0.0,
+              "input": 3.1780000000000004e-05,
+              "output": 4.2000000000000004e-06,
+              "total": 3.9564e-05
+            },
+            "input": 227,
+            "output": 15,
+            "reasoning": null,
+            "totalTokens": 370
+          }
+        }
+      ],
+      "error": null,
+      "expected_output": "API-Request: [QueryStock(stock_code='MSFT', date='2022-02-04')]",
+      "expected_request": {
+        "api_name": "QueryStock",
+        "parameters": {
+          "date": "2022-02-04",
+          "stock_code": "MSFT"
+        }
+      },
+      "file": "QueryStock-level-3-1.jsonl",
+      "id": 2,
+      "parameter_names_correct": false,
+      "parameter_value_recall": 0.0,
+      "parseable": true,
+      "passed": false,
+      "predicted_request": {
+        "api_name": "ToolSearcher",
+        "parameters": {
+          "keywords": "Query Stock"
+        }
+      },
+      "prediction": "API-Request: [ToolSearcher(keywords='Query Stock')]",
+      "stop_reason": "stop",
+      "usage": {
+        "cacheRead": 128,
+        "cacheWrite": 0,
+        "cacheWrite1h": null,
+        "cost": {
+          "cacheRead": 3.584e-06,
+          "cacheWrite": 0.0,
+          "input": 3.1780000000000004e-05,
+          "output": 4.2000000000000004e-06,
+          "total": 3.9564e-05
+        },
+        "input": 227,
+        "output": 15,
+        "reasoning": null,
+        "totalTokens": 370
+      },
+      "variant": "baseline"
+    },
+    {
+      "api_name_correct": false,
+      "attempts": [
+        {
+          "attempt": 1,
+          "error": null,
+          "stop_reason": "stop",
+          "usage": {
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "cacheWrite1h": null,
+            "cost": {
+              "cacheRead": 0.0,
+              "cacheWrite": 0.0,
+              "input": 3.262e-05,
+              "output": 4.760000000000001e-06,
+              "total": 3.7380000000000005e-05
+            },
+            "input": 233,
+            "output": 17,
+            "reasoning": null,
+            "totalTokens": 250
+          }
+        }
+      ],
+      "error": null,
+      "expected_output": "API-Request: [ToolSearcher(keywords='delete agenda')]",
+      "expected_request": {
+        "api_name": "ToolSearcher",
+        "parameters": {
+          "keywords": "delete agenda"
+        }
+      },
+      "file": "DeleteAgenda-level-3-1.jsonl",
+      "id": 0,
+      "parameter_names_correct": false,
+      "parameter_value_recall": 0.0,
+      "parseable": false,
+      "passed": false,
+      "predicted_request": null,
+      "prediction": "[ApiName(key1='value1', key2='value2', ...)]",
+      "stop_reason": "stop",
+      "usage": {
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "cacheWrite1h": null,
+        "cost": {
+          "cacheRead": 0.0,
+          "cacheWrite": 0.0,
+          "input": 3.262e-05,
+          "output": 4.760000000000001e-06,
+          "total": 3.7380000000000005e-05
+        },
+        "input": 233,
+        "output": 17,
+        "reasoning": null,
+        "totalTokens": 250
+      },
+      "variant": "baseline"
+    },
+    {
+      "api_name_correct": true,
+      "attempts": [
+        {
+          "attempt": 1,
+          "error": null,
+          "stop_reason": "stop",
+          "usage": {
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "cacheWrite1h": null,
+            "cost": {
+              "cacheRead": 0.0,
+              "cacheWrite": 0.0,
+              "input": 6.902000000000001e-05,
+              "output": 5.32e-06,
+              "total": 7.434000000000001e-05
+            },
+            "input": 493,
+            "output": 19,
+            "reasoning": null,
+            "totalTokens": 512
+          }
+        }
+      ],
+      "error": null,
+      "expected_output": "API-Request: [ToolSearcher(keywords='history October 6th')]",
+      "expected_request": {
+        "api_name": "ToolSearcher",
+        "parameters": {
+          "keywords": "history October 6th"
+        }
+      },
+      "file": "QueryHistoryToday-level-3-3.jsonl",
+      "id": 0,
+      "parameter_names_correct": true,
+      "parameter_value_recall": 0.0,
+      "parseable": true,
+      "passed": false,
+      "predicted_request": {
+        "api_name": "ToolSearcher",
+        "parameters": {
+          "keywords": "October 6th in history"
+        }
+      },
+      "prediction": "API-Request: [ToolSearcher(keywords='October 6th in history')]",
+      "stop_reason": "stop",
+      "usage": {
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "cacheWrite1h": null,
+        "cost": {
+          "cacheRead": 0.0,
+          "cacheWrite": 0.0,
+          "input": 6.902000000000001e-05,
+          "output": 5.32e-06,
+          "total": 7.434000000000001e-05
+        },
+        "input": 493,
+        "output": 19,
+        "reasoning": null,
+        "totalTokens": 512
+      },
+      "variant": "full"
+    },
+    {
+      "api_name_correct": true,
+      "attempts": [
+        {
+          "attempt": 1,
+          "error": null,
+          "stop_reason": "stop",
+          "usage": {
+            "cacheRead": 384,
+            "cacheWrite": 0,
+            "cacheWrite1h": null,
+            "cost": {
+              "cacheRead": 1.0752000000000001e-05,
+              "cacheWrite": 0.0,
+              "input": 2.926e-05,
+              "output": 4.2000000000000004e-06,
+              "total": 4.4212e-05
+            },
+            "input": 209,
+            "output": 15,
+            "reasoning": null,
+            "totalTokens": 608
+          }
+        }
+      ],
+      "error": null,
+      "expected_output": "API-Request: [QueryHistoryToday(date='10-06')]",
+      "expected_request": {
+        "api_name": "QueryHistoryToday",
+        "parameters": {
+          "date": "10-06"
+        }
+      },
+      "file": "QueryHistoryToday-level-3-3.jsonl",
+      "id": 1,
+      "parameter_names_correct": true,
+      "parameter_value_recall": 1.0,
+      "parseable": true,
+      "passed": true,
+      "predicted_request": {
+        "api_name": "QueryHistoryToday",
+        "parameters": {
+          "date": "10-06"
+        }
+      },
+      "prediction": "API-Request: [QueryHistoryToday(date='10-06')]",
+      "stop_reason": "stop",
+      "usage": {
+        "cacheRead": 384,
+        "cacheWrite": 0,
+        "cacheWrite1h": null,
+        "cost": {
+          "cacheRead": 1.0752000000000001e-05,
+          "cacheWrite": 0.0,
+          "input": 2.926e-05,
+          "output": 4.2000000000000004e-06,
+          "total": 4.4212e-05
+        },
+        "input": 209,
+        "output": 15,
+        "reasoning": null,
+        "totalTokens": 608
+      },
+      "variant": "full"
+    },
+    {
+      "api_name_correct": true,
+      "attempts": [
+        {
+          "attempt": 1,
+          "error": null,
+          "stop_reason": "stop",
+          "usage": {
+            "cacheRead": 384,
+            "cacheWrite": 0,
+            "cacheWrite1h": null,
+            "cost": {
+              "cacheRead": 1.0752000000000001e-05,
+              "cacheWrite": 0.0,
+              "input": 2.926e-05,
+              "output": 4.2000000000000004e-06,
+              "total": 4.4212e-05
+            },
+            "input": 209,
+            "output": 15,
+            "reasoning": null,
+            "totalTokens": 608
+          }
+        }
+      ],
+      "error": null,
+      "expected_output": "API-Request: [QueryHistoryToday(date='10-06')]",
+      "expected_request": {
+        "api_name": "QueryHistoryToday",
+        "parameters": {
+          "date": "10-06"
+        }
+      },
+      "file": "QueryHistoryToday-level-3-3.jsonl",
+      "id": 2,
+      "parameter_names_correct": true,
+      "parameter_value_recall": 1.0,
+      "parseable": true,
+      "passed": true,
+      "predicted_request": {
+        "api_name": "QueryHistoryToday",
+        "parameters": {
+          "date": "10-06"
+        }
+      },
+      "prediction": "API-Request: [QueryHistoryToday(date='10-06')]",
+      "stop_reason": "stop",
+      "usage": {
+        "cacheRead": 384,
+        "cacheWrite": 0,
+        "cacheWrite1h": null,
+        "cost": {
+          "cacheRead": 1.0752000000000001e-05,
+          "cacheWrite": 0.0,
+          "input": 2.926e-05,
+          "output": 4.2000000000000004e-06,
+          "total": 4.4212e-05
+        },
+        "input": 209,
+        "output": 15,
+        "reasoning": null,
+        "totalTokens": 608
+      },
+      "variant": "full"
+    },
+    {
+      "api_name_correct": true,
+      "attempts": [
+        {
+          "attempt": 1,
+          "error": null,
+          "stop_reason": "stop",
+          "usage": {
+            "cacheRead": 384,
+            "cacheWrite": 0,
+            "cacheWrite1h": null,
+            "cost": {
+              "cacheRead": 1.0752000000000001e-05,
+              "cacheWrite": 0.0,
+              "input": 2.9400000000000003e-05,
+              "output": 5.600000000000001e-06,
+              "total": 4.5752000000000005e-05
+            },
+            "input": 210,
+            "output": 20,
+            "reasoning": null,
+            "totalTokens": 614
+          }
+        }
+      ],
+      "error": null,
+      "expected_output": "API-Request: [GetUserToken(username='user2', password='user2pass')]",
+      "expected_request": {
+        "api_name": "GetUserToken",
+        "parameters": {
+          "password": "user2pass",
+          "username": "user2"
+        }
+      },
+      "file": "QueryReminder-level-3-1.jsonl",
+      "id": 0,
+      "parameter_names_correct": true,
+      "parameter_value_recall": 1.0,
+      "parseable": true,
+      "passed": true,
+      "predicted_request": {
+        "api_name": "GetUserToken",
+        "parameters": {
+          "password": "user2pass",
+          "username": "user2"
+        }
+      },
+      "prediction": "API-Request: [GetUserToken(username='user2', password='user2pass')]",
+      "stop_reason": "stop",
+      "usage": {
+        "cacheRead": 384,
+        "cacheWrite": 0,
+        "cacheWrite1h": null,
+        "cost": {
+          "cacheRead": 1.0752000000000001e-05,
+          "cacheWrite": 0.0,
+          "input": 2.9400000000000003e-05,
+          "output": 5.600000000000001e-06,
+          "total": 4.5752000000000005e-05
+        },
+        "input": 210,
+        "output": 20,
+        "reasoning": null,
+        "totalTokens": 614
+      },
+      "variant": "full"
+    },
+    {
+      "api_name_correct": true,
+      "attempts": [
+        {
+          "attempt": 1,
+          "error": null,
+          "stop_reason": "stop",
+          "usage": {
+            "cacheRead": 256,
+            "cacheWrite": 0,
+            "cacheWrite1h": null,
+            "cost": {
+              "cacheRead": 7.168e-06,
+              "cacheWrite": 0.0,
+              "input": 3.304000000000001e-05,
+              "output": 6.44e-06,
+              "total": 4.6648000000000005e-05
+            },
+            "input": 236,
+            "output": 23,
+            "reasoning": null,
+            "totalTokens": 515
+          }
+        }
+      ],
+      "error": null,
+      "expected_output": "API-Request: [ToolSearcher(keywords='Query Stock')]",
+      "expected_request": {
+        "api_name": "ToolSearcher",
+        "parameters": {
+          "keywords": "Query Stock"
+        }
+      },
+      "file": "QueryStock-level-3-1.jsonl",
+      "id": 0,
+      "parameter_names_correct": true,
+      "parameter_value_recall": 0.0,
+      "parseable": true,
+      "passed": false,
+      "predicted_request": {
+        "api_name": "ToolSearcher",
+        "parameters": {
+          "keywords": "stock price Microsoft 4th February 2022"
+        }
+      },
+      "prediction": "API-Request: [ToolSearcher(keywords='stock price Microsoft 4th February 2022')]",
+      "stop_reason": "stop",
+      "usage": {
+        "cacheRead": 256,
+        "cacheWrite": 0,
+        "cacheWrite1h": null,
+        "cost": {
+          "cacheRead": 7.168e-06,
+          "cacheWrite": 0.0,
+          "input": 3.304000000000001e-05,
+          "output": 6.44e-06,
+          "total": 4.6648000000000005e-05
+        },
+        "input": 236,
+        "output": 23,
+        "reasoning": null,
+        "totalTokens": 515
+      },
+      "variant": "full"
+    },
+    {
+      "api_name_correct": true,
+      "attempts": [
+        {
+          "attempt": 1,
+          "error": null,
+          "stop_reason": "stop",
+          "usage": {
+            "cacheRead": 384,
+            "cacheWrite": 0,
+            "cacheWrite1h": null,
+            "cost": {
+              "cacheRead": 1.0752000000000001e-05,
+              "cacheWrite": 0.0,
+              "input": 3.248e-05,
+              "output": 6.720000000000001e-06,
+              "total": 4.9952000000000006e-05
+            },
+            "input": 232,
+            "output": 24,
+            "reasoning": null,
+            "totalTokens": 640
+          }
+        }
+      ],
+      "error": null,
+      "expected_output": "API-Request: [QueryStock(stock_code='MSFT', date='2022-02-04')]",
+      "expected_request": {
+        "api_name": "QueryStock",
+        "parameters": {
+          "date": "2022-02-04",
+          "stock_code": "MSFT"
+        }
+      },
+      "file": "QueryStock-level-3-1.jsonl",
+      "id": 1,
+      "parameter_names_correct": true,
+      "parameter_value_recall": 1.0,
+      "parseable": true,
+      "passed": true,
+      "predicted_request": {
+        "api_name": "QueryStock",
+        "parameters": {
+          "date": "2022-02-04",
+          "stock_code": "MSFT"
+        }
+      },
+      "prediction": "API-Request: [QueryStock(stock_code='MSFT', date='2022-02-04')]",
+      "stop_reason": "stop",
+      "usage": {
+        "cacheRead": 384,
+        "cacheWrite": 0,
+        "cacheWrite1h": null,
+        "cost": {
+          "cacheRead": 1.0752000000000001e-05,
+          "cacheWrite": 0.0,
+          "input": 3.248e-05,
+          "output": 6.720000000000001e-06,
+          "total": 4.9952000000000006e-05
+        },
+        "input": 232,
+        "output": 24,
+        "reasoning": null,
+        "totalTokens": 640
+      },
+      "variant": "full"
+    },
+    {
+      "api_name_correct": true,
+      "attempts": [
+        {
+          "attempt": 1,
+          "error": null,
+          "stop_reason": "stop",
+          "usage": {
+            "cacheRead": 384,
+            "cacheWrite": 0,
+            "cacheWrite1h": null,
+            "cost": {
+              "cacheRead": 1.0752000000000001e-05,
+              "cacheWrite": 0.0,
+              "input": 3.248e-05,
+              "output": 6.720000000000001e-06,
+              "total": 4.9952000000000006e-05
+            },
+            "input": 232,
+            "output": 24,
+            "reasoning": null,
+            "totalTokens": 640
+          }
+        }
+      ],
+      "error": null,
+      "expected_output": "API-Request: [QueryStock(stock_code='MSFT', date='2022-02-04')]",
+      "expected_request": {
+        "api_name": "QueryStock",
+        "parameters": {
+          "date": "2022-02-04",
+          "stock_code": "MSFT"
+        }
+      },
+      "file": "QueryStock-level-3-1.jsonl",
+      "id": 2,
+      "parameter_names_correct": true,
+      "parameter_value_recall": 1.0,
+      "parseable": true,
+      "passed": true,
+      "predicted_request": {
+        "api_name": "QueryStock",
+        "parameters": {
+          "date": "2022-02-04",
+          "stock_code": "MSFT"
+        }
+      },
+      "prediction": "API-Request: [QueryStock(stock_code='MSFT', date='2022-02-04')]",
+      "stop_reason": "stop",
+      "usage": {
+        "cacheRead": 384,
+        "cacheWrite": 0,
+        "cacheWrite1h": null,
+        "cost": {
+          "cacheRead": 1.0752000000000001e-05,
+          "cacheWrite": 0.0,
+          "input": 3.248e-05,
+          "output": 6.720000000000001e-06,
+          "total": 4.9952000000000006e-05
+        },
+        "input": 232,
+        "output": 24,
+        "reasoning": null,
+        "totalTokens": 640
+      },
+      "variant": "full"
+    },
+    {
+      "api_name_correct": true,
+      "attempts": [
+        {
+          "attempt": 1,
+          "error": null,
+          "stop_reason": "stop",
+          "usage": {
+            "cacheRead": 256,
+            "cacheWrite": 0,
+            "cacheWrite1h": null,
+            "cost": {
+              "cacheRead": 7.168e-06,
+              "cacheWrite": 0.0,
+              "input": 3.332e-05,
+              "output": 7.5600000000000005e-06,
+              "total": 4.8048e-05
+            },
+            "input": 238,
+            "output": 27,
+            "reasoning": null,
+            "totalTokens": 521
+          }
+        }
+      ],
+      "error": null,
+      "expected_output": "API-Request: [ToolSearcher(keywords='delete agenda')]",
+      "expected_request": {
+        "api_name": "ToolSearcher",
+        "parameters": {
+          "keywords": "delete agenda"
+        }
+      },
+      "file": "DeleteAgenda-level-3-1.jsonl",
+      "id": 0,
+      "parameter_names_correct": true,
+      "parameter_value_recall": 0.0,
+      "parseable": true,
+      "passed": false,
+      "predicted_request": {
+        "api_name": "ToolSearcher",
+        "parameters": {
+          "keywords": "delete agenda meeting client March 18 2pm 123 Main St"
+        }
+      },
+      "prediction": "API-Request: [ToolSearcher(keywords='delete agenda meeting client March 18 2pm 123 Main St')]",
+      "stop_reason": "stop",
+      "usage": {
+        "cacheRead": 256,
+        "cacheWrite": 0,
+        "cacheWrite1h": null,
+        "cost": {
+          "cacheRead": 7.168e-06,
+          "cacheWrite": 0.0,
+          "input": 3.332e-05,
+          "output": 7.5600000000000005e-06,
+          "total": 4.8048e-05
+        },
+        "input": 238,
+        "output": 27,
+        "reasoning": null,
+        "totalTokens": 521
+      },
+      "variant": "full"
+    }
+  ],
+  "skill": {
+    "name": "api-request-planner",
+    "path": "C:\\Users\\Qin\\.foxcode\\skills\\api-request-planner\\SKILL.md"
+  },
+  "summary": {
+    "baseline": {
+      "api_name_accuracy": 0.0,
+      "errors": 0,
+      "exact_request_accuracy": 0.0,
+      "input_tokens": 1763,
+      "mean_parameter_value_recall": 0.0,
+      "output_tokens": 146,
+      "parameter_names_accuracy": 0.0,
+      "parse_rate": 0.375,
+      "passed": 0,
+      "total": 8
+    },
+    "full": {
+      "api_name_accuracy": 1.0,
+      "errors": 0,
+      "exact_request_accuracy": 0.625,
+      "input_tokens": 2059,
+      "mean_parameter_value_recall": 0.625,
+      "output_tokens": 167,
+      "parameter_names_accuracy": 1.0,
+      "parse_rate": 1.0,
+      "passed": 5,
+      "total": 8
+    }
+  }
+}

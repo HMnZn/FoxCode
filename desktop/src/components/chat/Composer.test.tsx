@@ -13,6 +13,7 @@ import { Composer } from '@/components/chat/Composer'
 import { useSession } from '@/store/sessionStore'
 import { EMPTY_TIMELINE } from '@/store/timeline'
 import { useUi } from '@/store/uiStore'
+import type { PromptImage } from '@/types/protocol'
 
 const bridge = useSession.getState().bridge
 
@@ -105,5 +106,36 @@ describe('Composer · 命令目录', () => {
       ),
     )
     expect(send.mock.calls.some(([command]) => command.method === 'files.list')).toBe(false)
+  })
+
+  it('sends selected images as native prompt attachments', async () => {
+    const prompt = vi.fn(async (_text: string, _attachments?: PromptImage[]) => undefined)
+    useSession.setState({ prompt })
+    useUi.setState({ drafts: { main: '分析这张截图' } })
+    const { container } = render(<Composer draftKey="main" />)
+    const input = container.querySelector('input[type="file"]') as HTMLInputElement
+    const file = new File([new Uint8Array([1, 2, 3])], 'screen.png', { type: 'image/png' })
+
+    fireEvent.change(input, { target: { files: [file] } })
+    await screen.findByAltText('screen.png')
+    fireEvent.click(screen.getByRole('button', { name: '发送' }))
+
+    await waitFor(() => expect(prompt).toHaveBeenCalledTimes(1))
+    const [text, attachments] = prompt.mock.calls[0]
+    expect(text).toBe('分析这张截图')
+    expect(attachments?.[0]).toMatchObject({ name: 'screen.png', mimeType: 'image/png', size: 3 })
+    expect(attachments?.[0].data).toBeTruthy()
+  })
+
+  it('lets the user select sandbox execution from the composer', async () => {
+    const setExecutionMode = vi.fn(async () => undefined)
+    useSession.setState({ setExecutionMode })
+    useUi.setState({ drafts: { main: '' } })
+    render(<Composer draftKey="main" />)
+
+    fireEvent.click(screen.getByRole('button', { name: '执行环境' }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: /沙盒执行/ }))
+
+    expect(setExecutionMode).toHaveBeenCalledWith('sandbox')
   })
 })

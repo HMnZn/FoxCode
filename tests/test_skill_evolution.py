@@ -19,7 +19,9 @@ from fox_coding_agent.src.extensions.skill_evolution.evaluation import (
     audit_datasets,
     build_evolution_feedback,
     expected_plan_actions,
+    parse_api_request,
     run_offline_evaluation,
+    score_api_request,
     score_household_plan,
 )
 from test_agent_core import scripted
@@ -89,6 +91,17 @@ class SkillEvolutionStoreTests(unittest.TestCase):
             for path in self.store.state_dir.rglob("*") if path.is_file()
         )
         self.assertNotIn("sk-1234567890abcdefghijklmnop", persisted)
+
+    def test_derived_candidate_name_merges_longest_existing_parent(self):
+        original = self.store.propose(self.candidate(name="api-request-planner"))
+        self.store.apply(original.id, target="user")
+        derived = self.store.propose(self.candidate(
+            name="api-request-planner-toolsearcher-keywords",
+            instructions="Use concise capability keywords when searching for a tool.",
+        ))
+        self.assertEqual(derived.suggested_action, "merge")
+        self.assertEqual(derived.target_skill, "api-request-planner")
+        self.assertEqual(derived.score, 0.95)
 
     def test_offline_evaluation_exercises_component_ablations(self):
         report = run_offline_evaluation()
@@ -219,6 +232,21 @@ class DatasetAuditTests(unittest.TestCase):
         self.assertIn("OBSERVE -> TAKE -> COOL", feedback)
         self.assertIn("TAKE -> PLACE", feedback)
         self.assertNotIn("held-out", feedback)
+
+    def test_api_request_scorer_is_structural_and_never_executes_text(self):
+        expected = "API-Request: [Lookup(user_id='A1', date='2023-03-05')]"
+        reordered = "API-Request: [Lookup(date='2023-03-05', user_id='A1')]"
+        self.assertEqual(parse_api_request(reordered), {
+            "api_name": "Lookup",
+            "parameters": {"date": "2023-03-05", "user_id": "A1"},
+        })
+        self.assertTrue(score_api_request(expected, reordered)["passed"])
+        wrong = score_api_request(
+            expected, "API-Request: [Lookup(user_id='A1', date='2023-03-06')]"
+        )
+        self.assertFalse(wrong["passed"])
+        self.assertEqual(wrong["parameter_value_recall"], 0.5)
+        self.assertIsNone(parse_api_request("API-Request: [__import__('os').system('whoami')]"))
 
 
 if __name__ == "__main__":

@@ -24,6 +24,7 @@ npm run dev            # Vite(127.0.0.1:5273) + Electron 桌面窗口
 | `npm run dev:no-gpu` | 同上，但给 Electron 追加 `--no-sandbox --disable-gpu --disable-crash-reporter` 与工作区内的 `--user-data-dir`（受限环境/VM 用） |
 | `npm run dev:web` | 只在浏览器里跑渲染进程（无桌面壳、无原生对话框） |
 | `npm run build` | `tsc` 类型检查 + `vite build` 产物到 `dist/` |
+| `npm run dist:mac` | 在 macOS 上构建 `.dmg` 与 `.zip`（输出到 `release/`） |
 | `npm start` | 用 `dist/` 启动 Electron（需先 build） |
 | `npm run test` | Vitest（jsdom）组件与 reducer 测试 |
 | `npm run typecheck` | 只跑 `tsc` |
@@ -60,8 +61,8 @@ npm run dev:no-gpu
 
 | 模式 | 触发条件 | 行为 |
 | --- | --- | --- |
-| **演示模式** | 未设置 `FOXCODE_SERVE_CMD`（默认） | `src/bridge/mock/mockHost.ts` 在渲染进程内复现 `AgentSessionRuntime` 的可观测行为：单一前台操作、阻塞式审批、并行工具批次交错、压缩、中止、会话切换/分叉。数据是脚本化的（`src/bridge/mock/scenario.ts`）。标题栏与侧栏会显示「演示」标记。 |
-| **Sidecar 模式** | 设置 `FOXCODE_SERVE_CMD` | 主进程按需拉起 Python 宿主进程，用 **NDJSON over stdin/stdout** 通信；帧、审批请求、传输状态经 IPC 转发给渲染进程。仓库里的 [`fox_serve/`](../fox_serve/README.md) 就是实现（Python，只读 `packages/`）。 |
+| **演示模式** | 找不到可用 sidecar | `src/bridge/mock/mockHost.ts` 在渲染进程内复现 `AgentSessionRuntime` 的可观测行为：单一前台操作、计划确认卡片、阻塞式审批、并行工具批次交错、压缩、中止、会话切换/分叉。数据是脚本化的（`src/bridge/mock/scenario.ts`）。标题栏与侧栏会显示「演示」标记。 |
+| **Sidecar 模式** | 设置 `FOXCODE_SERVE_CMD`，或源码仓库存在 `.venv` | 主进程按需拉起 Python 宿主进程，用 **NDJSON over stdin/stdout** 通信；源码开发会自动发现 Windows 的 `.venv/Scripts/python.exe` 与 macOS/Linux 的 `.venv/bin/python3`。帧、审批请求、传输状态经 IPC 转发给渲染进程。 |
 
 ```powershell
 # 接 fox_serve（真宿主：AgentSessionRuntime）
@@ -71,6 +72,24 @@ $env:FOXCODE_SERVE_CMD  = "$repo\.venv\Scripts\python.exe"
 $env:FOXCODE_SERVE_ARGS = "-m fox_serve --quiet --cwd $repo"
 npm run dev
 ```
+
+macOS（源码开发）无需设置上述 PowerShell 环境变量：
+
+```bash
+cd desktop
+npm install
+npm run dev               # 自动使用 ../.venv/bin/python3（存在时）
+npm run dist:mac          # 生成 release/*.dmg 与 release/*.zip
+```
+
+若 Python 环境不在仓库 `.venv`，可设置 `FOXCODE_SERVE_CMD`；参数含空格时用
+`FOXCODE_SERVE_ARGS_JSON='["-m","fox_serve","--quiet","--cwd","/path with spaces"]'`。
+macOS 使用原生交通灯、`Cmd` 快捷键、Finder/Terminal 打开动作以及登录式 `zsh` 内嵌终端。
+
+## 计划确认与图片输入
+
+- 自动模式识别到规划请求后只暴露只读工具与 `submit_plan`。计划完成会显示结构化卡片；选择“开始实施”后宿主才切换到执行轮次，选择“暂不实施”则不会产生写操作。选择结果与计划一起写入 Session，恢复会话时可回放。
+- 输入框支持文件选择和剪贴板粘贴，每条最多 4 张 PNG/JPEG/WebP/GIF。图片以 `fox_ai.ImageContent` 原生内容块穿过 IPC、Session 和 provider；OpenAI 转为 `image_url` 内容块，Anthropic 转为 base64 image source，不会伪装成 Markdown、路径或文本附件。
 
 Sidecar 协议形状（`electron/sidecar.js`）：
 
@@ -90,14 +109,14 @@ Sidecar 协议形状（`electron/sidecar.js`）：
 
 ## 协议（`src/types/protocol.ts`）
 
-手写镜像 Python 宿主，`PROTOCOL_VERSION = 1`。
+手写镜像 Python 宿主，`PROTOCOL_VERSION = 3`。
 
 - **帧**：`HostFrame = HostEvent & { seq, ts, v }`。`seq` 单调递增，`ts` 由宿主补时间戳（Python 侧事件本身没有时间戳）。
 - **宿主事件**：`session_start` / `session_shutdown` / `agent_start` / `agent_end` / `turn_start` / `turn_end` / `message_start` / `message_update` / `message_end` / `tool_execution_start|update|end` / `compaction_start|end|error` / `context_overflow_retry` / `model_retry` / `error`。
 - **细粒度流事件**（`message_update.assistant_message_event`，对应 fox_ai 的 12 种事件）：`start`、`text_start|delta|end`、`thinking_start|delta|end`、`toolcall_start|delta|end`、`done`、`error`，一律带 `content_index`。
   - **只转发 `delta`**：宿主每个 delta 都深拷贝整个 partial（O(n²) 字节），前端自行累加。
   - 工具事件按 `tool_call_id` 索引：并行批次（`asyncio.TaskGroup`）的 start/update/end 会**交错**，不能按顺序配对。
-- **命令**（`HostCommand`）：`host.info`、`sessions.list|open|new|rename|fork|delete`、`session.export`、`prompt`、`steer`、`follow_up`、`abort`、`compact`、`run_command`、`invoke_skill`、`model.select`、`thinking.set`、`permission.set`、`trust.set`、`cwd.change`、`permission.answer`、`extensions.set`、`reload`、`files.changes`、`files.diff`、`files.read`。（`follow_up` 只留在协议里：排队现在完全发生在前端，宿主的 follow-up 队列一次最多只会收到 `drainQueue()` 放出去的那一条。）
+- **命令**（`HostCommand`）：`host.info`、`sessions.list|open|new|rename|fork|delete`、`session.export`、`prompt`、`steer`、`follow_up`、`abort`、`compact`、`run_command`、`invoke_skill`、`model.select`、`thinking.set`、`permission.set`、`interaction.set`、`trust.set`、`cwd.change`、`permission.answer`、`extensions.set`、`reload`、`files.list`、`files.changes`、`files.diff`、`files.read`。（`follow_up` 只留在协议里：排队现在完全发生在前端，宿主的 follow-up 队列一次最多只会收到 `drainQueue()` 放出去的那一条。）
   - 运行中不能 `prompt`（宿主抛 `Runtime is already processing`）：忙碌时的发送**只进前端本机队列**（见「排队与插队」），不再直接改走 `steer`。
   - **插队才用 `steer`**：宿主只在**真的有一轮在跑**时才收 `steer`，否则返回 `当前没有正在运行的一轮，steer 不会被消费；请直接发送这条消息`（`session.steer()` 只是入队，没有运行中的一轮就永远没人消费，用户看到的是「插进去也不回来」）。前端收到这条错误就把乐观的气泡撤掉、提示「本轮已经结束，改为直接发送」并改走 `prompt`，消息不会丢。
   - **命令名归一化**：`fox serve` 的 `host.info.commands[].name` 带前导斜杠（`/new`），而界面各处（composer 补全、命令面板、技能页）都是自己补斜杠显示的，所以 `refreshHost()` 收下时就 `replace(/^\//, '')`。不归一化会显示成 `//new`，而且手敲的 `/new` 匹配不上命令表、被当成普通提问发出去（`run_command` 那一侧宿主自己 `lstrip('/')`，所以发不带斜杠的名字是安全的）。

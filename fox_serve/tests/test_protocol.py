@@ -249,8 +249,8 @@ class EventPayloadTests(unittest.TestCase):
 
         self.assertIsNone(event_payload(BeforePrompt()))
 
-    def test_protocol_version_is_one(self) -> None:
-        self.assertEqual(PROTOCOL_VERSION, 1)
+    def test_protocol_version_is_three(self) -> None:
+        self.assertEqual(PROTOCOL_VERSION, 3)
 
 
 if __name__ == "__main__":  # pragma: no cover

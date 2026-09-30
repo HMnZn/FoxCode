@@ -9,6 +9,7 @@ required environment/assets are absent.
 from __future__ import annotations
 
 import argparse
+import ast
 import asyncio
 import difflib
 import hashlib
@@ -41,6 +42,7 @@ DEFAULT_SEED_SKILL = (
     Path(__file__).parent / "fixtures" / "evolution_eval" / "household_task_planner_v0.md"
 )
 DEFAULT_DATA_ROOT = Path(__file__).parent / "data"
+DEFAULT_API_EVAL_DIR = Path(__file__).parent / "fixtures" / "evolution_eval_apiword"
 
 
 @dataclass(frozen=True)
@@ -342,6 +344,63 @@ def score_household_plan(goal: str, subgoals: str, prediction: str) -> dict[str,
     }
 
 
+def parse_api_request(value: str) -> dict[str, Any] | None:
+    """Parse one benchmark API-Request without executing model-produced code."""
+    match = re.search(r"API-Request\s*:\s*(\[[^\n]*\])", str(value or ""), re.I)
+    if match is None:
+        return None
+    try:
+        expression = ast.parse(match.group(1), mode="eval").body
+    except SyntaxError:
+        return None
+    if not isinstance(expression, ast.List) or len(expression.elts) != 1:
+        return None
+    call = expression.elts[0]
+    if not isinstance(call, ast.Call) or not isinstance(call.func, ast.Name) or call.args:
+        return None
+    parameters: dict[str, Any] = {}
+    try:
+        for keyword in call.keywords:
+            if keyword.arg is None or keyword.arg in parameters:
+                return None
+            parameters[keyword.arg] = ast.literal_eval(keyword.value)
+    except (ValueError, TypeError, SyntaxError):
+        return None
+    return {"api_name": call.func.id, "parameters": parameters}
+
+
+def score_api_request(expected: str, prediction: str) -> dict[str, Any]:
+    target = parse_api_request(expected)
+    actual = parse_api_request(prediction)
+    if target is None:
+        raise ValueError(f"Invalid expected API request: {expected[:200]}")
+    expected_parameters = target["parameters"]
+    actual_parameters = actual["parameters"] if actual else {}
+    api_name_correct = bool(actual and actual["api_name"] == target["api_name"])
+    parameter_names_correct = bool(actual and set(actual_parameters) == set(expected_parameters))
+    matching_values = sum(
+        key in actual_parameters and actual_parameters[key] == value
+        for key, value in expected_parameters.items()
+    )
+    parameter_value_recall = round(
+        matching_values / len(expected_parameters), 4
+    ) if expected_parameters else float(parameter_names_correct)
+    passed = bool(
+        api_name_correct
+        and parameter_names_correct
+        and parameter_value_recall == 1.0
+    )
+    return {
+        "expected_request": target,
+        "predicted_request": actual,
+        "parseable": actual is not None,
+        "api_name_correct": api_name_correct,
+        "parameter_names_correct": parameter_names_correct,
+        "parameter_value_recall": parameter_value_recall,
+        "passed": passed,
+    }
+
+
 def _assistant_text(message: Any) -> str:
     return "\n".join(
         block.text for block in getattr(message, "content", []) if isinstance(block, TextContent)
@@ -462,6 +521,96 @@ def _planning_summary(results: list[dict[str, Any]], variants: Iterable[str]) ->
             "errors": sum(bool(row["error"]) for row in selected),
         }
     return summary
+
+
+async def _evaluate_api_rows(
+    *,
+    rows: list[dict[str, Any]],
+    variant: str,
+    skill_content: str,
+    stream_fn: Any,
+    model: Any,
+    retries: int = 1,
+) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    system = (
+        "Complete the supplied API-request benchmark item. Follow its API descriptions and "
+        "output contract exactly. Do not execute the request or claim success."
+    )
+    if skill_content:
+        system += f"\n\n<skill name=\"api-request-planner\">\n{skill_content}\n</skill>"
+    for row in rows:
+        prompt = f"{str(row.get('instruction') or '').strip()}\n\n{str(row.get('input') or '').strip()}"
+        call = await _call_text_model(
+            stream_fn=stream_fn,
+            model=model,
+            system=system,
+            prompt=prompt,
+            max_tokens=350,
+            retries=retries,
+        )
+        prediction = str(call["text"])
+        score = score_api_request(str(row.get("expected_output") or ""), prediction)
+        results.append({
+            "id": row.get("id"),
+            "file": row.get("file"),
+            "variant": variant,
+            "prediction": prediction,
+            "expected_output": row.get("expected_output"),
+            "stop_reason": call["stop_reason"],
+            "error": call["error"],
+            "usage": call["usage"],
+            "attempts": call["attempts"],
+            **score,
+        })
+    return results
+
+
+def _api_summary(results: list[dict[str, Any]], variants: Iterable[str]) -> dict[str, Any]:
+    summary: dict[str, Any] = {}
+    for variant in variants:
+        selected = [row for row in results if row["variant"] == variant]
+        total = len(selected)
+        ratio = lambda key: round(sum(bool(row[key]) for row in selected) / total, 4) if total else 0.0
+        summary[variant] = {
+            "passed": sum(bool(row["passed"]) for row in selected),
+            "total": total,
+            "exact_request_accuracy": ratio("passed"),
+            "parse_rate": ratio("parseable"),
+            "api_name_accuracy": ratio("api_name_correct"),
+            "parameter_names_accuracy": ratio("parameter_names_correct"),
+            "mean_parameter_value_recall": round(
+                sum(float(row["parameter_value_recall"]) for row in selected) / total, 4
+            ) if total else 0.0,
+            "input_tokens": sum(int(row["usage"].get("input", 0) or 0) for row in selected),
+            "output_tokens": sum(int(row["usage"].get("output", 0) or 0) for row in selected),
+            "errors": sum(bool(row["error"]) for row in selected),
+        }
+    return summary
+
+
+def build_api_evolution_feedback(
+    failures: list[dict[str, Any]], *, skill_name: str
+) -> str:
+    examples: list[str] = []
+    for row in failures[:12]:
+        examples.append(
+            "- expected=" + json.dumps(row["expected_request"], ensure_ascii=False, sort_keys=True)
+            + "; predicted="
+            + json.dumps(row["predicted_request"], ensure_ascii=False, sort_keys=True)
+        )
+    return (
+        f"Update the existing {skill_name} skill for future API request tasks. Use that exact "
+        "skill name. Learn only reusable corrections from these labeled failures: select the API "
+        "whose schema matches the next unresolved operation; use exact parameter names; copy "
+        "values from the latest relevant dialogue or tool result; obey declared date and time "
+        "formats; emit only one next request; and return exactly the required API-Request line "
+        "without claiming execution. For ToolSearcher specifically, use the shortest canonical "
+        "capability phrase that identifies the tool. Do not append entity values, dates, places, "
+        "or other eventual API arguments unless they are necessary to distinguish the capability; "
+        "when the search itself is about a literal phrase, preserve meaningful wording such as an "
+        "ordinal suffix. Failure evidence:\n" + "\n".join(examples)
+    )
 
 
 def build_evolution_feedback(
@@ -659,6 +808,287 @@ async def run_household_planning_evaluation(
         },
         "results": results,
     }
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(
+        json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return report
+
+
+async def run_api_bank_evaluation(
+    *,
+    data_path: Path,
+    skill_path: Path,
+    user_dir: Path,
+    model_reference: str | None,
+    limit: int,
+    output_path: Path,
+    retries: int = 1,
+) -> dict[str, Any]:
+    """Real API baseline/full evaluation of next-call selection and arguments."""
+    if limit < 1:
+        raise ValueError("limit must be positive")
+    rows = _load_json(data_path)[:limit]
+    skill, diagnostics = load_skill_from_file(skill_path)
+    if skill is None:
+        raise ValueError("Cannot load evaluation skill: " + "; ".join(d.message for d in diagnostics))
+    runtime = ModelRuntime(user_dir)
+    configured = runtime.registry.resolve(model_reference) if model_reference else runtime.registry.default()
+    if configured is None:
+        raise ValueError(f"No model configured under {user_dir}; pass --model or configure models.json")
+    stream_fn = runtime.authenticated_stream()
+    results: list[dict[str, Any]] = []
+    for variant, content in (("baseline", ""), ("full", skill.content)):
+        results.extend(await _evaluate_api_rows(
+            rows=rows,
+            variant=variant,
+            skill_content=content,
+            stream_fn=stream_fn,
+            model=configured.model,
+            retries=retries,
+        ))
+    summary = _api_summary(results, ("baseline", "full"))
+    report = {
+        "kind": "api-request-skill-ablation",
+        "claim_boundary": "request generation only; external APIs were not executed",
+        "model": configured.reference,
+        "skill": {"name": skill.name, "path": str(skill_path)},
+        "data": {"path": str(data_path), "sample_count": len(rows)},
+        "summary": summary,
+        "effect": {
+            "exact_request_accuracy_delta": round(
+                summary["full"]["exact_request_accuracy"]
+                - summary["baseline"]["exact_request_accuracy"], 4
+            ),
+            "parameter_value_recall_delta": round(
+                summary["full"]["mean_parameter_value_recall"]
+                - summary["baseline"]["mean_parameter_value_recall"], 4
+            ),
+        },
+        "results": results,
+    }
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(
+        json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return report
+
+
+async def run_api_bank_self_evolution_evaluation(
+    *,
+    data_path: Path,
+    seed_skill_path: Path,
+    user_dir: Path,
+    model_reference: str | None,
+    evolution_limit: int,
+    test_limit: int,
+    output_path: Path,
+    retries: int = 1,
+) -> dict[str, Any]:
+    """Run API-request failures through the production Skill evolution path."""
+    if evolution_limit < 1 or test_limit < 1:
+        raise ValueError("evolution-limit and test-limit must be positive")
+    all_rows = _load_json(data_path)
+    required = evolution_limit + test_limit
+    if len(all_rows) < required:
+        raise ValueError(f"Dataset needs at least {required} rows, found {len(all_rows)}")
+    evolution_rows = all_rows[:evolution_limit]
+    heldout_rows = all_rows[evolution_limit:required]
+    evolution_ids = [f"{row.get('file')}:{row.get('id')}" for row in evolution_rows]
+    heldout_ids = [f"{row.get('file')}:{row.get('id')}" for row in heldout_rows]
+    if set(evolution_ids) & set(heldout_ids):
+        raise ValueError("Evolution and held-out sample ids must be disjoint")
+
+    runtime = ModelRuntime(user_dir)
+    configured = runtime.registry.resolve(model_reference) if model_reference else runtime.registry.default()
+    if configured is None:
+        raise ValueError(f"No model configured under {user_dir}; pass --model or configure models.json")
+    stream_fn = runtime.authenticated_stream()
+    seed_text = seed_skill_path.read_text(encoding="utf-8")
+    seed_skill, diagnostics = load_skill_from_file(seed_skill_path)
+    if seed_skill is None:
+        raise ValueError("Cannot load seed skill: " + "; ".join(d.message for d in diagnostics))
+    seed_metadata, _body = parse_frontmatter(seed_text)
+    seed_version = str(seed_metadata.get("version") or "0.1.0")
+
+    with tempfile.TemporaryDirectory(prefix="foxcode-api-skill-evolution-") as raw:
+        sandbox = Path(raw)
+        sandbox_user, sandbox_project = sandbox / "user", sandbox / "project"
+        sandbox_project.mkdir(parents=True)
+        active_path = sandbox_user / "skills" / seed_skill.name / "SKILL.md"
+        active_path.parent.mkdir(parents=True)
+        active_path.write_text(seed_text, encoding="utf-8")
+        store = SkillEvolutionStore(sandbox_user, sandbox_project)
+
+        evolution_results = await _evaluate_api_rows(
+            rows=evolution_rows,
+            variant="initial_skill",
+            skill_content=seed_skill.content,
+            stream_fn=stream_fn,
+            model=configured.model,
+            retries=retries,
+        )
+        failures = [row for row in evolution_results if not row["passed"]]
+        if not failures:
+            raise ValueError(
+                "Initial skill produced no evolution-set failures; increase --evolution-limit "
+                "or use a harder split"
+            )
+        feedback = build_api_evolution_feedback(failures, skill_name=seed_skill.name)
+        source_messages = [
+            {"role": "assistant", "content": json.dumps([{
+                "id": row["id"],
+                "prediction": row["prediction"],
+                "expected_output": row["expected_output"],
+            } for row in failures], ensure_ascii=False)},
+            {"role": "user", "content": feedback},
+        ]
+        extraction_record: dict[str, Any] = {}
+
+        async def side_query(system: str, prompt: str) -> str:
+            call = await _call_text_model(
+                stream_fn=stream_fn,
+                model=configured.model,
+                system=system,
+                prompt=prompt,
+                max_tokens=1200,
+                retries=retries,
+            )
+            extraction_record.update({
+                "system": system,
+                "prompt": prompt,
+                "response": call["text"],
+                "stop_reason": call["stop_reason"],
+                "error": call["error"],
+                "usage": call["usage"],
+                "attempts": call["attempts"],
+            })
+            if call["error"]:
+                raise RuntimeError(str(call["error"]))
+            return str(call["text"])
+
+        candidate = await extract_candidate(source_messages, side_query)
+        if candidate is None:
+            raise ValueError("Real API extraction returned no reusable candidate")
+        proposal = store.propose(
+            candidate,
+            source_session="api-e2e-eval",
+            source_messages=source_messages,
+        )
+        if proposal.status != "pending":
+            raise ValueError("Extracted candidate was rejected: " + "; ".join(proposal.reasons))
+        if proposal.suggested_action != "merge" or proposal.target_skill != seed_skill.name:
+            raise ValueError(
+                "Evolution must merge the seed skill; got "
+                f"{proposal.suggested_action}:{proposal.target_skill or candidate.name}"
+            )
+        applied = store.apply(proposal.id, target="user")
+        evolved_text = active_path.read_text(encoding="utf-8")
+        evolved_skill, evolved_diagnostics = load_skill_from_file(active_path)
+        if evolved_skill is None:
+            raise ValueError(
+                "Cannot reload evolved skill: "
+                + "; ".join(d.message for d in evolved_diagnostics)
+            )
+        evolved_metadata, _body = parse_frontmatter(evolved_text)
+        evolved_version = str(evolved_metadata.get("version") or "")
+
+        heldout_results: list[dict[str, Any]] = []
+        for variant, content in (
+            ("baseline", ""),
+            ("initial_skill", seed_skill.content),
+            ("evolved_skill", evolved_skill.content),
+        ):
+            heldout_results.extend(await _evaluate_api_rows(
+                rows=heldout_rows,
+                variant=variant,
+                skill_content=content,
+                stream_fn=stream_fn,
+                model=configured.model,
+                retries=retries,
+            ))
+        summary = _api_summary(
+            heldout_results, ("baseline", "initial_skill", "evolved_skill")
+        )
+        provenance = _read_jsonl_objects(store.provenance_path)
+        history = [
+            row
+            for path in sorted(store.history_dir.glob("*.jsonl"))
+            for row in _read_jsonl_objects(path)
+        ]
+        report = {
+            "kind": "api-request-self-evolution-e2e",
+            "claim_boundary": "request generation only; external APIs were not executed",
+            "model": configured.reference,
+            "data": {
+                "path": str(data_path),
+                "evolution_ids": evolution_ids,
+                "heldout_ids": heldout_ids,
+                "sets_disjoint": True,
+            },
+            "isolation": {
+                "user_level_layout": True,
+                "live_user_skill_mutated": False,
+                "approval_mode": "evaluation-only auto-apply inside isolated sandbox",
+            },
+            "evolution": {
+                "initial_skill": {
+                    "name": seed_skill.name,
+                    "version": seed_version,
+                    "sha256": _sha256_text(seed_text),
+                    "content": seed_text,
+                },
+                "evolution_set_summary": _api_summary(
+                    evolution_results, ("initial_skill",)
+                )["initial_skill"],
+                "evolution_set_results": evolution_results,
+                "feedback": feedback,
+                "extraction_api_call": extraction_record,
+                "candidate": candidate.to_dict(),
+                "proposal_before_apply": proposal.to_dict(),
+                "applied_proposal": applied.to_dict(),
+                "evolved_skill": {
+                    "name": evolved_skill.name,
+                    "version": evolved_version,
+                    "sha256": _sha256_text(evolved_text),
+                    "content": evolved_text,
+                },
+                "diff": "\n".join(difflib.unified_diff(
+                    seed_text.splitlines(), evolved_text.splitlines(),
+                    fromfile=f"{seed_skill.name}@{seed_version}",
+                    tofile=f"{seed_skill.name}@{evolved_version}", lineterm="",
+                )),
+                "history": history,
+                "provenance": provenance,
+            },
+            "heldout": {
+                "summary": summary,
+                "effect": {
+                    "exact_request_accuracy_delta_evolved_vs_initial": round(
+                        summary["evolved_skill"]["exact_request_accuracy"]
+                        - summary["initial_skill"]["exact_request_accuracy"], 4
+                    ),
+                    "parameter_value_recall_delta_evolved_vs_initial": round(
+                        summary["evolved_skill"]["mean_parameter_value_recall"]
+                        - summary["initial_skill"]["mean_parameter_value_recall"], 4
+                    ),
+                },
+                "results": heldout_results,
+            },
+            "proof": {
+                "real_extraction_api_succeeded": not bool(extraction_record.get("error")),
+                "candidate_staged": bool(proposal.proposed_at),
+                "production_merge_path_used": proposal.suggested_action == "merge",
+                "version_advanced": seed_version != evolved_version,
+                "history_recorded": bool(history),
+                "provenance_recorded": len(provenance) >= 2,
+                "evolved_skill_reloaded": evolved_skill is not None,
+                "heldout_is_independent": True,
+            },
+        }
+
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(
         json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
@@ -918,7 +1348,7 @@ def build_parser() -> argparse.ArgumentParser:
     live.add_argument("--user-dir", type=Path, default=Path.home() / ".foxcode")
     live.add_argument("--model")
     live.add_argument("--limit", type=int, default=20)
-    live.add_argument("--output-dir", type=Path, default=Path(".foxcode/evals/skill-evolution"))
+    live.add_argument("--output-dir", type=Path, default=Path(".foxcode/artifacts/tests/skill-evolution"))
     planning = sub.add_parser(
         "planning-live", help="Run a real API baseline/full household-planning Skill ablation"
     )
@@ -934,7 +1364,7 @@ def build_parser() -> argparse.ArgumentParser:
     planning.add_argument("--limit", type=int, default=8)
     planning.add_argument(
         "--output", type=Path,
-        default=Path(".foxcode/evals/skill-evolution/household-planning.json"),
+        default=Path(".foxcode/artifacts/tests/skill-evolution/household-planning.json"),
     )
     evolving = sub.add_parser(
         "evolve-live",
@@ -951,7 +1381,45 @@ def build_parser() -> argparse.ArgumentParser:
     evolving.add_argument("--retries", type=int, default=1)
     evolving.add_argument(
         "--output", type=Path,
-        default=Path(".foxcode/evals/skill-evolution/household-e2e.json"),
+        default=Path(".foxcode/artifacts/tests/skill-evolution/household-e2e.json"),
+    )
+    api_live = sub.add_parser(
+        "api-bank-live", help="Run a real API baseline/full next-request Skill ablation"
+    )
+    api_live.add_argument(
+        "--data", type=Path,
+        default=DEFAULT_DATA_ROOT / "API-Bank" / "test-data" / "level-2-api.json",
+    )
+    api_live.add_argument(
+        "--skill", type=Path,
+        default=Path.home() / ".foxcode" / "skills" / "api-request-planner" / "SKILL.md",
+    )
+    api_live.add_argument("--user-dir", type=Path, default=Path.home() / ".foxcode")
+    api_live.add_argument("--model")
+    api_live.add_argument("--limit", type=int, default=20)
+    api_live.add_argument("--retries", type=int, default=1)
+    api_live.add_argument(
+        "--output", type=Path, default=DEFAULT_API_EVAL_DIR / "api_bank_ablation.json"
+    )
+    api_evolving = sub.add_parser(
+        "api-bank-evolve-live",
+        help="Run a real API request extract/propose/apply/reload/held-out evolution cycle",
+    )
+    api_evolving.add_argument(
+        "--data", type=Path,
+        default=DEFAULT_DATA_ROOT / "API-Bank" / "test-data" / "level-2-api.json",
+    )
+    api_evolving.add_argument(
+        "--seed-skill", type=Path,
+        default=Path.home() / ".foxcode" / "skills" / "api-request-planner" / "SKILL.md",
+    )
+    api_evolving.add_argument("--user-dir", type=Path, default=Path.home() / ".foxcode")
+    api_evolving.add_argument("--model")
+    api_evolving.add_argument("--evolution-limit", type=int, default=12)
+    api_evolving.add_argument("--test-limit", type=int, default=12)
+    api_evolving.add_argument("--retries", type=int, default=1)
+    api_evolving.add_argument(
+        "--output", type=Path, default=DEFAULT_API_EVAL_DIR / "api_bank_e2e.json"
     )
     return parser
 
@@ -982,8 +1450,29 @@ def main(argv: list[str] | None = None) -> int:
             limit=args.limit,
             output_path=args.output,
         ))
-    else:
+    elif args.command == "evolve-live":
         report = asyncio.run(run_household_self_evolution_evaluation(
+            data_path=args.data,
+            seed_skill_path=args.seed_skill,
+            user_dir=args.user_dir,
+            model_reference=args.model,
+            evolution_limit=args.evolution_limit,
+            test_limit=args.test_limit,
+            output_path=args.output,
+            retries=args.retries,
+        ))
+    elif args.command == "api-bank-live":
+        report = asyncio.run(run_api_bank_evaluation(
+            data_path=args.data,
+            skill_path=args.skill,
+            user_dir=args.user_dir,
+            model_reference=args.model,
+            limit=args.limit,
+            output_path=args.output,
+            retries=args.retries,
+        ))
+    else:
+        report = asyncio.run(run_api_bank_self_evolution_evaluation(
             data_path=args.data,
             seed_skill_path=args.seed_skill,
             user_dir=args.user_dir,
@@ -1003,7 +1492,9 @@ if __name__ == "__main__":
 
 __all__ = [
     "BenchmarkSample", "audit_datasets", "load_benchmark", "normalize_answer",
-    "build_evolution_feedback", "expected_plan_actions", "predicted_plan_actions",
+    "build_api_evolution_feedback", "build_evolution_feedback", "expected_plan_actions",
+    "parse_api_request", "predicted_plan_actions", "run_api_bank_evaluation",
+    "run_api_bank_self_evolution_evaluation", "score_api_request",
     "run_household_planning_evaluation", "run_household_self_evolution_evaluation",
     "run_live_evaluation", "run_offline_evaluation", "score_household_plan", "strict_correct",
 ]

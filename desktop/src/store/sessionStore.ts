@@ -9,16 +9,21 @@ import {
   applyHostIdle,
   applyPermissionDecision,
   applyPermissionRequest,
+  applyPlanDecision,
   markStalled,
   type TimelineState,
 } from '@/store/timeline'
 import { toast, useToasts } from '@/store/toastStore'
 import type {
   ExtensionScope,
+  ExecutionMode,
   HostCommand,
   HostInfo,
+  InteractionMode,
   PermissionDecision,
   PermissionMode,
+  PlanDecision,
+  PromptImage,
   SessionSummary,
   ThinkingLevel,
 } from '@/types/protocol'
@@ -26,6 +31,7 @@ import type {
 export interface QueuedMessage {
   id: string
   text: string
+  attachments?: PromptImage[]
   mode: 'steer' | 'follow_up'
   at: number
 }
@@ -63,10 +69,10 @@ export interface SessionStore {
   refreshHost(): Promise<void>
   refreshSessions(): Promise<void>
   send(command: HostCommand, opts?: { silent?: boolean }): Promise<unknown>
-  prompt(text: string): Promise<void>
-  startRun(text: string): Promise<boolean>
-  steer(text: string, promoteFollowUps?: boolean): Promise<void>
-  followUp(text: string): Promise<void>
+  prompt(text: string, attachments?: PromptImage[]): Promise<void>
+  startRun(text: string, attachments?: PromptImage[]): Promise<boolean>
+  steer(text: string, promoteFollowUps?: boolean, attachments?: PromptImage[]): Promise<void>
+  followUp(text: string, attachments?: PromptImage[]): Promise<void>
   updateQueued(id: string, text: string): void
   steerQueued(id: string): Promise<void>
   drainQueue(): Promise<void>
@@ -75,6 +81,10 @@ export interface SessionStore {
   compact(): Promise<void>
   answerPermission(id: string, decision: PermissionDecision, reason?: string): Promise<void>
   setPermissionMode(mode: PermissionMode): Promise<void>
+  setInteractionMode(mode: InteractionMode): Promise<void>
+  setExecutionMode(mode: ExecutionMode): Promise<void>
+  implementPlan(): Promise<void>
+  answerPlan(id: string, decision: 'accept' | 'reject'): Promise<void>
   setThinking(level: ThinkingLevel): Promise<void>
   selectModel(reference: string): Promise<void>
   setTrust(trusted: boolean): Promise<void>
@@ -253,6 +263,7 @@ export const useSession = create<SessionStore>((set, get) => {
         const timeline = applyFrame(useSession.getState().timeline, frame)
         set({ timeline })
         syncPermissionToasts(timeline.permissions.map((request) => request.id))
+        if (frame.type === 'agent_end') void get().refreshHost()
       })
 
       BRIDGE.onPermission((request) => {
@@ -322,19 +333,19 @@ export const useSession = create<SessionStore>((set, get) => {
       }
     },
 
-    prompt: async (text) => {
+    prompt: async (text, attachments = []) => {
       const trimmed = text.trim()
-      if (!trimmed) return
+      if (!trimmed && attachments.length === 0) return
       if (isBusy(get().timeline)) {
-        await get().followUp(trimmed)
+        await get().followUp(trimmed, attachments)
         return
       }
-      await get().startRun(trimmed)
+      await get().startRun(trimmed, attachments)
     },
 
-    startRun: async (text) => {
+    startRun: async (text, attachments = []) => {
       const trimmed = text.trim()
-      if (!trimmed) return false
+      if (!trimmed && attachments.length === 0) return false
       idleStrikes = 0
       const startedAt = Date.now()
       set((state) => ({
@@ -342,7 +353,7 @@ export const useSession = create<SessionStore>((set, get) => {
           ...state.timeline,
           blocks: [
             ...state.timeline.blocks,
-            { kind: 'user', id: uid('user'), ts: Date.now(), text: trimmed },
+            { kind: 'user', id: uid('user'), ts: Date.now(), text: trimmed, images: attachments },
           ],
           status: 'streaming',
           activity: '已提交，等待宿主响应',
@@ -351,7 +362,11 @@ export const useSession = create<SessionStore>((set, get) => {
         },
       }))
       try {
-        await get().send({ method: 'prompt', params: { message: trimmed } })
+        await get().send({
+          method: 'prompt',
+          params: { message: trimmed, options: { attachments } },
+        })
+        await get().refreshHost()
         return true
       } catch {
         // 这一轮可能根本没发出去（桥断了 / 宿主拒绝）。对账也走同一座桥，桥断了
@@ -371,9 +386,9 @@ export const useSession = create<SessionStore>((set, get) => {
       }
     },
 
-    steer: async (text, promoteFollowUps = false) => {
+    steer: async (text, promoteFollowUps = false, attachments = []) => {
       const trimmed = text.trim()
-      if (!trimmed) return
+      if (!trimmed && attachments.length === 0) return
       idleStrikes = 0
       const at = Date.now()
       const blockId = uid('user')
@@ -388,7 +403,7 @@ export const useSession = create<SessionStore>((set, get) => {
                 ? { ...block, queued: 'steer' as const }
                 : block,
             ),
-            { kind: 'user', id: blockId, ts: at, text: trimmed, queued: 'steer' },
+            { kind: 'user', id: blockId, ts: at, text: trimmed, images: attachments, queued: 'steer' },
           ],
           activity: promoteFollowUps ? '正在插话发送全部排队消息' : '已插话，等待模型接收',
         },
@@ -396,7 +411,12 @@ export const useSession = create<SessionStore>((set, get) => {
       try {
         await get().send({
           method: 'steer',
-          params: { message: trimmed, promoteFollowUps, interrupt: promoteFollowUps },
+          params: {
+            message: trimmed,
+            ...(attachments.length ? { attachments } : {}),
+            promoteFollowUps,
+            interrupt: promoteFollowUps,
+          },
         })
       } catch (error) {
         if (!isIdleHostError(error)) {
@@ -416,7 +436,7 @@ export const useSession = create<SessionStore>((set, get) => {
           title: '本轮已经结束，改为直接发送',
           description: '宿主没有在跑的一轮时，插话不会被消费',
         })
-        await get().startRun(trimmed)
+        await get().startRun(trimmed, attachments)
       }
     },
 
@@ -428,13 +448,14 @@ export const useSession = create<SessionStore>((set, get) => {
      * `drainQueue()` 逐条作为新一轮 prompt 发出去（正好就是「这个任务完成后接着
      * 下一个任务」）。插队仍然走 `steer`（宿主侧中断当前请求后消费 steering 队列）。
      */
-    followUp: async (text) => {
+    followUp: async (text, attachments = []) => {
       const trimmed = text.trim()
-      if (!trimmed) return
+      if (!trimmed && attachments.length === 0) return
       idleStrikes = 0
       const entry: QueuedMessage = {
         id: uid('queue'),
         text: trimmed,
+        attachments,
         mode: 'follow_up',
         at: Date.now(),
       }
@@ -456,7 +477,7 @@ export const useSession = create<SessionStore>((set, get) => {
       const entry = get().queue.find((item) => item.id === id)
       if (!entry) return
       set((state) => ({ queue: state.queue.filter((item) => item.id !== id) }))
-      await get().steer(entry.text, true)
+      await get().steer(entry.text, true, entry.attachments)
     },
 
     /**
@@ -488,7 +509,7 @@ export const useSession = create<SessionStore>((set, get) => {
       if (!fresh) return
       set((state) => ({ queue: state.queue.filter((item) => item.id !== fresh.id) }))
       lastDrained = fresh
-      const sent = await get().startRun(fresh.text)
+      const sent = await get().startRun(fresh.text, fresh.attachments)
       lastDrained = null
       if (!sent) set((state) => ({ queue: [fresh, ...state.queue] }))
     },
@@ -593,6 +614,57 @@ export const useSession = create<SessionStore>((set, get) => {
         toast.warn({ title: '已切换到完全访问', description: '宿主钩子仍可拦截危险调用' })
       } else {
         toast.info({ title: `权限模式已切换为 ${mode}` })
+      }
+    },
+
+    setInteractionMode: async (mode) => {
+      await get().send({ method: 'interaction.set', params: { mode } })
+      await get().refreshHost()
+      toast.info({ title: `已切换到 ${mode === 'plan' ? '计划' : mode === 'default' ? '执行' : '自动'}模式` })
+    },
+
+    setExecutionMode: async (mode) => {
+      await get().send({ method: 'execution.set', params: { mode } })
+      await get().refreshHost()
+      const host = get().host
+      if (mode === 'sandbox' && host && !host.sandbox.shell) {
+        toast.warn({
+          title: '已启用文件沙盒',
+          description: '当前系统缺少原生进程沙盒，shell 工具将被禁用。',
+        })
+      } else {
+        toast.info({ title: mode === 'sandbox' ? '已切换到沙盒执行' : '已切换到本机执行' })
+      }
+    },
+
+    implementPlan: async () => {
+      if (isBusy(get().timeline)) return
+      // Auto mode can route the explicit implementation request itself; keep
+      // the user's automatic preference. Manual Plan mode must be left first.
+      if (get().host?.interactionMode === 'plan') {
+        await get().setInteractionMode('default')
+      }
+      await get().prompt('请按照上一条计划开始实施。')
+    },
+
+    answerPlan: async (id, decision) => {
+      const resolved: PlanDecision = decision === 'accept' ? 'accepted' : 'rejected'
+      set((state) => ({ timeline: applyPlanDecision(state.timeline, id, resolved) }))
+      try {
+        await get().send({ method: 'plan.answer', params: { id, decision } })
+        if (decision === 'accept') await get().refreshHost()
+      } catch (error) {
+        set((state) => ({
+          timeline: {
+            ...state.timeline,
+            blocks: state.timeline.blocks.map((block) =>
+              block.kind === 'plan' && block.toolCallId === id
+                ? { ...block, decision: undefined }
+                : block,
+            ),
+          },
+        }))
+        fail(error, '提交计划选择')
       }
     },
 

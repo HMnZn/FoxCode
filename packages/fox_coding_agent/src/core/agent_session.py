@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import time
 from dataclasses import dataclass, field, replace
@@ -42,6 +43,13 @@ from fox_agent_core.src.types import (
     StreamFn,
 )
 from .session_manager import SessionManager
+from .interaction import (
+    INTERACTION_MODES, EffectiveInteractionMode, InteractionMode,
+    is_plan_safe_tool, resolve_interaction_mode,
+)
+from .system_prompt import PLAN_MODE_SECTION
+from .plan_tool import SubmitPlanTool
+from .sandbox import EXECUTION_MODES, ExecutionMode
 from .skills import LoadSkillsOptions, Skill, format_skill_invocation, format_skills_for_prompt, load_skills
 from .tools import create_coding_tools
 
@@ -94,6 +102,8 @@ class AgentSessionConfig:
     before_tool_call: Any = None
     after_tool_call: Any = None
     model_retry_attempts: int = 1
+    interaction_mode: InteractionMode = "auto"
+    execution_mode: ExecutionMode = "local"
 
 
 class AgentSession(CoreAgentHarness):
@@ -113,6 +123,12 @@ class AgentSession(CoreAgentHarness):
         if len(self._tools) != len(tools):
             raise ValueError("Tool names must be unique")
         self._default_tool_names = list(self._tools)
+        self._plan_tool = SubmitPlanTool()
+        if self._plan_tool.name in self._tools:
+            raise ValueError(f"Reserved tool name is already registered: {self._plan_tool.name}")
+        # This control-plane tool is deliberately not part of selected tools:
+        # it appears only in the effective Plan-mode tool set.
+        self._tools[self._plan_tool.name] = self._plan_tool
         loaded = load_skills(config.skill_options or LoadSkillsOptions(cwd=str(self.cwd))) if config.skills is None else None
         self.skills = list(loaded.skills if loaded else config.skills or [])
         self.skill_diagnostics = loaded.diagnostics if loaded else []
@@ -126,19 +142,40 @@ class AgentSession(CoreAgentHarness):
         level = saved.get("thinking_level", config.thinking_level)
         active_names = saved.get("active_tools", self._default_tool_names)
         self._validate_tool_names(active_names)
+        interaction_mode = saved.get("interaction_mode", config.interaction_mode)
+        if interaction_mode not in INTERACTION_MODES:
+            raise ValueError(f"Invalid interaction mode: {interaction_mode}")
+        self._selected_tool_names = list(active_names)
+        self._interaction_mode: InteractionMode = interaction_mode
+        execution_mode = saved.get("execution_mode", config.execution_mode)
+        if execution_mode not in EXECUTION_MODES:
+            raise ValueError(f"Invalid execution mode: {execution_mode}")
+        self._execution_mode: ExecutionMode = execution_mode
+        self._configure_tool_execution_mode()
+        self._effective_interaction_mode: EffectiveInteractionMode = (
+            "plan" if interaction_mode == "plan" else "default"
+        )
         if "thinking_level" not in saved:
             self.session.append_thinking_level_change(level)
         if "active_tools" not in saved:
             self.session.append_active_tools_change(active_names)
-        system = "\n\n".join(part for part in (
+        if "interaction_mode" not in saved:
+            self.session.append_interaction_mode_change(interaction_mode)
+        if "execution_mode" not in saved:
+            self.session.append_execution_mode_change(execution_mode)
+        effective_tools = self._effective_tools()
+        self._base_system_prompt = "\n\n".join(part for part in (
             config.system_prompt, f"Working directory: {self.cwd}", format_skills_for_prompt(self.skills)
         ) if part)
+        system = self._base_system_prompt
         if config.system_prompt_builder:
-            system = config.system_prompt_builder([self._tools[n] for n in active_names], self.skills, self.cwd)
+            system = self._build_system_prompt(effective_tools)
+        elif self._effective_interaction_mode == "plan":
+            system = f"{system}\n\n{PLAN_MODE_SECTION}"
         stream_options.setdefault("session_id", self.session.storage.get_metadata().get("id"))
         agent_options = AgentOptions(
             initial_state={"model": model, "system_prompt": system, "messages": self.session.build_context(),
-                           "tools": [self._tools[n] for n in active_names], "thinking_level": level},
+                           "tools": effective_tools, "thinking_level": level},
             stream_fn=config.stream_fn, stream_options=stream_options,
             get_api_key=config.get_api_key, before_tool_call=config.before_tool_call,
             after_tool_call=config.after_tool_call, prepare_request=self._prepare_request,
@@ -188,7 +225,22 @@ class AgentSession(CoreAgentHarness):
             await maybe_await(listener(event, self.agent.cancel_event or self._manual_cancel))
 
     async def prompt(self, message: str | AgentMessage | list[AgentMessage]) -> None:
+        prompt_text = self._prompt_text(message)
+        if prompt_text is not None:
+            self.prepare_interaction_for_prompt(prompt_text)
         await self._run_with_recovery(lambda: self.agent.prompt(message))
+
+    @staticmethod
+    def _prompt_text(message: str | AgentMessage | list[AgentMessage]) -> str | None:
+        if isinstance(message, str):
+            return message
+        if isinstance(message, UserMessage):
+            if isinstance(message.content, str):
+                return message.content
+            return "\n".join(
+                block.text for block in message.content if isinstance(block, TextContent)
+            )
+        return None
 
     async def continue_(self) -> None:
         await self._run_with_recovery(self.agent.continue_)
@@ -382,6 +434,8 @@ class AgentSession(CoreAgentHarness):
         self.state.thinking_level = level
 
     def _validate_tool_names(self, names):
+        if getattr(self, "_plan_tool", None) is not None and self._plan_tool.name in names:
+            raise ValueError(f"Tool '{self._plan_tool.name}' is managed by Plan mode and cannot be selected")
         missing = set(names) - self._tools.keys()
         if missing:
             raise ValueError(f"Tools required by the session are unavailable: {sorted(missing)}")
@@ -391,6 +445,96 @@ class AgentSession(CoreAgentHarness):
     def get_tool(self, name: str):
         """Return a registered tool, including tools added by a runtime extension."""
         return self._tools.get(name)
+
+    @property
+    def interaction_mode(self) -> InteractionMode:
+        return self._interaction_mode
+
+    @property
+    def effective_interaction_mode(self) -> EffectiveInteractionMode:
+        return self._effective_interaction_mode
+
+    @property
+    def selected_tool_names(self) -> tuple[str, ...]:
+        return tuple(self._selected_tool_names)
+
+    @property
+    def execution_mode(self) -> ExecutionMode:
+        return self._execution_mode
+
+    def _configure_tool_execution_mode(self) -> None:
+        for tool in self._tools.values():
+            setter = getattr(tool, "set_execution_mode", None)
+            if callable(setter):
+                setter(self._execution_mode)
+
+    def _effective_tools(self) -> list[Any]:
+        tools = [self._tools[name] for name in self._selected_tool_names]
+        if self._effective_interaction_mode == "plan":
+            tools = [tool for tool in tools if is_plan_safe_tool(tool)]
+            tools.append(self._plan_tool)
+        return tools
+
+    def _apply_interaction_policy(self) -> None:
+        self.state.tools = self._effective_tools()
+        self._refresh_system_prompt()
+
+    def _build_system_prompt(self, tools: list[Any]) -> str:
+        """Call new four-argument builders while preserving the public 3-arg hook."""
+
+        builder = self.session_config.system_prompt_builder
+        if builder is None:
+            return self._base_system_prompt
+        try:
+            signature = inspect.signature(builder)
+            signature.bind(tools, self.skills, self.cwd, self._effective_interaction_mode)
+            accepts_mode = True
+        except (TypeError, ValueError):
+            accepts_mode = False
+        if accepts_mode:
+            prompt = builder(tools, self.skills, self.cwd, self._effective_interaction_mode)
+        else:
+            prompt = builder(tools, self.skills, self.cwd)
+        if self._effective_interaction_mode == "plan" and PLAN_MODE_SECTION not in prompt:
+            prompt = f"{prompt}\n\n{PLAN_MODE_SECTION}"
+        return prompt
+
+    def prepare_interaction_for_prompt(self, message: str) -> EffectiveInteractionMode:
+        """Resolve ``auto`` for one new turn and refresh prompt/tools."""
+
+        self.ensure_idle()
+        effective = resolve_interaction_mode(self._interaction_mode, message)
+        if effective != self._effective_interaction_mode:
+            self._effective_interaction_mode = effective
+            self._apply_interaction_policy()
+        return effective
+
+    def set_interaction_mode(self, mode: str) -> InteractionMode:
+        self.ensure_idle()
+        normalized = str(mode).strip().lower()
+        if normalized not in INTERACTION_MODES:
+            raise ValueError(f"Interaction mode must be one of: {', '.join(INTERACTION_MODES)}")
+        if normalized != self._interaction_mode:
+            self.session.append_interaction_mode_change(normalized)
+            self._interaction_mode = normalized  # type: ignore[assignment]
+        effective: EffectiveInteractionMode = "plan" if normalized == "plan" else "default"
+        if effective != self._effective_interaction_mode:
+            self._effective_interaction_mode = effective
+        self._apply_interaction_policy()
+        return self._interaction_mode
+
+    def set_execution_mode(self, mode: str) -> ExecutionMode:
+        """Persist and apply local vs sandboxed tool execution for this branch."""
+
+        self.ensure_idle()
+        normalized = str(mode).strip().lower()
+        if normalized not in EXECUTION_MODES:
+            raise ValueError(f"Execution mode must be one of: {', '.join(EXECUTION_MODES)}")
+        if normalized != self._execution_mode:
+            self.session.append_execution_mode_change(normalized)
+            self._execution_mode = normalized  # type: ignore[assignment]
+            self._configure_tool_execution_mode()
+        return self._execution_mode
 
     def add_runtime_tools(self, tools: list[Any], *, activate: bool = True) -> None:
         """Add ephemeral tools discovered after session construction.
@@ -412,9 +556,12 @@ class AgentSession(CoreAgentHarness):
                 raise TypeError("Runtime tools must implement AgentTool")
             self._tools[tool.name] = tool
             self._runtime_tool_names.add(tool.name)
+            setter = getattr(tool, "set_execution_mode", None)
+            if callable(setter):
+                setter(self._execution_mode)
         if activate and additions:
-            self.state.tools = [*self.state.tools, *additions]
-            self._refresh_system_prompt()
+            self._selected_tool_names.extend(names)
+            self._apply_interaction_policy()
 
     def set_active_tools(self, names: list[str]) -> None:
         self.ensure_idle()
@@ -423,12 +570,16 @@ class AgentSession(CoreAgentHarness):
         # rediscovered instead of becoming a resume-time dependency.
         persisted = [name for name in names if name not in self._runtime_tool_names]
         self.session.append_active_tools_change(persisted)
-        self.state.tools = [self._tools[name] for name in names]
-        self._refresh_system_prompt()
+        self._selected_tool_names = list(names)
+        self._apply_interaction_policy()
 
     def _refresh_system_prompt(self):
         if self.session_config.system_prompt_builder:
-            self.state.system_prompt = self.session_config.system_prompt_builder(self.state.tools, self.skills, self.cwd)
+            self.state.system_prompt = self._build_system_prompt(self.state.tools)
+        else:
+            self.state.system_prompt = self._base_system_prompt
+            if self._effective_interaction_mode == "plan":
+                self.state.system_prompt += f"\n\n{PLAN_MODE_SECTION}"
 
     def move_to(self, entry_id: str | None) -> None:
         self.ensure_idle()
@@ -438,8 +589,13 @@ class AgentSession(CoreAgentHarness):
         self.state.thinking_level = saved.get("thinking_level", self.session_config.thinking_level)
         names = saved.get("active_tools", self._default_tool_names)
         self._validate_tool_names(names)
-        self.state.tools = [self._tools[n] for n in names]
-        self._refresh_system_prompt()
+        mode = saved.get("interaction_mode", self.session_config.interaction_mode)
+        if mode not in INTERACTION_MODES:
+            raise ValueError(f"Invalid interaction mode: {mode}")
+        self._selected_tool_names = list(names)
+        self._interaction_mode = mode
+        self._effective_interaction_mode = "plan" if mode == "plan" else "default"
+        self._apply_interaction_policy()
         self.state.messages = self.session.build_context()
         self.state.error_message = None
         self.agent.clear_all_queues()
@@ -449,8 +605,9 @@ class AgentSession(CoreAgentHarness):
         self.ensure_idle()
         forked = self.session.fork(from_id)
         model = None if forked.build_settings().get("model") else self._default_model
+        tools = [tool for name, tool in self._tools.items() if name != self._plan_tool.name]
         return AgentSession(replace(self.session_config, session=forked, model=model,
-                                    tools=list(self._tools.values()), skills=list(self.skills)))
+                                    tools=tools, skills=list(self.skills)))
 
     def _recover_interrupted_tools(self) -> None:
         """只补全尾部缺失的结果，绝不自动重跑可能已产生副作用的工具。"""

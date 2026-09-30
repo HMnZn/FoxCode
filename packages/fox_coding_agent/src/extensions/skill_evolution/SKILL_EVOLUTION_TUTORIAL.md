@@ -192,6 +192,41 @@ pending proposal、应用记录、Skill 前后哈希、完整 diff、history 和
 为了不污染日常使用的用户 Skill，自动 apply 只发生在临时的用户级目录布局中。这里验证的是
 真实写入路径和版本机制，但不会覆盖 `~/.foxcode/skills` 下正在使用的文件。
 
+### 8.5 面向 Coding Agent 的 API 请求评测
+
+`data/API-Bank` 更贴近 FoxCode 的工具调用场景，包含 API 实现、初始化数据以及 Level 1–3
+样本。用户级 `api-request-planner` 负责选择下一 API、提取参数、规范日期并输出精确请求。
+
+快速 baseline/full 消融：
+
+```bash
+python -m fox_coding_agent.src.extensions.skill_evolution.evaluation api-bank-live \
+  --model deepseek/deepseek-v4-flash \
+  --limit 8
+```
+
+端到端自进化闭环：
+
+```bash
+python -m fox_coding_agent.src.extensions.skill_evolution.evaluation api-bank-evolve-live \
+  --model deepseek/deepseek-v4-flash \
+  --evolution-limit 8 \
+  --test-limit 8 \
+  --retries 1
+```
+
+默认产物分别写入 `fixtures/evolution_eval_apiword/api_bank_ablation.json` 和
+`fixtures/evolution_eval_apiword/api_bank_e2e.json`。
+
+本次 8 条快速消融中，精确请求准确率从 baseline 的 `0.000` 提升到完整 Skill 的 `0.625`，
+API 名称准确率从 `0.000` 提升到 `1.000`。端到端闭环完成了真实提炼、pending、merge、
+`0.1.0 -> 0.1.1`、history、provenance 和重新加载，但独立留出集上的精确请求准确率仍为
+`0.375 -> 0.375`，没有提升，且 API 名称准确率从 `1.000` 降到 `0.875`。这说明本轮候选
+规则未能泛化，不应直接应用到日常用户 Skill。闭环成功不等于进化效果成功，必须同时检查
+留出集指标。
+
+当前评分验证请求生成，不执行目标 API，因此不能把准确率表述为外部 API 执行成功率。
+
 ## 9. 消融结果怎么读
 
 离线消融分别关闭安全门禁、去重和 provenance：

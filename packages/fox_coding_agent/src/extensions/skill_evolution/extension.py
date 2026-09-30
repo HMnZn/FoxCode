@@ -257,8 +257,8 @@ def create_skill_evolution_extension(config: SkillEvolutionConfig | None = None)
 
         def session_start(data, context):
             service.bind(context)
-            if config.auto_activate_tool and tool.name not in {item.name for item in context.active_tools}:
-                context.activate_tools([*[item.name for item in context.active_tools], tool.name])
+            if config.auto_activate_tool and tool.name not in {item.name for item in context.selected_tools}:
+                context.activate_tools([*[item.name for item in context.selected_tools], tool.name])
 
         async def before_prompt(data, context):
             if context.project_trusted:

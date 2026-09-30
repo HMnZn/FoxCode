@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Callable
 
 from .skills import Skill, load_skills_from_dir, parse_frontmatter
+from .paths import ProjectPaths, UserPaths
 
 
 @dataclass(frozen=True)
@@ -55,7 +56,9 @@ class ResourceLoader:
     def __init__(self, cwd: str | Path = ".", *, user_dir: str | Path | None = None,
                  providers: tuple[ResourceProvider, ...] = (), project_trusted: bool = True):
         self.cwd = Path(cwd).expanduser().resolve()
-        self.user_dir = Path(user_dir).expanduser().resolve() if user_dir else Path.home() / ".foxcode"
+        self.user_paths = UserPaths.from_root(user_dir)
+        self.project_paths = ProjectPaths.from_root(self.cwd)
+        self.user_dir = self.user_paths.root
         self.providers = tuple(providers)
         self.project_trusted = project_trusted
 
@@ -63,7 +66,7 @@ class ResourceLoader:
         result = Resources()
         roots_with_project = [self.user_dir]
         if self.project_trusted:
-            roots_with_project.append(self.cwd / ".foxcode")
+            roots_with_project.append(self.project_paths.control)
         for root in dict.fromkeys(roots_with_project):
             system = root / "SYSTEM.md"
             append = root / "APPEND_SYSTEM.md"
@@ -84,7 +87,7 @@ class ResourceLoader:
         # User Skills have the lowest priority; project Skills may override them.
         roots = [self.user_dir]
         if self.project_trusted:
-            roots.append(self.cwd / ".foxcode")
+            roots.append(self.project_paths.control)
         for root in dict.fromkeys(roots):
             loaded = load_skills_from_dir(root / "skills")
             result.diagnostics.extend(f"{d.path}: {d.message}" for d in loaded.diagnostics)
@@ -98,7 +101,7 @@ class ResourceLoader:
         # --template or /prompt invocation. Keep them available in untrusted
         # projects; the trust boundary applies to automatic instructions,
         # executable extensions, skills and tool execution.
-        prompt_roots = [self.user_dir / "prompts", self.cwd / ".foxcode" / "prompts"]
+        prompt_roots = [self.user_paths.prompts, self.project_paths.prompts]
         for root in dict.fromkeys(prompt_roots):
             if not root.is_dir():
                 continue

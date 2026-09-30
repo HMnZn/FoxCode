@@ -15,7 +15,7 @@ FoxCode 桌面端（`desktop/`，Electron + React）与真实宿主之间的 **P
 
 **边界**：本目录只**读**`packages/` 下的 Python 包（`from fox_coding_agent.src import
 AgentSessionRuntime, SettingsManager`），不改动其中任何文件。协议 DTO 与前端
-`desktop/src/types/protocol.ts` 一一对应，前端在 `PROTOCOL_VERSION = 1` 上做校验。
+`desktop/src/types/protocol.ts` 一一对应；当前 `PROTOCOL_VERSION = 3`，增加原生图片、计划确认以及沙盒执行环境。
 
 ---
 
@@ -75,15 +75,16 @@ IPC bridge 连真宿主；不设则回落到进程内的**演示宿主**（`desk
 请求之间**互不阻塞**：`prompt` 是「入队后立刻返回」，进度全部由帧驱动，所以
 `permission.answer` 可以在同一轮里随时插进来（服务端每行一个 task 并发分发）。
 
-### 请求（26 个，与前端 `HostCommand` 一致）
+### 请求（29 个，与前端 `HostCommand` 一致）
 
 `host.info`、`sessions.list`、`sessions.open{id}`、`sessions.new`、
 `sessions.rename{id,title}`、`sessions.fork{fromId?}`、`sessions.delete{id}`、
 `session.export{format:'json'|'markdown',path}`、
-`prompt{message,options?}`、`steer{message}`、`follow_up{message}`、`abort`、
+`prompt{message,options?}`、`steer{message,attachments?}`、`follow_up{message,attachments?}`、`abort`、
 `compact`、`run_command{name,arguments?}`、`invoke_skill{name,instructions?}`、
-`model.select{reference}`、`thinking.set{level}`、`permission.set{mode}`、
+`model.select{reference}`、`thinking.set{level}`、`permission.set{mode}`、`interaction.set{mode}`、`execution.set{mode}`、
 `trust.set{trusted}`、`cwd.change{cwd}`、`permission.answer{id,decision,reason?}`、
+`plan.answer{id,decision:'accept'|'reject'}`、
 `extensions.set{id,enabled,scope?}`、`reload`、`files.changes{limit?}`、
 `files.diff{path,context?}`、`files.read{path,maxBytes?}`。
 
@@ -132,9 +133,15 @@ Windows proactor 循环下 `create_subprocess_exec` 的子进程会拿不到管�
 set_label()`（分叉出来的会话还没有下一条消息，内存与磁盘不会打架），没有 storage 才回退
 `SessionIndex.rename`。
 
-`prompt.options.queueAs` 为 `steer`/`follow_up` 时改走运行中插话（调用
+`prompt.options.attachments` 接受最多 4 个 `{name,mimeType,data,size}` 图片对象，单张上限
+8 MiB、总计 20 MiB；宿主校验 base64 后构造真正的 `UserMessage` / `ImageContent`，不会转成
+Markdown 或路径文本。`prompt.options.queueAs` 为 `steer`/`follow_up` 时改走运行中插话（调用
 `runtime.agent_session.steer/follow_up`），否则按普通提交。`permission.answer` 的
 `decision ∈ {allow-once, allow-session, deny}`。
+
+Plan 模式最后通过只读控制工具 `submit_plan` 产生 `details.kind = "plan"` 的结构化结果。
+前端据此显示确认卡片；`plan.answer` 会持久化 accepted/rejected 选择，只有 accepted 才启动
+实施 prompt。手动 Plan 会切回 Default；Auto 保留用户偏好并只把该实施轮路由到 Default。
 
 **插话需要真的有一轮在跑**：`steer`/`follow_up` 在没有运行中一轮时直接失败，报
 `当前没有正在运行的一轮，steer 不会被消费；请直接发送这条消息`。原因是
@@ -144,7 +151,7 @@ set_label()`（分叉出来的会话还没有下一条消息，内存与磁盘�
 
 ### 事件
 
-宿主事件 19 种（`agent_start` … `tool_execution_end`、`compaction_*`、
+宿主事件 20 种（`agent_start` … `tool_execution_end`、`plan_decision`、`compaction_*`、
 `context_overflow_retry`、`model_retry`、`error`）、fox_ai 流事件 12 种，全部从
 `runtime.subscribe` 直接翻译：
 
@@ -201,7 +208,8 @@ set_label()`（分叉出来的会话还没有下一条消息，内存与磁盘�
    让静态检查永不先拒（`host.info.runtimePermissionMode` 会如实上报 `full-access`）；
 2. **档位由 sidecar 的 `PermissionPolicy` 执行**：`read-only` 档位直接 block 更高权限
    的工具（钩子无法提权，只能如实拒绝），`workspace-modify` 在界面中显示为
-   “工作区修改”，工作区内写入与 shell 直接放行，仅对越界文件写入发审批请求，
+   “工作区修改”，工作区内直接文件写入放行；本机 shell 与越界文件写入需要审批，
+   原生沙盒约束下的 shell 可直接放行，
    `full-access` 档位全放行；
 3. 审批把 `before_tool_call` 挂起在一个 future 上，向界面发 `permission` 事件，
    等 `permission.answer`、`abort` 或超时（超时按拒绝）。`allow-session` 记进
@@ -209,6 +217,9 @@ set_label()`（分叉出来的会话还没有下一条消息，内存与磁盘�
 
 `host.info.permissionMode` 上报的是**界面档位**，`runtimePermissionMode` 是宿主真实
 档位——排查时看后者。界面上的权限菜单走 `permission.set`，只改 sidecar 的档位。
+执行环境是独立维度：`execution.set{mode: "local"|"sandbox"}`。沙盒模式对文件工具
+强制项目路径边界；Linux 使用 Bubblewrap、macOS 使用 `sandbox-exec` 隔离 shell 和网络。
+原生后端不可用时 shell 会被禁用，不会静默退化为本机执行。
 
 ---
 
@@ -330,7 +341,6 @@ uv run python -m unittest discover -s fox_serve/tests -t .
 ## 已知边界
 
 - 只服务一个界面进程（stdio 单管道），没有鉴权——不要把它挂到网络上。
-- `prompt.options.attachments` 暂未实现（当前忽略图片附件）。
 - `invoke_prompt`（提示词模板）没有对应命令；模板可以用 `run_command` 之外的方式自行扩展。
 - 重新打开一个扩展时它是**按 spec 字典序插入**的，第一次开关之后列表顺序可能和手写时不同
   （之后反复开关不再变化）；列表顺序即加载顺序，钩子的先后因此可能变。
