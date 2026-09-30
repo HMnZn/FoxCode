@@ -10,7 +10,6 @@ import { FILES_TAB, HOME_TAB, TERMINAL_TAB, fileTabId, useRail } from '@/store/r
 import { useFiles } from '@/store/filesStore'
 import { useTerminal } from '@/store/terminalStore'
 import { useUi } from '@/store/uiStore'
-import { EMPTY_SCREEN } from '@/lib/terminalText'
 
 describe('railStore', () => {
   beforeEach(() => {
@@ -23,10 +22,7 @@ describe('railStore', () => {
       cwd: null,
       exitCode: null,
       error: null,
-      screen: EMPTY_SCREEN,
-      input: '',
-      history: [],
-      cursor: null,
+      output: '',
     })
     useUi.setState({ inspectorOpen: false })
   })

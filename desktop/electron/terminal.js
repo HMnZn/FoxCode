@@ -1,98 +1,98 @@
 /**
- * Embedded terminals: one shell process per panel, spoken to over pipes.
+ * Native embedded terminals backed by a real pseudoterminal.
  *
- * Why not a real PTY: a PTY on Windows needs ConPTY (node-pty is a native module
- * and would have to be rebuilt against Electron's ABI), and this app ships as a
- * plain Electron bundle. So each terminal is a shell with `stdio: 'pipe'`:
- *
- *  - output is line-oriented text (the renderer draws it, our own prompt
- *    included, because a shell reading from a pipe prints no prompt);
- *  - full-screen TUI programs (vim, top) cannot be driven — they need cursor
- *    addressing, which is exactly what we do not forward;
- *  - there is no `resize`: the shell has no window size to report.
- *
- * Everything else — command history, long-running servers, `git`, python
- * scripts, Ctrl+C by restarting the shell — behaves like a normal shell.
+ * `node-pty` maps to forkpty(3) on macOS/Linux and ConPTY on supported Windows
+ * versions. Unlike the old stdio-pipe implementation, the spawned shell sees
+ * a TTY: prompts, colours, line editing, Ctrl+C, completion and interactive
+ * programs all use their normal terminal protocol. The renderer side is
+ * xterm.js; this file only owns processes and byte streams.
  */
 const { EventEmitter } = require('node:events')
-const { spawn } = require('node:child_process')
-
-/** How many shells may live at once; the UI only ever opens one. */
-const MAX_SESSIONS = 4
+const fs = require('node:fs')
+const path = require('node:path')
 
 /**
- * Ask the OS for a shell that is happy on pipes.
- *
- * `TERM=dumb` + `NO_COLOR=1` are deliberate: they tell programs "no cursor
- * tricks, no colour", which is the truth for this panel and also keeps the
- * scrollback readable. Without them, a tool that *always* colours its output
- * (python's traceback highlighter, cargo) would fill the transcript with escape
- * sequences we then have to strip again.
- *
- * On Windows we also run `chcp 65001`: cmd.exe picks the console code page at
- * startup (936 on a Chinese system), and every tool that prints through the
- * console — python included — inherits it. With the page switched to UTF-8, the
- * bytes arriving on the pipe are UTF-8 and decode cleanly (see `decode` below).
- *
- * Known Windows limitation: `chcp` changes the *console* code pages, and a pipe
- * has no console — cmd keeps decoding the commands it reads from stdin with the
- * ANSI page, so a non-ASCII **command line** can arrive mangled (the renderer
- * warns about that in `terminalStore.submit`). Output is not affected: `decode`
- * falls back to the OEM page for anything that is not valid UTF-8.
+ * node-pty 1.1 ships `spawn-helper` beside its prebuilt addon. Some npm clients
+ * currently extract that helper as 0644 on macOS, which makes forkpty fail with
+ * the unhelpful `posix_spawnp failed`. Repair only that known helper before the
+ * addon is loaded. electron-builder places it under app.asar.unpacked.
  */
+function ensureSpawnHelperExecutable() {
+  if (process.platform === 'win32') return
+  const packageRoot = path.resolve(path.dirname(require.resolve('node-pty')), '..')
+  const unpackedRoot = packageRoot
+    .replace('app.asar' + path.sep, 'app.asar.unpacked' + path.sep)
+    .replace('node_modules.asar' + path.sep, 'node_modules.asar.unpacked' + path.sep)
+  const candidates = [
+    path.join(unpackedRoot, 'prebuilds', `${process.platform}-${process.arch}`, 'spawn-helper'),
+    path.join(unpackedRoot, 'build', 'Release', 'spawn-helper'),
+  ]
+  for (const helper of candidates) {
+    if (!fs.existsSync(helper)) continue
+    const mode = fs.statSync(helper).mode
+    if ((mode & 0o111) === 0) fs.chmodSync(helper, mode | 0o755)
+    return
+  }
+}
+
+ensureSpawnHelperExecutable()
+const pty = require('node-pty')
+
+const MAX_SESSIONS = 4
+const DEFAULT_COLS = 80
+const DEFAULT_ROWS = 24
+
+function terminalEnvironment() {
+  const env = {
+    ...process.env,
+    TERM: 'xterm-256color',
+    COLORTERM: 'truecolor',
+    FORCE_COLOR: '1',
+    PYTHONIOENCODING: 'utf-8',
+    PYTHONUTF8: '1',
+  }
+  delete env.ELECTRON_RUN_AS_NODE
+  delete env.NO_COLOR
+
+  if (process.platform === 'darwin') {
+    // Finder-launched apps do not inherit the user's interactive PATH. Give
+    // the login shell the conventional executable roots before it loads its
+    // own profile, matching Terminal.app and VS Code more closely.
+    const additions = [
+      '/opt/homebrew/bin',
+      '/opt/homebrew/sbin',
+      '/usr/local/bin',
+      ...(env.HOME ? [`${env.HOME}/.local/bin`] : []),
+    ]
+    env.PATH = [...additions, ...(env.PATH || '').split(':')]
+      .filter(Boolean)
+      .filter((value, index, values) => values.indexOf(value) === index)
+      .join(':')
+  }
+  return env
+}
+
+/** Return the user's real interactive shell and its login arguments. */
 function resolveShell() {
-  const env = { ...process.env, TERM: 'dumb', NO_COLOR: '1' }
-  delete env.FORCE_COLOR
-  delete env.CLICOLOR_FORCE
-  // A pipe is not a console, so python picks the ANSI code page for its stdout
-  // (936 on a Chinese system) and our UTF-8 decode turns its output into
-  // diamonds. Both variables are python's own escape hatch, so ask for UTF-8.
-  env.PYTHONIOENCODING = 'utf-8'
-  env.PYTHONUTF8 = '1'
+  const env = terminalEnvironment()
   if (process.platform === 'win32') {
-    // `/Q` turns command echo off, `/D` skips AutoRun scripts, `/K` switches the
-    // code page and then stays interactive.
-    return {
-      shell: process.env.ComSpec || 'cmd.exe',
-      args: ['/Q', '/D', '/K', 'chcp 65001>nul'],
-      env,
-    }
+    return { shell: process.env.ComSpec || 'cmd.exe', args: [], env }
   }
   if (process.platform === 'darwin') {
     return { shell: process.env.SHELL || '/bin/zsh', args: ['-l'], env }
   }
-  return { shell: process.env.SHELL || '/bin/bash', args: [], env }
+  return { shell: process.env.SHELL || '/bin/bash', args: ['-l'], env }
 }
 
-const UTF8 = new TextDecoder('utf-8', { fatal: false })
-/** Absent when Node is built without full ICU; then UTF-8 is all we can decode. */
-const GBK = (() => {
-  try {
-    return new TextDecoder('gbk')
-  } catch {
-    return null
-  }
-})()
-
-/**
- * Decode a chunk of shell output.
- *
- * A chunk is *usually* UTF-8 (that is the code page we asked for), but cmd's
- * own banner is printed before `chcp 65001` runs and therefore still carries the
- * OEM page — on a Chinese system that is GBK. So UTF-8 is tried first and a
- * replacement character means "these bytes were not UTF-8": decode them again
- * with the OEM page instead of showing the user a row of diamonds.
- */
-function decode(chunk) {
-  const text = UTF8.decode(chunk)
-  if (!text.includes('\uFFFD') || !GBK) return text
-  return GBK.decode(chunk)
+function dimension(value, fallback) {
+  const number = Number(value)
+  return Number.isInteger(number) && number > 0 ? number : fallback
 }
 
 class TerminalSessions extends EventEmitter {
   constructor() {
     super()
-    /** @type {Map<string, import('node:child_process').ChildProcess>} */
+    /** @type {Map<string, import('node-pty').IPty>} */
     this.sessions = new Map()
     this.seq = 0
   }
@@ -101,10 +101,7 @@ class TerminalSessions extends EventEmitter {
     return this.sessions.size
   }
 
-  /**
-   * Spawn a shell rooted at `cwd`.
-   * @param {{ cwd?: string, exists?: (path: string) => boolean }} options
-   */
+  /** Spawn a native PTY rooted at `cwd`. */
   start(options = {}) {
     const { shell, args, env } = resolveShell()
     const cwd = String(options.cwd || process.cwd())
@@ -112,68 +109,62 @@ class TerminalSessions extends EventEmitter {
       throw new Error(`同时最多 ${MAX_SESSIONS} 个终端`)
     }
     const id = `term-${++this.seq}`
-    const child = spawn(shell, args, {
+    const processHandle = pty.spawn(shell, args, {
+      name: 'xterm-256color',
+      cols: dimension(options.cols, DEFAULT_COLS),
+      rows: dimension(options.rows, DEFAULT_ROWS),
       cwd,
-      env,
-      stdio: ['pipe', 'pipe', 'pipe'],
-      windowsHide: true,
+      env: { ...env, PWD: cwd },
+      useConpty: true,
     })
 
-    child.stdout.on('data', (bytes) => this.emit('data', { id, data: decode(bytes) }))
-    child.stderr.on('data', (bytes) => this.emit('data', { id, data: decode(bytes) }))
-    child.on('error', (error) => {
-      this.emit('data', { id, data: `\r\n启动失败：${error.message}\r\n` })
-      this.finish(id, null, null)
+    this.sessions.set(id, processHandle)
+    processHandle.onData((data) => this.emit('data', { id, data }))
+    processHandle.onExit(({ exitCode, signal }) => {
+      if (!this.sessions.delete(id)) return
+      this.emit('exit', { id, code: exitCode ?? null, signal: signal ?? null })
     })
-    child.on('exit', (code, signal) => this.finish(id, code ?? null, signal ?? null))
-    // 用户对着已经退出的终端敲字不该抛异常，所以 stdin 的 EPIPE 直接吞掉。
-    child.stdin.on('error', () => {})
-
-    this.sessions.set(id, child)
-    return { id, shell, cwd, pid: child.pid ?? null }
+    return { id, shell, cwd, pid: processHandle.pid ?? null }
   }
 
-  /** Send raw keystrokes (a whole line, or a control character). */
+  /** Forward raw terminal input, including control and escape sequences. */
   write(id, data) {
-    const child = this.sessions.get(String(id))
-    if (!child || child.exitCode !== null || !child.stdin.writable) return false
-    child.stdin.write(String(data))
+    const processHandle = this.sessions.get(String(id))
+    if (!processHandle) return false
+    processHandle.write(String(data))
     return true
   }
 
-  /** Close stdin so the shell exits on its own; force-kill after a grace period. */
+  resize(id, cols, rows) {
+    const processHandle = this.sessions.get(String(id))
+    if (!processHandle) return false
+    processHandle.resize(dimension(cols, DEFAULT_COLS), dimension(rows, DEFAULT_ROWS))
+    return true
+  }
+
   kill(id) {
     const key = String(id)
-    const child = this.sessions.get(key)
-    if (!child) return false
+    const processHandle = this.sessions.get(key)
+    if (!processHandle) return false
+    this.sessions.delete(key)
     try {
-      child.stdin.end()
-    } catch {
-      /* already gone */
+      processHandle.kill()
+    } finally {
+      this.emit('exit', { id: key, code: null, signal: null })
     }
-    const timer = setTimeout(() => {
-      if (this.sessions.has(key)) child.kill()
-    }, 1200)
-    timer.unref?.()
     return true
   }
 
-  /** Force-kill leftovers; called when the window or the app goes away. */
   dispose() {
-    for (const [id, child] of this.sessions) {
+    for (const [id, processHandle] of this.sessions) {
       this.sessions.delete(id)
       try {
-        child.kill()
+        processHandle.kill()
       } catch {
         /* already gone */
       }
     }
   }
-
-  finish(id, code, signal) {
-    if (!this.sessions.delete(id)) return
-    this.emit('exit', { id, code, signal })
-  }
 }
 
-module.exports = { MAX_SESSIONS, TerminalSessions, decode, resolveShell }
+module.exports = { DEFAULT_COLS, DEFAULT_ROWS, MAX_SESSIONS, TerminalSessions, resolveShell }

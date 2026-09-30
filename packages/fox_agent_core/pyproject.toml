@@ -2,7 +2,7 @@
 name = "fox-agent-core"
 version = "0.1.0"
 description = "Provider-neutral agent loop, state and generic harness for FoxCode"
-readme = "ARCHITECTURE_GUIDE.md"
+readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
     "fox-ai==0.1.0",

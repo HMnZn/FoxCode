@@ -2,7 +2,7 @@
 name = "fox-ai"
 version = "0.1.0"
 description = "Provider-neutral streaming LLM API for FoxCode"
-readme = "ARCHITECTURE_STUDY.md"
+readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
     "anthropic>=1.8.0",

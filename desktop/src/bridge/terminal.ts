@@ -13,6 +13,8 @@
  */
 export interface TerminalStartOptions {
   cwd: string
+  cols?: number
+  rows?: number
 }
 
 export interface TerminalSessionInfo {
@@ -37,6 +39,7 @@ export interface TerminalDriver {
   readonly kind: 'native' | 'demo'
   start(options: TerminalStartOptions): Promise<TerminalSessionInfo>
   write(id: string, data: string): Promise<boolean>
+  resize(id: string, cols: number, rows: number): Promise<boolean>
   kill(id: string): Promise<boolean>
   onData(listener: (payload: TerminalDataEvent) => void): () => void
   onExit(listener: (payload: TerminalExitEvent) => void): () => void
@@ -46,6 +49,7 @@ export interface TerminalDriver {
 export interface TerminalApi {
   start(options: TerminalStartOptions): Promise<TerminalSessionInfo>
   write(id: string, data: string): Promise<boolean>
+  resize(id: string, cols: number, rows: number): Promise<boolean>
   kill(id: string): Promise<boolean>
   onData(listener: (payload: TerminalDataEvent) => void): () => void
   onExit(listener: (payload: TerminalExitEvent) => void): () => void
@@ -69,6 +73,7 @@ export function nativeTerminalDriver(api: TerminalApi): TerminalDriver {
     kind: 'native',
     start: (options) => api.start(options),
     write: (id, data) => api.write(id, data),
+    resize: (id, cols, rows) => api.resize(id, cols, rows),
     kill: (id) => api.kill(id),
     onData: (listener) => api.onData(listener),
     onExit: (listener) => api.onExit(listener),
@@ -126,6 +131,7 @@ export function demoDriver(): TerminalDriver {
       }
       return Promise.resolve(true)
     },
+    resize: () => Promise.resolve(true),
     kill: () => {
       for (const listener of exitListeners) listener({ id, code: 0, signal: null })
       return Promise.resolve(true)

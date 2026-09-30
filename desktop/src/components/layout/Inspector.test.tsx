@@ -201,4 +201,17 @@ describe('Inspector · 文件标签', () => {
     fireEvent.doubleClick(handle)
     expect(panel.style.width).toBe('360px')
   })
+
+  it('resizes the file tree and workspace changes vertically', () => {
+    render(<Inspector />)
+    const handle = screen.getByLabelText('调整文件树与工作区改动高度')
+    const tree = screen.getByLabelText('工作区文件树')
+    expect(tree.getAttribute('style')).toContain('45%')
+    fireEvent.keyDown(handle, { key: 'ArrowDown' })
+    expect(Number.parseFloat(tree.style.flexBasis)).toBeGreaterThan(45)
+    fireEvent.keyDown(handle, { key: 'ArrowUp' })
+    expect(Number.parseFloat(tree.style.flexBasis)).toBeCloseTo(45)
+    fireEvent.doubleClick(handle)
+    expect(tree.style.flexBasis).toBe('45%')
+  })
 })

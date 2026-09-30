@@ -7,7 +7,9 @@ import json
 import os
 import re
 import signal
+import sys
 from collections import deque
+from pathlib import Path
 from typing import Any
 
 from .config import McpServerConfig
@@ -31,6 +33,49 @@ def _expand_env(value: str) -> str:
             raise ValueError(f"MCP environment variable is not set: {name}")
         return os.environ[name]
     return _ENV_REF.sub(replace, value)
+
+
+def _portable_command(command: str) -> str:
+    """Accept npm's Windows shim spelling in otherwise portable MCP config.
+
+    A user-level ``mcp.json`` is commonly copied between Windows and macOS.
+    Bare npm executables are written as ``npx.cmd`` on Windows but are named
+    ``npx`` on POSIX.  Only normalize a bare name: an explicit path remains an
+    explicit, platform-specific choice and should fail visibly if it is wrong.
+    """
+    if os.name != "nt" and "/" not in command and "\\" not in command:
+        if command.lower().endswith(".cmd"):
+            return command[:-4]
+    return command
+
+
+def _subprocess_environment(
+    overrides: dict[str, str], *, command: str | None = None,
+) -> dict[str, str]:
+    environment = dict(os.environ)
+    environment.update({key: _expand_env(value) for key, value in overrides.items()})
+    executable = Path(_portable_command(command or "")).name.lower()
+    if executable == "npx" and not (
+        environment.get("npm_config_cache") or environment.get("NPM_CONFIG_CACHE")
+    ):
+        # GUI-launched MCP servers should not depend on a possibly stale or
+        # root-owned global ~/.npm cache.  Keep their downloaded shims in
+        # FoxCode's own user cache; npm creates the directory on first use.
+        environment["npm_config_cache"] = str(Path.home() / ".foxcode" / "cache" / "npm")
+    if sys.platform == "darwin":
+        # GUI apps launched from Finder do not inherit the interactive shell's
+        # PATH.  These are conventional executable locations, not shell code.
+        additions = [
+            "/opt/homebrew/bin",
+            "/opt/homebrew/sbin",
+            "/usr/local/bin",
+            str(Path.home() / ".local" / "bin"),
+        ]
+        current = environment.get("PATH", "").split(os.pathsep)
+        environment["PATH"] = os.pathsep.join(
+            dict.fromkeys(value for value in [*additions, *current] if value)
+        )
+    return environment
 
 
 class McpConnection:
@@ -60,15 +105,16 @@ class McpConnection:
                 return
             if self._closed:
                 raise RuntimeError(f"MCP server '{self.config.name}' connection is closed")
-            environment = dict(os.environ)
-            environment.update({key: _expand_env(value) for key, value in self.config.env.items()})
+            environment = _subprocess_environment(
+                self.config.env, command=self.config.command,
+            )
             kwargs: dict[str, Any] = {}
             if os.name == "nt":
                 kwargs["creationflags"] = getattr(__import__("subprocess"), "CREATE_NEW_PROCESS_GROUP", 0)
             else:
                 kwargs["start_new_session"] = True
             self.process = await asyncio.create_subprocess_exec(
-                self.config.command,
+                _portable_command(self.config.command),
                 *self.config.args,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,

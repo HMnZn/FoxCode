@@ -1,15 +1,18 @@
 """Offline integration tests for the packaged sub-agent and MCP extensions."""
 
 import json
+import os
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from fox_ai.src import TextContent, ToolCall
 from fox_ai.src.providers.faux import FAUX_MODEL, FauxScript, clear_scripts
 from fox_coding_agent.src import AgentSessionRuntime
 from fox_coding_agent.src.extensions.mcp import McpConnection, McpServerConfig, load_mcp_config
+from fox_coding_agent.src.extensions.mcp.client import _portable_command, _subprocess_environment
 from fox_coding_agent.src.extensions.subagent import discover_subagents
 
 from test_agent_core import scripted
@@ -289,6 +292,30 @@ project prompt
         trusted = load_mcp_config(self.user, self.project, project_trusted=True)
         self.assertEqual(untrusted.servers["same"].command, "user-command")
         self.assertEqual(trusted.servers["same"].command, "project-command")
+
+    def test_mcp_accepts_windows_npm_shim_name_on_posix(self):
+        expected = "npx.cmd" if os.name == "nt" else "npx"
+        self.assertEqual(_portable_command("npx.cmd"), expected)
+        # Explicit paths are never guessed across platforms.
+        self.assertEqual(_portable_command("tools/npx.cmd"), "tools/npx.cmd")
+
+    def test_mcp_adds_common_gui_path_locations_on_macos(self):
+        with patch("fox_coding_agent.src.extensions.mcp.client.sys.platform", "darwin"):
+            environment = _subprocess_environment({"PATH": "/usr/bin:/bin"})
+        self.assertEqual(environment["PATH"].split(os.pathsep)[:3], [
+            "/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/bin",
+        ])
+
+    def test_mcp_npx_uses_foxcode_owned_cache_unless_overridden(self):
+        environment = _subprocess_environment({}, command="npx.cmd")
+        self.assertEqual(
+            environment["npm_config_cache"],
+            str(Path.home() / ".foxcode" / "cache" / "npm"),
+        )
+        custom = _subprocess_environment(
+            {"npm_config_cache": "/tmp/custom-npm-cache"}, command="npx.cmd",
+        )
+        self.assertEqual(custom["npm_config_cache"], "/tmp/custom-npm-cache")
 
     async def test_mcp_auto_negotiates_modern_stateless_metadata(self):
         server = self.root / "modern_mcp_server.py"

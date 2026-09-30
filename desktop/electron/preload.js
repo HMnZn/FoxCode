@@ -33,6 +33,7 @@ contextBridge.exposeInMainWorld('foxcode', {
       'terminal:open',
       'terminal:start',
       'terminal:write',
+      'terminal:resize',
       'terminal:kill',
       'app:theme-flash',
       'host:mode',
@@ -70,6 +71,7 @@ contextBridge.exposeInMainWorld('foxcode', {
   terminal: {
     start: (options) => ipcRenderer.invoke('terminal:start', options),
     write: (id, data) => ipcRenderer.invoke('terminal:write', { id, data }),
+    resize: (id, cols, rows) => ipcRenderer.invoke('terminal:resize', { id, cols, rows }),
     kill: (id) => ipcRenderer.invoke('terminal:kill', id),
     onData: (listener) => subscribe('terminal:data', listener),
     onExit: (listener) => subscribe('terminal:exit', listener),

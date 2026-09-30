@@ -1,221 +1,134 @@
-# FoxCode · Mini Coding Agent
+# FoxCode
 
-FoxCode 现在将交互模式、权限策略与执行环境分成三个独立维度。桌面端可选择本机执行或项目隔离沙盒；统一目录与测试产物规则见 [沙盒与文件系统设计](docs/FILESYSTEM_AND_SANDBOX.md)。
+FoxCode 是一个本地优先的桌面 Coding Agent：React/Electron 提供工作台，`fox_serve`
+提供稳定的进程协议，Python runtime 负责模型、会话、工具、权限、沙盒和扩展。
 
-`fox_ai` 提供统一模型协议；`fox_agent_core` 提供循环、状态与通用 Harness；`fox_coding_agent` 提供 AgentSession、SessionManager、Tools、Skill、信任、Extensions 和 CLI。仓库是三个独立分发包组成的 uv workspace，依赖方向为 `fox-coding-agent → fox-agent-core → fox-ai`。
+## 已具备的产品能力
 
-现已增加可复用的 `AgentSessionRuntime`、`SettingsManager`、`ResourceLoader`，以及独立 `fox_coding_agent` CLI。分层设计、配置示例与恢复语义见 [架构指南·宿主运行时与 CLI](packages/fox_coding_agent/ARCHITECTURE_GUIDE.md#ch01)。
+- 多模型供应商与模型目录，API Key 与普通设置隔离保存
+- 用户级和项目级设置，可信项目才会加载项目配置
+- 会话创建、恢复、分支、重命名、导出和上下文压缩
+- Auto / Default / Plan 交互模式，结构化计划确认
+- Read-only / Workspace modify / Full access 权限和逐次审批
+- Local / Sandbox 执行环境与工作区文件边界
+- Skills、Extensions、Memory、MCP、Subagents
+- 图片输入、流式思考/正文、工具调用、用量统计
+- 工作区改动、Diff、文件预览和内嵌终端
+- 桌面设置中心：模型供应商、API Key、运行默认值、MCP、Subagent
 
-在项目根目录运行 `uv sync` 安装 `fox`。用户级 `~/.foxcode/models.json` 保存模型目录，`~/.foxcode/auth.json` 只保存凭据，`~/.foxcode/settings.json` 保存运行策略；Windows 下对应 `C:\Users\Qin\.foxcode`。可以复制 [models.json](examples/models.json)、[auth.json](examples/auth.json) 和 [settings.json](examples/settings.json) 后修改。这三个文件职责独立，不能把 provider、模型数据或运行策略写进 `auth.json`。
+## 快速开始
 
-```powershell
-uv run fox --trust-project --permission workspace-modify --interactive
-uv run fox --list-models
-uv run fox --model deepseek/deepseek-v4-pro --thinking high -p "阅读 README.md，说明项目架构"
-uv run fox --resume -p "继续解释 Session"
-uv run fox -p "检查目录结构" --json
-uv run fox --resume --compact
-```
-
-会话统一写入用户目录 `.foxcode/sessions/--<normalized-cwd>--/session-<uuid>/session.jsonl`，项目目录不再保存或扫描会话。空白新会话只存在内存中，提交第一条消息后才落盘。`--resume <文件路径>` 支持指定历史会话，`--resume` 不带路径选取当前工作区最近会话。正常输出在 stdout，会话路径和诊断在 stderr。
-
-交互中用 `/model` 列出模型，`/model deepseek/deepseek-v4-pro` 切换；`/thinking` 查看当前强度，`/thinking high`、`/thinking xhigh` 或 `/thinking off` 设置。新会话默认选 models.json 中第一个模型、思考关闭；模型与思考级别会保存到 Session。`/cwd` 切换项目后继续从同一用户目录取凭据，密钥不会进入 Session。修改 models.json 或 auth.json 后使用 `/reload`；想应用已修改的模型元数据，再执行 `/model 名称`。
-
-设置文件保存运行策略，避免在入口重复堆叠参数。用户级 `settings.json` 可以只写模型，也可以统一配置权限、工具、扩展与输出限制，例如：
-
-```json
-{
-  "model": "provider/model-id",
-  "permission_mode": "workspace-modify",
-  "execution_mode": "sandbox",
-  "extensions": ["module:fox_coding_agent.src.extensions.memory:setup"],
-  "stream_options": {"max_tokens": 8192},
-  "tools": ["read", "write", "edit", "grep", "find", "ls"]
-}
-```
-
-`permission_mode` 控制能力授权：`read-only` 禁止修改，`workspace-modify` 允许项目内直接文件写入，本机 shell 与越界写入逐次审批，`full-access` 允许系统级操作。`execution_mode` 独立控制运行边界：`local` 直接使用宿主，`sandbox` 将文件工具限制在项目内，并在 Linux/macOS 有原生后端时隔离 shell 与网络；后端不可用时 shell 被禁用。扩展可以把自身管理的数据声明为 `extension-state`，但未声明沙盒支持的扩展工具在沙盒中仍会被拒绝。
-
-面试准备先读内核的 13 章，再读编码宿主的 9 章，分别理解通用机制与项目策略。
-
-学习资料按包拆分，每个包各一份指南和可独立运行的真实模型 Notebook：
-
-| 包 | 架构讲解 | 动手实验 |
-| --- | --- | --- |
-| fox_agent_core | [内核指南](packages/fox_agent_core/ARCHITECTURE_GUIDE.md) | [模型、工具协议、事件和 follow-up](packages/fox_agent_core/AGENT_CORE_LAB.ipynb) |
-| fox_coding_agent | [宿主指南](packages/fox_coding_agent/ARCHITECTURE_GUIDE.md) | [文件工具、Session、Skill、压缩和 Runtime](packages/fox_coding_agent/CODING_AGENT_LAB.ipynb) |
-
-VS Code 选择 Python 3.14+ 内核，按顺序运行。密钥从 `DEEPSEEK_API_KEY` 或根目录 `.env` 读取，宿主实验数据保存到项目 `.foxcode/labs/coding-agent/`。拆分后的 Notebook 已清空旧输出。
-
-编码宿主 Notebook 的实验目录包含 `sessions/main.jsonl`、`workspace/` 和 `request_metrics.json`。准备 workspace 的单元中设置 `STORAGE_SCOPE = "user"` 可改存到 `Path.home() / ".foxcode"`（Windows Python 下通常是 `C:\Users\Qin\.foxcode`）。每次准备实验都会创建独立目录，旧会话保留；项目 `.foxcode/` 已加入 Git 忽略规则。内核 Notebook 不保存会话。
-
-```text
-fox CLI / Notebook
-    └── AgentSessionRuntime  Session/cwd 切换、Settings、ResourceLoader、重载
-        └── AgentSession     会话、压缩、技能、基础工具
-            └── Agent        状态、订阅、steering / follow-up、取消
-                └── agent_loop  多轮模型调用 → 参数校验 → 工具执行 → 回传结果
-                    └── fox_ai  OpenAI / Anthropic / Faux 流式接口
-```
-
-连续对话中支持 `/help`、`/new`、`/resume 文件`、`/fork [条目 ID]`、`/cwd 目录`、`/reload`、`/trust`、`/untrust`、`/permission`、`/mode [auto|default|plan]`、`/compact`、`/usage`、`/export`、`/tools`、`/model`、`/thinking`、`/skill 名称`、`/prompt 名称` 和扩展命令。`auto` 会按每条请求自动判断是否进入只读 Plan 模式；桌面端在 `submit_plan` 后显示结构化确认卡片，只有用户选择“开始实施”才发起执行轮次。桌面输入支持原生 PNG/JPEG/WebP/GIF 多模态消息，并持久化为 `ImageContent`。`/fork` 会创建新的持久化 Session 并切换过去，原 Session 不再被后续消息修改。macOS 桌面开发和 `.dmg`/`.zip` 打包见 [desktop/README.md](desktop/README.md)。
-
-扩展示例：[project_info.py](examples/extensions/project_info.py)。`settings.json` 的 `extensions` 数组支持 Python 文件、`module:<包>[:callable]` 和 `entrypoint:<name>`；加入后可执行 `fox --command project-info`。详细 API 与边界见[宿主指南·第六章](packages/fox_coding_agent/ARCHITECTURE_GUIDE.md#ch06)。
-
-长期记忆作为 `fox_coding_agent` 的可选扩展提供，而不是写进通用 agent loop。在 `extensions` 中加入 `module:fox_coding_agent.src.extensions.memory:setup` 启用；模型侧只暴露对应用户意图的 `memory_remember`、`memory_recall` 和 `memory_forget` 三个工具。列举、完整读取和目录查看属于人工审计能力，继续由 `/memory list`、`/memory search 关键词`、`/memory read 文件名`、`/memory delete 文件名` 与 `/memory dir` 提供。记忆保存在用户目录的 `~/.foxcode/projects/<项目路径哈希>/memory/`，以 Markdown 条目为事实来源，`MEMORY.md` 是可重建索引。只有已信任项目能够读写和自动召回记忆。
-
-自动召回只修改发给模型的本次请求副本，不写入 Session JSONL。这样长期知识与对话历史拥有独立生命周期，关闭 Memory 扩展或删除条目后，旧 Session 不会继续携带隐藏的记忆文本。
-
-Memory v2 的受控写入、冲突版本、混合检索、预算化注入、50/120 golden set 和消融实验，见[循序教学文档](packages/fox_coding_agent/src/extensions/memory/MEMORY_TUTORIAL.md)与[设计说明](packages/fox_coding_agent/src/extensions/memory/MEMORY_DESIGN.md)。
-
-子 Agent 同样是可选扩展：在 `extensions` 中加入 `module:fox_coding_agent.src.extensions.subagent:setup` 启用，模型侧只暴露一个 `agent` 工具，人工审计用 `/agents`（列出内置与自定义 profile、`allowed-tools`、来源和加载诊断）。它把一个有界任务派发给上下文隔离、能力受限的子会话，父会话只收到最终文本报告与用量，因此长探索不会挤占父会话预算。内置 profile 有 `explore`、`plan`、`general`、`test` 四个，自定义 profile 从用户目录 `agents/*.md` 与受信项目的 `.foxcode/agents/*.md` 加载。委派不会放宽边界：子会话工具是父级已启用工具与 profile 声明的交集，且每次调用都要穿过能力集、文件系统边界和父级审批链三道闸门。原理、代码走读与动手实验见[循序教学文档](packages/fox_coding_agent/src/extensions/subagent/SUBAGENT_TUTORIAL.md)，字段级契约见[设计说明](packages/fox_coding_agent/src/extensions/subagent/SUBAGENT_DESIGN.md)。
-
-MCP 扩展让 FoxCode 以**普通工具**的身份使用外部 MCP 服务器：在 `extensions` 中加入 `module:fox_coding_agent.src.extensions.mcp:setup` 启用，服务器定义写在用户目录的 `mcp.json` 与受信项目的 `.foxcode/mcp.json` 中，人工审计用 `/mcp`（服务器状态、协商到的协议版本、代理工具与配置诊断）。设计原则是「零特殊通道」——每个远端工具被包装成一个走既有参数校验、权限和事件流的普通工具，因此核心循环不需要知道 MCP 的存在；代理仅在运行时注册，不写入持久化的 `active_tools`，恢复的会话不会依赖一个已不再配置的服务器。协议协商、进程组回收、结果映射与动手实验见[循序教学文档](packages/fox_coding_agent/src/extensions/mcp/MCP_TUTORIAL.md)，字段级契约见[设计说明](packages/fox_coding_agent/src/extensions/mcp/MCP_DESIGN.md)。
-
-## 运行离线示例
-
-需要 Python 3.14+，在项目根目录运行：
-
-```powershell
-uv sync
-uv run python examples/mini_agent.py
-```
-
-示例用 Faux 模型在临时目录执行 `write → read → 最终回复`，随后从 JSONL 恢复会话。不使用真实模型，也不需要 API key。
-
-项目采用 `packages/` 源码布局，内核实现在 `fox_agent_core/src/`，通用 Agent 从 `fox_agent_core.src` 导入，宿主与运行时从 `fox_coding_agent` 导入。`uv sync` 安装项目后可直接导入；未安装时可把源码目录加入模块搜索路径：
-
-```powershell
-$env:PYTHONPATH = "$PWD/packages"
-uv run python -m unittest discover -s tests -v
-```
-
-Linux / WSL：
+要求：Python 3.14+、[uv](https://docs.astral.sh/uv/)、Node.js 20+、npm。
 
 ```bash
-PYTHONPATH=packages uv run python -m unittest discover -s tests -v
+uv sync
+uv run fox --trust-project --interactive
+
+cd desktop
+npm install
+npm run dev
 ```
 
-## 创建与恢复会话
+首次使用建议打开桌面端「设置」：添加模型供应商和模型元数据，输入 API Key，选择权限与
+执行环境，再按需添加 MCP 或自定义 Subagent。密钥只写入用户目录的 `auth.json`，不会回显。
 
-```python
-import asyncio
-from fox_ai.src import get_model
-from fox_coding_agent.src import AgentSession, AgentSessionConfig, SessionManager, JsonlSessionStorage
+没有 Python sidecar 时桌面端会进入演示模式。演示模式适合体验界面，不会调用真实模型或
+执行真实文件操作。
 
-async def main():
-    model = get_model("openai", "gpt-4o-mini")  # 使用 fox_ai 本地注册表中的模型
-    agent_session = AgentSession(AgentSessionConfig(
-        model=model,
-        cwd=".",
-        session=SessionManager(JsonlSessionStorage(".foxcode/sessions/demo.jsonl")),
-        stream_options={"max_tokens": 4096, "max_retries": 2},
-    ))
+全新用户没有 `models.json` 时，sidecar 会以不发起请求的内置模型进入首次配置模式，设置
+中心仍可正常打开；保存第一个供应商后热重载正式模型目录。
 
-    def on_event(event, cancel_event):
-        if event.type == "message_update":
-            delta = event.assistant_message_event
-            if delta.type == "text_delta":
-                print(delta.delta, end="", flush=True)
+## 架构
 
-    unsubscribe = agent_session.subscribe(on_event)
-    await agent_session.prompt("阅读 README.md，说明这个项目如何运行。")
-    unsubscribe()
-    if agent_session.state.error_message:
-        print(agent_session.state.error_message)
-
-asyncio.run(main())
+```text
+desktop (Electron + React)
+  └─ IPC / NDJSON
+     └─ fox_serve
+        └─ fox_coding_agent
+           ├─ fox_agent_core
+           └─ fox_ai
 ```
 
-真实调用的凭据通过 `OPENAI_API_KEY` / `ANTHROPIC_API_KEY`、`stream_options["api_key"]` 或 `get_api_key(provider)` 提供。内核不自动加载 `.env`。重新打开相同 JSONL 会恢复消息与配置；省略 `model` 时使用会话保存的模型，显式传入则切换模型。工具的 Python 实现和技能仍由当前进程提供。
-
-不需要持久化时，省略 `session`，默认使用内存会话。`tools=None` 使用内置编码工具，`tools=[]` 禁用工具；`skills=None` 自动发现技能，`skills=[]` 禁用技能。
-
-## 循环与队列
-
-一次 `await agent_session.prompt(...)` 可以包含多个 turn。每个 turn 包含一次模型响应以及它产生的一批工具调用。
-
-| 情况 | 行为 |
-| --- | --- |
-| 回复中存在 `ToolCall` | 校验参数、执行工具、把结果交给下一轮模型 |
-| 存在 steering 消息 | 下一次模型调用前注入；不强行中断当前工具 |
-| 没有工具和 steering，但存在 follow-up | 把 follow-up 作为后续输入，继续循环 |
-| 无待处理工作 | 发出 `agent_end` |
-| 模型报错、取消或达到轮次上限 | 结束本次运行；轮次上限默认 100 次模型请求 |
-
-运行中追加输入使用 `agent_session.steer("先处理这个")` 或 `agent_session.follow_up("完成后再检查测试")`。两个队列默认一次消费一条，可在 config 中改为 `all`。运行中的第二次 `prompt` 会报错。
-
-`agent_session.abort()` 发出取消信号；`await agent_session.wait_for_idle()` 等待清理完成。工具批次会补齐错误结果，保持 ToolCall / ToolResult 配对。`continue_()` 用于末尾为 user/toolResult 的未完成历史，或者已有排队消息的情况；普通的下一次对话继续用 `prompt()`。
-
-底层保留 `Agent(AgentOptions(...))` 和 `agent_loop(...)`，可脱离 Harness 使用。`agent_loop` 返回异步事件流，`await stream.result()` 得到本次新增消息。`Agent` 的 `prepare_next_turn` 在继续下一轮之前调用；`prepare_request` 在每次模型请求前调用，包含首轮和排队输入注入之后。
-
-## 工具
-
-| 工具 | 参数 | 行为 |
+| 模块 | 职责 | 文档 |
 | --- | --- | --- |
-| `read` | `path`, `offset?`, `limit?` | UTF-8 文本读取，行号从 1 开始 |
-| `write` | `path`, `content` | 创建父目录，原子覆盖文件 |
-| `edit` | `path`, `old_text`, `new_text` | 精确匹配一次后替换；无匹配或多次匹配时报错 |
-| `bash` | `command`, `timeout?` | 执行命令，默认超时 120 秒，输出有上限 |
-| `grep` | `pattern`, `path?`, `glob?`, `literal?`, `ignoreCase?`, `context?`, `limit?` | 内容搜索；正则需要 rg，纯文本搜索可使用 Python 后备实现 |
-| `find` | `pattern`, `path?`, `limit?` | glob 查找文件，尊重嵌套 .gitignore |
-| `ls` | `path?`, `limit?` | 列出目录，包含隐藏条目 |
-| `powershell` | `command`, `timeout?` | PowerShell 命令，支持超时、取消和输出上限 |
+| `desktop/` | 桌面壳、工作台、设置中心、Mock host | [Desktop README](desktop/README.md) |
+| `fox_serve/` | UI 与 Python runtime 的 NDJSON sidecar | [Serve README](fox_serve/README.md) |
+| `packages/fox_coding_agent/` | Coding runtime、CLI、工具、权限、扩展 | [Coding Agent README](packages/fox_coding_agent/README.md) |
+| `packages/fox_agent_core/` | Provider-neutral agent loop 与 harness | [Agent Core README](packages/fox_agent_core/README.md) |
+| `packages/fox_ai/` | 模型类型、provider、流式协议与重试 | [AI README](packages/fox_ai/README.md) |
+| `docs/` | 跨模块设计 | [文件系统与沙盒](docs/FILESYSTEM_AND_SANDBOX.md) |
 
-Windows 上 `bash` 需要 Git Bash，或自行传入 `BashTool(cwd, shell=...)`。本机执行时 `cwd` 只用于解析相对路径；沙盒执行时文件工具自身会拒绝任何解析后越过项目根目录的路径。SDK 还可在 `before_tool_call` 中追加策略。文件工具限制单个文本文件 10 MiB，输出限制约 20000 字符。
+依赖方向固定为：`fox-coding-agent → fox-agent-core → fox-ai`。桌面端只通过
+`fox_serve` 协议使用 Python 能力，不导入 runtime 实现。
 
-批次默认并行；只要存在标记为 `sequential` 的工具，整批串行。`write/edit/bash` 默认为串行，避免同批文件修改互相竞争。参数按 JSON Schema 校验，错误作为工具结果交给模型。
+## 配置与数据
 
-自定义工具直接实现 `AgentTool` 协议，无需继承基类或额外包装器：
+用户配置根目录默认是 `~/.foxcode`：
 
-```python
-from fox_ai.src import TextContent
-from fox_agent_core.src import AgentToolResult
+| 路径 | 内容 |
+| --- | --- |
+| `settings.json` | 模型选择、权限、执行环境、输出上限、扩展等运行策略 |
+| `models.json` | 供应商、Base URL、API 适配器和模型元数据 |
+| `auth.json` | API Key / OAuth 凭据；不允许放进项目配置 |
+| `mcp.json` | 用户级 MCP 服务器 |
+| `agents/*.md` | 用户级 Subagent profiles |
+| `skills/`、`extensions/` | 用户级技能与扩展 |
+| `sessions/` | 按工作区隔离的会话 JSONL |
 
-class GreetTool:
-    name = "greet"
-    label = "打招呼"
-    description = "向指定的人打招呼"
-    parameters = {
-        "type": "object", "properties": {"name": {"type": "string"}},
-        "required": ["name"], "additionalProperties": False,
-    }
+项目级配置位于 `<workspace>/.foxcode/`。只有项目被信任后，`settings.json`、
+`mcp.json`、`agents/`、`skills/` 和 `extensions/` 才会生效。密钥始终是用户级数据。
 
-    async def execute(self, call_id, params, cancel_event=None, on_update=None):
-        return AgentToolResult(content=[TextContent(text=f"你好，{params['name']}")])
+设置中心是推荐入口；CLI 用户仍可直接编辑 JSON，并用 `/reload` 重新加载。配置写入采用
+同目录临时文件 + `os.replace`，无效配置不会替换最后一份可用模型文件。
 
-tool = GreetTool()
+## 安全模型
+
+- `read-only`：只允许读取和搜索。
+- `workspace-modify`：工作区内写入可直接执行；本机 shell 与越界写入需要批准。
+- `full-access`：允许系统级操作，宿主和扩展钩子仍可拒绝单次调用。
+- `sandbox`：文件工具限制在项目内；原生后端可用时隔离 shell 与网络，否则禁用 shell。
+- API Key 不进入 session、事件帧或配置快照；POSIX 上 `auth.json` 权限为 `0600`。
+- MCP 环境变量只向 UI 返回变量名，不返回值。
+- Subagent 工具集只能收紧父 Agent 权限，不能提权。
+
+## 开发与验证
+
+```bash
+UV_CACHE_DIR=/tmp/foxcode-uv-cache uv run python -m unittest discover -s tests -v
+UV_CACHE_DIR=/tmp/foxcode-uv-cache uv run python -m unittest discover -s fox_serve/tests -v
+
+cd desktop
+npm run typecheck
+npm test
+npm run build
 ```
 
-自定义异步工具应在 `finally` 中释放资源，并允许 `CancelledError` 传播。同步阻塞代码不能被 asyncio 及时取消。`on_update(AgentToolResult(...))` 可发送进度，内核会保证这些更新先于工具结束事件。
+真实模型端到端验证需要本机已配置模型与密钥：
 
-## Session、压缩与技能
-
-Session 保存树形历史，`agent_session.move_to(entry_id)` 切换分支，`agent_session.fork(entry_id)` 创建独立的内存会话。模型、思考级别和启用的工具可通过 `set_model`、`set_thinking_level`、`set_active_tools` 修改并持久化。压缩前的原始条目不会删除。
-
-JSONL 使用临时文件与原子替换，写入失败不会覆盖旧文件；它适合单进程、单写入者的小型会话。进程中断后，缺失的工具结果会标记为“结果未知”，不会自动重放可能已经写过文件的工具。
-
-```python
-from fox_coding_agent.src import CompactionSettings
-
-config = AgentSessionConfig(
-    model=model,
-    compaction=CompactionSettings(
-        enabled=True,
-        reserve_tokens=16384,
-        keep_recent_tokens=8000,
-    ),
-)
+```bash
+uv run python fox_serve/scripts/ndjson_client.py --prompt "只回复：ready" --approve
+uv run python fox_serve/scripts/real_e2e_suite.py
 ```
 
-AgentSession 每次请求前估算消息、system prompt 和工具声明的 token。接近 `context_window - reserve_tokens` 时，总结较早消息并保留最近消息；小窗口最多预留一半容量。切割点不会落在工具调用与结果之间。只有成功生成非空摘要后才更新会话，摘要失败或取消时保留原始历史；可以用 `await agent_session.compact()` 手动触发。
+测试、截图、覆盖率和临时产物统一写入项目 `.foxcode/artifacts/`；不要提交用户凭据、会话
+或构建缓存。
 
-token 数采用字符与图片的启发式估算，不是精确 tokenizer。摘要本身也需要模型调用；可以通过 `summary_fn(model, messages, **options)` 定制。超长单条输入或无法充分缩短的历史会返回预算错误，需要减少输入或工具输出。
+## 发布
 
-Runtime 从 `~/.foxcode/skills` 和已信任项目的 `<cwd>/.foxcode/skills` 发现技能。system prompt 包含技能目录，模型可通过 `read` 读取全文；`await agent_session.invoke_skill("技能名", "补充要求")` 则直接注入技能内容。加载问题可查看 `agent_session.skill_diagnostics`。
+```bash
+cd desktop
+npm run build
+npm run dist:mac
+```
 
-## 精简范围
+发布前至少完成 Python 测试、前端测试、类型检查、生产构建，以及真实 UI 中的供应商、
+凭据、MCP、Subagent、会话和权限 smoke test。详见
+[Desktop 发布检查清单](desktop/README.md#发布检查清单)。
 
-已包含多轮调用、流式事件、队列、取消、工具钩子与校验、会话恢复与分支、自动/手动压缩、技能和八种编码工具（PowerShell 默认仅在 Windows 启用）。`max_retries` 透传给 fox_ai，处理建立模型请求时的短暂失败；不自动重放工具或重试已经输出部分内容的整轮对话。
+## 深入阅读
 
-已增加配置管理、统一资源加载、运行时切换、按工具组装的 system prompt、Python 扩展，以及 CLI（单次文本/JSON、纯文本连续对话、恢复会话）。尚未实现 pi-main 的持久任务调度、lane、checkpoint/replay、完整插件系统、交互式权限 UI、终端界面和完整 provider 兼容层。ExtensionRunner 支持显式加载扩展、工具注册、命令、提示规则与事件钩子，ResourceLoader 仍保留资源 provider 接口；`branch_summary/session_info` 等预留条目类型仍没有完整业务流程。这些可以作为宿主层后续能力添加，普通 agent 循环不依赖它们。
+- [Coding runtime 架构指南](packages/fox_coding_agent/ARCHITECTURE_GUIDE.md)
+- [Agent core 架构指南](packages/fox_agent_core/ARCHITECTURE_GUIDE.md)
+- [MCP 教程](packages/fox_coding_agent/src/extensions/mcp/MCP_TUTORIAL.md)
+- [Subagent 教程](packages/fox_coding_agent/src/extensions/subagent/SUBAGENT_TUTORIAL.md)
+- [Memory 教程](packages/fox_coding_agent/src/extensions/memory/MEMORY_TUTORIAL.md)

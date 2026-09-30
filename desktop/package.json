@@ -8,6 +8,7 @@
     "dev": "node scripts/dev.mjs",
     "dev:no-gpu": "node scripts/dev.mjs --no-gpu",
     "dev:web": "vite",
+    "postinstall": "node scripts/prepare-node-pty.mjs",
     "build": "tsc -p tsconfig.json && vite build",
     "build:web": "vite build",
     "dist": "npm run build && electron-builder",
@@ -20,8 +21,11 @@
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
     "clsx": "^2.1.1",
     "lucide-react": "^1.48.0",
+    "node-pty": "^1.1.0",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
     "react-markdown": "^10.1.0",
@@ -58,10 +62,16 @@
       "electron/**/*",
       "package.json"
     ],
+    "asarUnpack": [
+      "node_modules/node-pty/**/*"
+    ],
     "mac": {
       "category": "public.app-category.developer-tools",
       "icon": "build/icon.png",
-      "target": ["dmg", "zip"],
+      "target": [
+        "dmg",
+        "zip"
+      ],
       "minimumSystemVersion": "12.0",
       "hardenedRuntime": false
     },
@@ -69,5 +79,8 @@
       "title": "FoxCode Studio ${version}",
       "artifactName": "${productName}-${version}-${arch}.${ext}"
     }
+  },
+  "allowScripts": {
+    "node-pty@1.1.0": true
   }
 }

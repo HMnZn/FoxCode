@@ -237,9 +237,11 @@ class PlanAnswerTests(unittest.IsolatedAsyncioTestCase):
         ))
         host = _bare_host(runtime)
         prompts = []
+        effective_modes = []
 
-        async def queue_prompt(params):
+        async def queue_prompt(params, *, effective_mode=None):
             prompts.append(params)
+            effective_modes.append(effective_mode)
             return {"queued": "prompt"}
 
         host._cmd_prompt = queue_prompt
@@ -248,6 +250,7 @@ class PlanAnswerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["decision"], "accepted")
         self.assertEqual(runtime.interaction_mode, "default")
         self.assertEqual(len(prompts), 1)
+        self.assertEqual(effective_modes, ["default"])
         decisions = [entry for entry in runtime.session.get_entries() if entry.type == "plan_decision"]
         self.assertEqual(decisions[0].data["decision"], "accepted")
         self.assertEqual(host.frames[-1]["frame"]["type"], "plan_decision")

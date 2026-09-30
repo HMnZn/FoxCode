@@ -1,19 +1,65 @@
-# Python-generated files
+# Python bytecode and build artifacts
 __pycache__/
 *.py[oc]
+*$py.class
 build/
 dist/
 wheels/
-*.egg-info
-# Local datasets and generated benchmark data (not versioned)
-data/
-test_tmp/
-# Virtual environments
-.venv
+*.egg-info/
+*.egg
+
+# Python environments and tool caches
+.venv/
+venv/
+env/
+.tox/
+.nox/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pyright/
+.hypothesis/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Node / Electron
+node_modules/
+.vite/
+dist-electron/
+release/
+artifacts/
+*.tsbuildinfo
+coverage/
+
+# Local environment files and secrets
 .env
+.env.*
+!.env.example
+!.env.*.example
+
+# Logs and temporary files
+*.log
+*.pid
+*.tmp
+*.swp
+*.swo
+*~
+
+# OS and editor metadata
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Local datasets and generated benchmark data (not versioned)
+/data/
+/test_tmp/
 
 # Local agent sessions and learning artifacts
 .foxcode/
 .build-cache/
-.pytest_cache/
-.vscode/

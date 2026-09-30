@@ -2,13 +2,11 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
   AlertTriangle,
   ArrowUp,
-  Copy,
   FileText,
   FolderOpen,
-  FolderTree,
   ImagePlus,
+  Settings2,
   Slash,
-  ShieldCheck,
   Sparkles,
   Square,
   Zap,
@@ -28,8 +26,7 @@ import {
 import { useSession } from '@/store/sessionStore'
 import { QueuedMessages } from '@/components/chat/QueuedMessages'
 import { useUi } from '@/store/uiStore'
-import { samePath, useWorkspace, workspaceName } from '@/store/workspaceStore'
-import { formatBytes, shortPath } from '@/lib/format'
+import { formatBytes } from '@/lib/format'
 import {
   INTERACTION_LABEL,
   INTERACTION_MODES,
@@ -133,9 +130,6 @@ export function Composer({ draftKey, className, hero = false }: ComposerProps) {
   const implementPlan = useSession((s) => s.implementPlan)
   const selectModel = useSession((s) => s.selectModel)
   const bridge = useSession((s) => s.bridge)
-  const recentWorkspaces = useWorkspace((s) => s.recent)
-  const pickWorkspace = useWorkspace((s) => s.pick)
-  const openWorkspace = useWorkspace((s) => s.open)
 
   const busy = timeline.status === 'streaming' || timeline.status === 'compacting'
   const hasPendingPlan = timeline.blocks.some((block) => block.kind === 'plan' && !block.decision)
@@ -568,7 +562,7 @@ export function Composer({ draftKey, className, hero = false }: ComposerProps) {
           )}
         />
 
-        <div className="flex min-w-0 flex-wrap items-center gap-2 px-2 pt-0.5 pb-2">
+        <div className="flex min-w-0 flex-nowrap items-center gap-1.5 px-2 pt-0.5 pb-2">
           <input
             ref={imageInput}
             type="file"
@@ -636,88 +630,29 @@ export function Composer({ draftKey, className, hero = false }: ComposerProps) {
             )}
           </Menu>
 
-          <Tooltip
-            content={host?.cwd ? `当前工作区：${host.cwd}` : '选择一个工作区文件夹'}
-            side="top"
-          >
-            <Menu
-              placement="top"
-              align="start"
-              label="工作区"
-              triggerClassName="max-w-[200px] gap-1.5 rounded-sm border-transparent bg-transparent px-2 text-[12px] hover:border-transparent hover:bg-interactive"
-              trigger={
-                <>
-                  <FolderTree size={12} aria-hidden="true" />
-                  <span className="truncate">
-                    {host?.cwd ? workspaceName(host.cwd) : '选择工作区'}
-                  </span>
-                </>
-              }
-            >
-              <MenuItem
-                label="切换工作区…"
-                icon={<FolderOpen size={14} />}
-                onSelect={() => void pickWorkspace()}
-              />
-              <MenuItem
-                label="在文件管理器中打开"
-                icon={<FolderTree size={14} />}
-                disabled={!host?.cwd}
-                onSelect={() => {
-                  if (!host?.cwd) return
-                  void bridge.reveal(host.cwd).then((ok) => {
-                    if (!ok) {
-                      toast.info({ title: '演示宿主没有文件管理器', description: host.cwd })
-                    }
-                  })
-                }}
-              />
-              <MenuItem
-                label="复制工作区路径"
-                icon={<Copy size={14} />}
-                disabled={!host?.cwd}
-                onSelect={() => {
-                  if (!host?.cwd) return
-                  void navigator.clipboard
-                    ?.writeText(host.cwd)
-                    .then(() => toast.success({ title: '已复制工作区路径' }))
-                    .catch(() => toast.danger({ title: '复制失败', description: host.cwd }))
-                }}
-              />
+          <span className="ml-auto flex shrink-0 items-center gap-2 text-2xs text-fg-subtle">
+            {approxTokens ? <span className="font-mono tabular-nums">≈{approxTokens} tok</span> : null}
+            {busy ? (
+              <span className="inline-flex items-center gap-1 rounded-sm bg-accent-soft px-1.5 py-0.5 text-accent">
+                <Zap size={11} />
+                运行中
+              </span>
+            ) : null}
+          </span>
 
-              {recentWorkspaces.length > 0 ? (
-                <>
-                  <MenuSeparator />
-                  <MenuLabel>最近工作区</MenuLabel>
-                  {recentWorkspaces.map((path) => (
-                    <MenuItem
-                      key={path}
-                      label={workspaceName(path)}
-                      hint={shortPath(path, 24)}
-                      selected={samePath(host?.cwd, path)}
-                      onSelect={() => void openWorkspace(path)}
-                    />
-                  ))}
-                </>
-              ) : null}
-            </Menu>
-          </Tooltip>
-
+          {/*
+            输入框只保留一个设置入口。工作区切换属于全局导航，继续放在侧栏、命令面板
+            和设置页；模型、权限、模式等低频项收进同一个菜单，底栏因此始终保持单行。
+          */}
           <Menu
             placement="top"
             align="end"
-            label="执行环境"
-            triggerClassName={cn(
-              'rounded-sm border-transparent bg-transparent px-2 text-[12px] hover:border-transparent hover:bg-interactive',
-              host?.executionMode === 'sandbox' && 'text-success',
-            )}
-            trigger={host ? (
-              <span className="inline-flex items-center gap-1">
-                {host.executionMode === 'sandbox' ? <ShieldCheck size={12} /> : null}
-                {EXECUTION_LABEL[host.executionMode]}
-              </span>
-            ) : '环境 —'}
+            label="对话设置"
+            triggerClassName="size-8 shrink-0 rounded-full border-transparent bg-transparent px-0 text-fg-subtle hover:border-transparent hover:bg-interactive hover:text-fg"
+            className="scroll-quiet max-h-[min(70vh,560px)] overflow-y-auto"
+            trigger={<Settings2 size={14} />}
           >
+            <MenuLabel>执行环境</MenuLabel>
             {EXECUTION_MODES.map((mode) => (
               <MenuItem
                 key={mode}
@@ -731,100 +666,50 @@ export function Composer({ draftKey, className, hero = false }: ComposerProps) {
                 onSelect={() => void setExecutionMode(mode)}
               />
             ))}
+            <MenuSeparator />
+            <MenuLabel>交互模式</MenuLabel>
+            {INTERACTION_MODES.map((mode) => (
+              <MenuItem
+                key={mode}
+                label={INTERACTION_LABEL[mode]}
+                hint={mode === 'auto' ? '按每条请求判断' : mode === 'plan' ? '只读分析与规划' : '允许实施任务'}
+                selected={host?.interactionMode === mode}
+                onSelect={() => void setInteractionMode(mode)}
+              />
+            ))}
+            <MenuSeparator />
+            <MenuLabel>思考等级</MenuLabel>
+            {THINKING_LEVELS.map((level) => (
+              <MenuItem
+                key={level}
+                label={THINKING_LABEL[level]}
+                selected={host?.thinkingLevel === level}
+                onSelect={() => void setThinking(level)}
+              />
+            ))}
+            <MenuSeparator />
+            <MenuLabel>权限</MenuLabel>
+            {PERMISSION_MODES.map((mode) => (
+              <MenuItem
+                key={mode}
+                label={PERMISSION_LABEL[mode]}
+                hint={mode}
+                selected={host?.permissionMode === mode}
+                onSelect={() => void setPermissionMode(mode)}
+              />
+            ))}
+            <MenuSeparator />
+            <MenuLabel>模型</MenuLabel>
+            {(host?.availableModels ?? []).map((model) => (
+              <MenuItem
+                key={model.id}
+                label={model.displayName}
+                hint={model.provider}
+                selected={host?.model?.id === model.id}
+                onSelect={() => void selectModel(model.id)}
+              />
+            ))}
           </Menu>
-
-          <span className="ml-auto flex items-center gap-2 text-2xs text-fg-subtle">
-            {approxTokens ? <span className="font-mono tabular-nums">≈{approxTokens} tok</span> : null}
-            {busy ? (
-              <span className="inline-flex items-center gap-1 rounded-sm bg-accent-soft px-1.5 py-0.5 text-accent">
-                <Zap size={11} />
-                运行中
-              </span>
-            ) : null}
-          </span>
-
-          <span className="hidden items-center gap-1.5 md:flex">
-            <Menu
-              placement="top"
-              align="end"
-              label="交互模式"
-              triggerClassName={cn(
-                'rounded-sm border-transparent bg-transparent px-2 text-[12px] hover:border-transparent hover:bg-interactive',
-                host?.effectiveInteractionMode === 'plan' && 'text-accent',
-              )}
-              trigger={host
-                ? host.interactionMode === 'auto'
-                  ? `自动 · ${host.effectiveInteractionMode === 'plan' ? '计划' : '执行'}`
-                  : INTERACTION_LABEL[host.interactionMode]
-                : '模式 —'}
-            >
-              {INTERACTION_MODES.map((mode) => (
-                <MenuItem
-                  key={mode}
-                  label={INTERACTION_LABEL[mode]}
-                  hint={mode === 'auto' ? '按每条请求判断' : mode === 'plan' ? '只读分析与规划' : '允许实施任务'}
-                  selected={host?.interactionMode === mode}
-                  onSelect={() => void setInteractionMode(mode)}
-                />
-              ))}
-            </Menu>
-
-            <Menu
-              placement="top"
-              align="end"
-              label="思考等级"
-              triggerClassName="rounded-sm border-transparent bg-transparent px-2 text-[12px] hover:border-transparent hover:bg-interactive"
-              trigger={host ? THINKING_LABEL[host.thinkingLevel] : '思考 —'}
-            >
-              {THINKING_LEVELS.map((level) => (
-                <MenuItem
-                  key={level}
-                  label={THINKING_LABEL[level]}
-                  selected={host?.thinkingLevel === level}
-                  onSelect={() => void setThinking(level)}
-                />
-              ))}
-            </Menu>
-
-            <Menu
-              placement="top"
-              align="end"
-              label="权限模式"
-              triggerClassName={cn(
-                'rounded-sm border-transparent bg-transparent px-2 text-[12px] hover:border-transparent hover:bg-interactive',
-                host?.permissionMode === 'full-access' && 'text-warn',
-              )}
-              trigger={host ? PERMISSION_LABEL[host.permissionMode] : '权限 —'}
-            >
-              {PERMISSION_MODES.map((mode) => (
-                <MenuItem
-                  key={mode}
-                  label={PERMISSION_LABEL[mode]}
-                  hint={mode}
-                  selected={host?.permissionMode === mode}
-                  onSelect={() => void setPermissionMode(mode)}
-                />
-              ))}
-            </Menu>
-
-            <Menu
-              placement="top"
-              align="end"
-              label="切换模型"
-              triggerClassName="max-w-[180px] rounded-sm border-transparent bg-transparent px-2 text-[12px] hover:border-transparent hover:bg-interactive"
-              trigger={<span className="truncate">{host?.model?.displayName ?? '模型 —'}</span>}
-            >
-              {(host?.availableModels ?? []).map((model) => (
-                <MenuItem
-                  key={model.id}
-                  label={model.displayName}
-                  hint={model.provider}
-                  selected={host?.model?.id === model.id}
-                  onSelect={() => void selectModel(model.id)}
-                />
-              ))}
-            </Menu>
-          </span>
 
           {!busy && host?.effectiveInteractionMode === 'plan' && !hasPendingPlan ? (
             <Button

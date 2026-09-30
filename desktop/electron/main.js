@@ -65,7 +65,7 @@ const WINDOW_ICON =
 let win = null
 /** @type {Sidecar | null} */
 let sidecar = null
-/** Embedded terminals (pipes, no PTY) owned by this process. */
+/** Embedded native PTYs owned by this process. */
 const terminals = new TerminalSessions()
 /** @type {Promise<void> | null} resolved when the FOXCODE_SHOT_CLICK sequence is done */
 let shotDriver = null
@@ -397,13 +397,19 @@ ipcMain.handle('terminal:start', (_event, options = {}) => {
   if (!fs.existsSync(cwd) || !fs.statSync(cwd).isDirectory()) {
     throw new Error(`终端目录不存在：${cwd}`)
   }
-  return terminals.start({ cwd })
+  return terminals.start({ cwd, cols: options.cols, rows: options.rows })
 })
 
 ipcMain.handle('terminal:write', (_event, payload = {}) => {
   const id = String(payload.id || '')
   if (!id) throw new Error('terminal:write 需要一个终端 id')
   return terminals.write(id, String(payload.data ?? ''))
+})
+
+ipcMain.handle('terminal:resize', (_event, payload = {}) => {
+  const id = String(payload.id || '')
+  if (!id) throw new Error('terminal:resize 需要一个终端 id')
+  return terminals.resize(id, payload.cols, payload.rows)
 })
 
 ipcMain.handle('terminal:kill', (_event, id) => terminals.kill(String(id || '')))

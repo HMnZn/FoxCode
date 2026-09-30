@@ -228,10 +228,15 @@ class AgentSession(CoreAgentHarness):
         for listener in list(self._listeners):
             await maybe_await(listener(event, self.agent.cancel_event or self._manual_cancel))
 
-    async def prompt(self, message: str | AgentMessage | list[AgentMessage]) -> None:
+    async def prompt(
+        self,
+        message: str | AgentMessage | list[AgentMessage],
+        *,
+        effective_mode: EffectiveInteractionMode | None = None,
+    ) -> None:
         prompt_text = self._prompt_text(message)
         if prompt_text is not None:
-            self.prepare_interaction_for_prompt(prompt_text)
+            self.prepare_interaction_for_prompt(prompt_text, effective_mode=effective_mode)
         await self._run_with_recovery(lambda: self.agent.prompt(message))
 
     @staticmethod
@@ -523,11 +528,28 @@ class AgentSession(CoreAgentHarness):
             prompt = f"{prompt}\n\n{self._active_skill_context}"
         return prompt
 
-    def prepare_interaction_for_prompt(self, message: str) -> EffectiveInteractionMode:
-        """Resolve ``auto`` for one new turn and refresh prompt/tools."""
+    def prepare_interaction_for_prompt(
+        self,
+        message: str,
+        *,
+        effective_mode: EffectiveInteractionMode | None = None,
+    ) -> EffectiveInteractionMode:
+        """Resolve ``auto`` for one turn, or apply an explicit one-turn mode.
+
+        ``effective_mode`` intentionally does not change the persistent user
+        selection.  Internal transitions such as approving a submitted plan
+        can therefore enter execution for exactly one turn while Auto remains
+        selected.
+        """
 
         self.ensure_idle()
-        effective = resolve_interaction_mode(self._interaction_mode, message)
+        effective = (
+            effective_mode
+            if effective_mode is not None
+            else resolve_interaction_mode(self._interaction_mode, message)
+        )
+        if effective not in ("default", "plan"):
+            raise ValueError("Effective interaction mode must be one of: default, plan")
         if effective != self._effective_interaction_mode:
             self._effective_interaction_mode = effective
             self._apply_interaction_policy()

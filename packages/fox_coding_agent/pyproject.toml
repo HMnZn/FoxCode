@@ -2,7 +2,7 @@
 name = "fox-coding-agent"
 version = "0.1.0"
 description = "Interactive FoxCode coding-agent runtime and CLI"
-readme = "ARCHITECTURE_GUIDE.md"
+readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
     "fox-agent-core==0.1.0",

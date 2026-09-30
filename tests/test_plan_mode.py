@@ -130,6 +130,36 @@ class PlanModeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("write", [tool.name for tool in runtime.state.tools])
         self.assertNotIn("Mode: plan", stream.contexts[1].system_prompt)
 
+    async def test_approved_plan_can_force_one_execution_turn_without_leaving_auto(self) -> None:
+        project = self.root / "approved-plan"
+        project.mkdir()
+        stream = scripted(FauxScript(text="plan"), FauxScript(text="implemented"))
+        runtime = AgentSessionRuntime(
+            project,
+            user_dir=self.root / "approved-plan-user",
+            model=FAUX_MODEL,
+            stream_fn=stream,
+            settings_overrides={"interaction_mode": "auto"},
+        )
+        self.addAsyncCleanup(runtime.close)
+
+        await runtime.prompt("请先给我一个计划，不要修改代码")
+        self.assertEqual(runtime.effective_interaction_mode, "plan")
+
+        # This internal message contains the word "计划" and is deliberately
+        # classified as Plan by Auto. Approval is a state transition, not a
+        # fresh user intent classification, so the host must override it.
+        implementation_message = (
+            "用户已批准上一条结构化计划。现在严格按照该计划开始实施并完成验证。"
+        )
+        self.assertEqual(infer_interaction_mode(implementation_message), "plan")
+        await runtime.prompt(implementation_message, effective_mode="default")
+
+        self.assertEqual(runtime.interaction_mode, "auto")
+        self.assertEqual(runtime.effective_interaction_mode, "default")
+        self.assertIn("write", [tool.name for tool in runtime.state.tools])
+        self.assertNotIn("Mode: plan", stream.contexts[1].system_prompt)
+
     async def test_plan_mode_extension_activation_preserves_hidden_selected_tools(self) -> None:
         project = self.root / "project-with-memory"
         project.mkdir()

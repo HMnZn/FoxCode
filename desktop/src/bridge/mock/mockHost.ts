@@ -15,6 +15,7 @@ import type {
   ModelInfo,
   PermissionDecision,
   PermissionRequest,
+  ProductConfiguration,
   PromptImage,
   SessionSummary,
   SkillInfo,
@@ -482,6 +483,36 @@ export class MockHost implements FoxBridge {
   private pendingPermissions = new Map<string, (decision: PermissionDecision) => void>()
   private extensions: ExtensionInfo[] = EXTENSIONS.map((item) => ({ ...item }))
   private availableExtensions: ExtensionInfo[] = AVAILABLE_EXTENSIONS.map((item) => ({ ...item }))
+  private configuration: ProductConfiguration = {
+    runtime: {
+      model: MODELS[0].id,
+      permission_mode: 'workspace-modify',
+      interaction_mode: 'auto',
+      execution_mode: 'local',
+      max_turns: 100,
+      model_retry_attempts: 1,
+      tool_execution: 'parallel',
+      stream_options: { max_tokens: 8192 },
+    },
+    providers: [
+      {
+        id: 'deepseek',
+        baseUrl: 'https://api.deepseek.com',
+        api: 'openai-completions',
+        models: [{ id: 'deepseek-chat', name: 'DeepSeek Chat', reasoning: false, input: ['text'], contextWindow: 128000, maxTokens: 8192 }],
+        credentialConfigured: true,
+      },
+    ],
+    mcpServers: [
+      { name: 'filesystem', command: 'npx', args: ['-y', '@modelcontextprotocol/server-filesystem', '.'], timeout: 30, enabled: true, permission: 'read-only', protocolVersion: 'auto', scope: 'user', envKeys: [] },
+    ],
+    subagents: [
+      { name: 'explore', description: 'Fast, read-only codebase search and exploration', systemPrompt: '', allowedTools: ['read', 'grep', 'find', 'ls'], scope: 'builtin', source: 'built-in', editable: false },
+      { name: 'test', description: 'Independent verification', systemPrompt: '', allowedTools: ['read', 'grep', 'find', 'ls', 'bash'], scope: 'builtin', source: 'built-in', editable: false },
+    ],
+    diagnostics: [],
+    projectTrusted: true,
+  }
 
   private state = {
     cwd: CWD,
@@ -799,6 +830,48 @@ export class MockHost implements FoxBridge {
     switch (command.method) {
       case 'host.info':
         return this.info()
+      case 'config.get':
+        return structuredClone(this.configuration)
+      case 'config.runtime.update':
+        this.configuration.runtime = { ...this.configuration.runtime, ...command.params.values }
+        return structuredClone(this.configuration)
+      case 'config.provider.save': {
+        const provider = { ...command.params.provider, credentialConfigured: false }
+        this.configuration.providers = [
+          ...this.configuration.providers.filter((item) => item.id !== provider.id),
+          provider,
+        ]
+        return structuredClone(this.configuration)
+      }
+      case 'config.provider.delete':
+        this.configuration.providers = this.configuration.providers.filter((item) => item.id !== command.params.id)
+        return structuredClone(this.configuration)
+      case 'config.credential.set': {
+        const provider = this.configuration.providers.find((item) => item.id === command.params.providerId)
+        if (provider) provider.credentialConfigured = true
+        return structuredClone(this.configuration)
+      }
+      case 'config.credential.delete': {
+        const provider = this.configuration.providers.find((item) => item.id === command.params.providerId)
+        if (provider) provider.credentialConfigured = false
+        return structuredClone(this.configuration)
+      }
+      case 'config.mcp.save': {
+        const server = { ...command.params.server, scope: command.params.scope ?? 'user', envKeys: Object.keys(command.params.server.env ?? {}) }
+        this.configuration.mcpServers = [...this.configuration.mcpServers.filter((item) => item.name !== server.name), server]
+        return structuredClone(this.configuration)
+      }
+      case 'config.mcp.delete':
+        this.configuration.mcpServers = this.configuration.mcpServers.filter((item) => item.name !== command.params.name)
+        return structuredClone(this.configuration)
+      case 'config.subagent.save': {
+        const item = { ...command.params.subagent, scope: command.params.scope ?? 'user', source: 'demo', editable: true } as const
+        this.configuration.subagents = [...this.configuration.subagents.filter((entry) => entry.name !== item.name), item]
+        return structuredClone(this.configuration)
+      }
+      case 'config.subagent.delete':
+        this.configuration.subagents = this.configuration.subagents.filter((item) => item.name !== command.params.name || !item.editable)
+        return structuredClone(this.configuration)
       case 'sessions.list':
         return this.sessions()
       case 'sessions.open':

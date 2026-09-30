@@ -7,17 +7,21 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
   AlertTriangle,
+  Bot,
   Check,
   Cpu,
   Download,
   FolderOpen,
   FolderTree,
   Info,
+  KeyRound,
   RefreshCw,
   Scissors,
   ShieldAlert,
   ShieldCheck,
   Sparkles,
+  ServerCog,
+  SlidersHorizontal,
 } from 'lucide-react'
 import { Button, Chip, SegmentedControl, Select, Switch, toast } from '@/components/ui'
 import { useSession } from '@/store/sessionStore'
@@ -25,6 +29,7 @@ import { useWorkspace, samePath, workspaceName } from '@/store/workspaceStore'
 import { applyTheme, useUi } from '@/store/uiStore'
 import { formatClock, formatTokens, shortPath } from '@/lib/format'
 import { cn } from '@/lib/cn'
+import { SettingsControlPlane } from '@/components/settings/SettingsControlPlane'
 import {
   PERMISSION_HINT,
   PERMISSION_LABEL,
@@ -51,11 +56,15 @@ const THEME_OPTIONS: ReadonlyArray<{ value: 'dark' | 'light'; label: string }> =
   { value: 'light', label: '浅色' },
 ]
 
-type SectionId = 'session' | 'model' | 'execution' | 'permission' | 'appearance' | 'demo'
+type SectionId = 'session' | 'model' | 'runtime-defaults' | 'providers' | 'mcp' | 'subagents' | 'execution' | 'permission' | 'appearance' | 'demo'
 
 const SECTION_NAV: ReadonlyArray<{ id: SectionId; label: string; icon: typeof Cpu }> = [
   { id: 'session', label: '会话', icon: FolderOpen },
   { id: 'model', label: '模型', icon: Cpu },
+  { id: 'runtime-defaults', label: '运行默认值', icon: SlidersHorizontal },
+  { id: 'providers', label: '模型供应商', icon: KeyRound },
+  { id: 'mcp', label: 'MCP', icon: ServerCog },
+  { id: 'subagents', label: 'Subagents', icon: Bot },
   { id: 'execution', label: '执行环境', icon: ShieldCheck },
   { id: 'permission', label: '权限', icon: ShieldAlert },
   { id: 'appearance', label: '外观', icon: Sparkles },
@@ -346,6 +355,8 @@ export function SettingsPage() {
             />
           </Row>
         </Section>
+
+        <SettingsControlPlane />
 
         <Section
           id="execution"

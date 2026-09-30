@@ -128,13 +128,24 @@ describe('Composer · 命令目录', () => {
     expect(attachments?.[0].data).toBeTruthy()
   })
 
-  it('lets the user select sandbox execution from the composer', async () => {
+  it('keeps the toolbar compact and leaves workspace switching to global navigation', () => {
+    useUi.setState({ drafts: { main: '' } })
+    const { container } = render(<Composer draftKey="main" />)
+
+    expect(screen.queryByRole('button', { name: '工作区' })).toBeNull()
+    expect(screen.queryByText('demo_project')).toBeNull()
+    const toolbar = container.querySelector('.flex-nowrap')
+    expect(toolbar).toBeTruthy()
+    expect(toolbar?.className).not.toContain('flex-wrap')
+  })
+
+  it('lets the user select sandbox execution from the compact settings menu', async () => {
     const setExecutionMode = vi.fn(async () => undefined)
     useSession.setState({ setExecutionMode })
     useUi.setState({ drafts: { main: '' } })
     render(<Composer draftKey="main" />)
 
-    fireEvent.click(screen.getByRole('button', { name: '执行环境' }))
+    fireEvent.click(screen.getByRole('button', { name: '对话设置' }))
     fireEvent.click(await screen.findByRole('menuitem', { name: /沙盒执行/ }))
 
     expect(setExecutionMode).toHaveBeenCalledWith('sandbox')

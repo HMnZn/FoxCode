@@ -444,6 +444,65 @@ export interface HostInfo {
   }
 }
 
+export type ConfigScope = 'user' | 'project'
+
+export interface ProviderConfig {
+  id: string
+  baseUrl: string
+  api: string
+  models: Array<Record<string, unknown>>
+  credentialConfigured: boolean
+}
+
+export interface McpServerSettings {
+  name: string
+  command: string
+  args: string[]
+  cwd?: string | null
+  timeout: number
+  enabled: boolean
+  permission: 'read-only' | 'full-access'
+  protocolVersion: 'auto' | '2025-11-25' | '2026-07-28'
+  scope: ConfigScope
+  envKeys?: string[]
+}
+
+export interface SubagentSettings {
+  name: string
+  description: string
+  systemPrompt: string
+  allowedTools: string[] | null
+  scope: ConfigScope | 'builtin'
+  source: string
+  editable: boolean
+}
+
+export interface ConfigDiagnostic {
+  area: 'mcp' | 'subagent' | string
+  code: string
+  message: string
+  path: string
+}
+
+export interface ProductConfiguration {
+  runtime: {
+    model?: string | null
+    permission_mode: PermissionMode
+    interaction_mode: InteractionMode
+    execution_mode: ExecutionMode
+    max_turns: number
+    model_retry_attempts: number
+    tool_execution: ToolExecutionMode
+    stream_options: Record<string, unknown>
+    [key: string]: unknown
+  }
+  providers: ProviderConfig[]
+  mcpServers: McpServerSettings[]
+  subagents: SubagentSettings[]
+  diagnostics: ConfigDiagnostic[]
+  projectTrusted: boolean
+}
+
 export interface PromptImage {
   name: string
   mimeType: string
@@ -586,6 +645,22 @@ export interface FileContent {
 
 export type HostCommand =
   | { method: 'host.info' }
+  | { method: 'config.get' }
+  | { method: 'config.runtime.update'; params: { values: Record<string, unknown>; scope?: ConfigScope } }
+  | { method: 'config.provider.save'; params: { provider: Omit<ProviderConfig, 'credentialConfigured'> } }
+  | { method: 'config.provider.delete'; params: { id: string } }
+  | { method: 'config.credential.set'; params: { providerId: string; apiKey: string } }
+  | { method: 'config.credential.delete'; params: { providerId: string } }
+  | {
+      method: 'config.mcp.save'
+      params: { server: Omit<McpServerSettings, 'scope' | 'envKeys'> & { env?: Record<string, string> }; scope?: ConfigScope }
+    }
+  | { method: 'config.mcp.delete'; params: { name: string; scope?: ConfigScope } }
+  | {
+      method: 'config.subagent.save'
+      params: { subagent: Pick<SubagentSettings, 'name' | 'description' | 'systemPrompt' | 'allowedTools'>; scope?: ConfigScope }
+    }
+  | { method: 'config.subagent.delete'; params: { name: string; scope?: ConfigScope } }
   | { method: 'sessions.list' }
   | { method: 'sessions.open'; params: { id: string } }
   | { method: 'sessions.new' }

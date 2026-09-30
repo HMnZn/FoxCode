@@ -197,7 +197,7 @@ export function Inspector({ className }: { className?: string }) {
               role="tabpanel"
               className={cn(
                 'flex min-h-0 flex-1 flex-col',
-                tab.kind === 'home' || tab.kind === 'files' ? 'scroll-quiet overflow-y-auto' : null,
+                tab.kind === 'home' ? 'scroll-quiet overflow-y-auto' : null,
                 hidden && 'hidden',
               )}
             >

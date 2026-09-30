@@ -1,31 +1,33 @@
-/**
- * TerminalTab — 右侧工作台里的终端标签。
- *
- * It is deliberately *not* an xterm.js surface. The shell behind it runs on pipes
- * (`electron/terminal.js`), which means: no PTY, no cursor addressing, no resize,
- * no SIGINT. What it does give you is the thing a coding agent's terminal is
- * actually used for — run a command, watch it print, keep the scrollback — and it
- * needs no native dependency to work in a plain Electron bundle.
- *
- * The prompt line is ours (a shell on a pipe never prints one), so the transcript
- * reads as `❯ <what you typed>` followed by the command's own output.
- *
- * 标签的关闭就是结束这个 shell（`railStore.close` 会 `stop()`）：面板收起时
- * 进程继续跑，收起和关掉是两件事。
- */
-import { useEffect, useMemo, useRef } from 'react'
+/** A real xterm.js surface backed by node-pty in Electron's main process. */
+import { useEffect, useRef } from 'react'
+import { FitAddon } from '@xterm/addon-fit'
+import { Terminal } from '@xterm/xterm'
+import '@xterm/xterm/css/xterm.css'
 import { Eraser, RotateCw, SquareTerminal } from 'lucide-react'
+import { getBridge } from '@/bridge'
 import { Chip, IconButton, Tooltip, type ChipTone } from '@/components/ui'
 import { basename } from '@/lib/format'
-import { screenText } from '@/lib/terminalText'
-import { TERMINAL_PROMPT, useTerminal, type TerminalStatus } from '@/store/terminalStore'
 import { useSession } from '@/store/sessionStore'
+import { useTerminal, type TerminalStatus } from '@/store/terminalStore'
+import { useUi, type Theme } from '@/store/uiStore'
 
 const STATUS: Record<TerminalStatus, { label: string; tone: ChipTone }> = {
   idle: { label: '未启动', tone: 'neutral' },
   starting: { label: '启动中', tone: 'info' },
   running: { label: '运行中', tone: 'success' },
   exited: { label: '已退出', tone: 'warn' },
+}
+
+function terminalTheme(theme: Theme) {
+  return theme === 'light'
+    ? {
+        background: '#00000000', foreground: '#555b63', cursor: '#4078e8',
+        selectionBackground: '#b8d1ff88', black: '#34383e', brightBlack: '#747b85',
+      }
+    : {
+        background: '#00000000', foreground: '#c8cbd0', cursor: '#8ab4ff',
+        selectionBackground: '#4a638e88', black: '#303036', brightBlack: '#777780',
+      }
 }
 
 export function TerminalTab({ className }: { className?: string }) {
@@ -35,33 +37,131 @@ export function TerminalTab({ className }: { className?: string }) {
   const sessionId = useTerminal((state) => state.id)
   const cwd = useTerminal((state) => state.cwd)
   const error = useTerminal((state) => state.error)
-  const screen = useTerminal((state) => state.screen)
-  const input = useTerminal((state) => state.input)
+  const output = useTerminal((state) => state.output)
   const restart = useTerminal((state) => state.restart)
-  const submit = useTerminal((state) => state.submit)
-  const setInput = useTerminal((state) => state.setInput)
-  const recall = useTerminal((state) => state.recall)
+  const ensure = useTerminal((state) => state.ensure)
   const clear = useTerminal((state) => state.clear)
+  const theme = useUi((state) => state.theme)
 
-  const viewportRef = useRef<HTMLDivElement>(null)
-  const inputRef = useRef<HTMLInputElement>(null)
-  const text = useMemo(() => screenText(screen), [screen])
-
-  // 打开就聚焦命令行：终端标签出现后第一件事总是敲字。
-  useEffect(() => {
-    inputRef.current?.focus()
-  }, [status])
-
-  // 跟随输出，但只在用户本来就在底部时跟随 —— 往回翻历史时不该被拽回来。
-  useEffect(() => {
-    const viewport = viewportRef.current
-    if (!viewport) return
-    const distance = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight
-    if (distance < 120) viewport.scrollTop = viewport.scrollHeight
-  }, [text])
+  const hostRef = useRef<HTMLDivElement>(null)
+  const terminalRef = useRef<Terminal | null>(null)
+  const fitRef = useRef<FitAddon | null>(null)
+  const renderedLengthRef = useRef(0)
+  const attemptedTargetRef = useRef<string | null>(null)
 
   const info = STATUS[status]
   const target = cwd ?? host?.cwd ?? null
+
+  // xterm owns the prompt, cursor and keyboard. There is intentionally no
+  // separate HTML input: every keystroke is sent directly to the native PTY.
+  useEffect(() => {
+    const element = hostRef.current
+    if (!element) return
+
+    const terminal = new Terminal({
+      allowTransparency: true,
+      convertEol: false,
+      cursorBlink: true,
+      cursorStyle: 'block',
+      fontFamily: 'SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace',
+      fontSize: 12,
+      lineHeight: 1.3,
+      macOptionIsMeta: true,
+      scrollback: 5000,
+      theme: terminalTheme(useUi.getState().theme),
+    })
+    const fit = new FitAddon()
+    terminal.loadAddon(fit)
+    terminal.open(element)
+    terminalRef.current = terminal
+    fitRef.current = fit
+
+    const currentOutput = useTerminal.getState().output
+    if (currentOutput) terminal.write(currentOutput)
+    renderedLengthRef.current = currentOutput.length
+
+    const fitTerminal = () => {
+      try {
+        fit.fit()
+      } catch {
+        return
+      }
+      const id = useTerminal.getState().id
+      if (id) void getBridge().terminal.resize(id, terminal.cols, terminal.rows)
+    }
+    const frame = requestAnimationFrame(() => {
+      fitTerminal()
+      terminal.focus()
+    })
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(fitTerminal)
+    observer?.observe(element)
+
+    const input = terminal.onData((data) => {
+      const state = useTerminal.getState()
+      if (state.id && state.status === 'running') void getBridge().terminal.write(state.id, data)
+    })
+    const resize = terminal.onResize(({ cols, rows }) => {
+      const id = useTerminal.getState().id
+      if (id) void getBridge().terminal.resize(id, cols, rows)
+    })
+
+    return () => {
+      cancelAnimationFrame(frame)
+      observer?.disconnect()
+      input.dispose()
+      resize.dispose()
+      fit.dispose()
+      terminal.dispose()
+      terminalRef.current = null
+      fitRef.current = null
+    }
+  }, [])
+
+  useEffect(() => {
+    const terminal = terminalRef.current
+    if (terminal) terminal.options.theme = terminalTheme(theme)
+  }, [theme])
+
+  // Replay only the newly arrived bytes. A shorter buffer means the user used
+  // the header's clear button or restarted, so reset the visual terminal too.
+  useEffect(() => {
+    const terminal = terminalRef.current
+    if (!terminal) return
+    const rendered = renderedLengthRef.current
+    if (output.length < rendered) {
+      terminal.reset()
+      if (output) terminal.write(output)
+    } else if (output.length > rendered) {
+      terminal.write(output.slice(rendered))
+    }
+    renderedLengthRef.current = output.length
+  }, [output])
+
+  // The tab can mount before the host reports cwd. Start as soon as it arrives.
+  useEffect(() => {
+    if (!target || status !== 'idle' || sessionId || attemptedTargetRef.current === target) return
+    attemptedTargetRef.current = target
+    const terminal = terminalRef.current
+    void ensure(target, terminal ? { cols: terminal.cols, rows: terminal.rows } : undefined)
+  }, [ensure, sessionId, status, target])
+
+  useEffect(() => {
+    if (status !== 'running') return
+    const terminal = terminalRef.current
+    if (!terminal) return
+    try {
+      fitRef.current?.fit()
+    } catch {
+      // The panel can briefly be width 0 while the inspector animates open.
+    }
+    if (sessionId) void getBridge().terminal.resize(sessionId, terminal.cols, terminal.rows)
+    terminal.focus()
+  }, [sessionId, status])
+
+  const currentSize = () => {
+    const terminal = terminalRef.current
+    return terminal ? { cols: terminal.cols, rows: terminal.rows } : undefined
+  }
 
   return (
     <div aria-label="终端" className={className ? `flex min-h-0 flex-1 flex-col ${className}` : 'flex min-h-0 flex-1 flex-col'}>
@@ -70,22 +170,23 @@ export function TerminalTab({ className }: { className?: string }) {
         <span className="truncate font-mono text-[10.5px] text-fg-caption">
           {shell ? `${shell} · ${target ? basename(target) : ''}` : (target ?? '未连接工作区')}
         </span>
-        <Chip tone={info.tone} size="xs">
-          {info.label}
-        </Chip>
+        <Chip tone={info.tone} size="xs">{info.label}</Chip>
         <div className="ml-auto flex items-center">
-          <Tooltip content="清空回看（Ctrl+L）" side="top">
-            <IconButton label="清空终端" variant="ghost" size="xs" onClick={clear}>
+          <Tooltip content="清空终端回看" side="top">
+            <IconButton label="清空终端" variant="ghost" size="xs" onClick={() => { clear(); terminalRef.current?.focus() }}>
               <Eraser size={13} />
             </IconButton>
           </Tooltip>
-          <Tooltip content="重新启动 shell（没有 PTY，卡住的命令只能用这个结束）" side="top">
+          <Tooltip content="重新启动 shell" side="top">
             <IconButton
               label="重新启动终端"
               variant="ghost"
               size="xs"
-              disabled={!sessionId && status !== 'exited'}
-              onClick={() => void restart()}
+              disabled={status === 'starting'}
+              onClick={() => {
+                attemptedTargetRef.current = target
+                void restart(currentSize())
+              }}
             >
               <RotateCw size={13} />
             </IconButton>
@@ -93,67 +194,21 @@ export function TerminalTab({ className }: { className?: string }) {
         </div>
       </header>
 
-      <div ref={viewportRef} className="scroll-quiet min-h-0 flex-1 overflow-auto px-3 py-2">
-        {error ? (
-          <p className="font-mono text-[11.5px] leading-[1.7] text-danger">{error}</p>
-        ) : text ? (
-          <pre className="font-mono text-[11.5px] leading-[1.7] whitespace-pre-wrap break-words text-fg-muted">
-            {text}
-          </pre>
-        ) : (
-          <p className="text-[11.5px] leading-[1.7] text-fg-subtle">
-            {status === 'starting'
-              ? '正在启动 shell…'
-              : '在下面输入命令后回车。终端是行模式的：vim / top 这类全屏程序不支持，命令卡住时用右上角的「重新启动」。'}
-          </p>
-        )}
-      </div>
-
-      <form
-        className="flex shrink-0 items-center gap-2 border-t border-line px-3 py-2"
-        onSubmit={(event) => {
-          event.preventDefault()
-          submit()
-        }}
-      >
-        <span aria-hidden="true" className="font-mono text-[12px] text-fg-subtle">
-          {TERMINAL_PROMPT}
-        </span>
-        <input
-          ref={inputRef}
-          aria-label="终端命令"
-          autoComplete="off"
-          spellCheck={false}
-          placeholder={status === 'running' ? '输入命令，回车运行' : '终端未在运行'}
-          className="min-w-0 flex-1 bg-transparent font-mono text-[12px] text-fg outline-none placeholder:text-fg-subtle"
-          value={input}
-          onChange={(event) => setInput(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter') {
-              // 显式提交：一个 input 的表单本来就会隐式提交，但把回车写清楚，
-              // 就不必依赖浏览器的隐式行为（也用不着为测试造假 submit 事件）。
-              event.preventDefault()
-              submit()
-              return
-            }
-            if (event.key === 'ArrowUp') {
-              event.preventDefault()
-              recall(-1)
-              return
-            }
-            if (event.key === 'ArrowDown') {
-              event.preventDefault()
-              recall(1)
-              return
-            }
-            if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'l') {
-              event.preventDefault()
-              clear()
-            }
-          }}
+      <div className="relative min-h-0 flex-1 bg-canvas">
+        <div
+          ref={hostRef}
+          aria-label="原生终端区域"
+          className="absolute inset-0 cursor-text px-2 py-2 [&_.xterm]:h-full [&_.xterm-viewport]:!bg-transparent [&_.xterm-viewport]:!overflow-y-auto"
+          onMouseDown={() => terminalRef.current?.focus()}
         />
-        <span className="shrink-0 text-[10px] text-fg-subtle">Enter 运行 · ↑↓ 历史</span>
-      </form>
+        {error ? (
+          <div className="pointer-events-none absolute inset-x-3 top-3 rounded border border-danger/20 bg-canvas/95 px-3 py-2 font-mono text-[11px] text-danger">
+            {error}
+          </div>
+        ) : status === 'starting' && !output ? (
+          <div className="pointer-events-none absolute left-3 top-3 text-[11px] text-fg-subtle">正在启动 shell…</div>
+        ) : null}
+      </div>
     </div>
   )
 }

@@ -28,6 +28,7 @@ from typing import Any, Callable
 from . import __version__
 from . import extension_catalog as catalog
 from . import workspace_files
+from .configuration import ConfigurationService
 from .approvals import (
     ApprovalBroker,
     PermissionPolicy,
@@ -230,6 +231,7 @@ class ServeHost:
         """构造 runtime、挂上事件与审批钩子，并发出 `session_start`。"""
 
         from fox_coding_agent.src import AgentSessionRuntime, SettingsManager
+        from fox_coding_agent.src.core.model_config import ModelConfig
 
         configured_mode = self.permission_override or self._configured_permission_mode(
             SettingsManager
@@ -242,9 +244,20 @@ class ServeHost:
             log=self._log,
         )
 
+        initial_model: Any = self.model_reference
+        if self.model_reference is None and not ModelConfig(self.user_dir).snapshot.models:
+            # First-run bootstrap: without a models.json the old host exited
+            # before the settings UI could create one.  A built-in model object
+            # lets the control plane come online; no request is made merely by
+            # constructing it.  Once the user saves a provider, reload exposes
+            # the real configured catalog.
+            from fox_ai.src import get_model
+            initial_model = get_model("openai", "gpt-4o-mini")
+            self._log("未发现 models.json，使用内置模型启动首次配置模式")
+
         self._runtime = AgentSessionRuntime(
             cwd=str(self.cwd),
-            model=self.model_reference,
+            model=initial_model,
             session_file=str(self.session_file) if self.session_file else None,
             user_dir=str(self.user_dir),
             # 见模块文档：让每次工具调用都走到我们的审批钩子。
@@ -983,7 +996,12 @@ class ServeHost:
 
     # ---- 对话 ----
 
-    async def _cmd_prompt(self, params: dict[str, Any]) -> dict[str, Any]:
+    async def _cmd_prompt(
+        self,
+        params: dict[str, Any],
+        *,
+        effective_mode: str | None = None,
+    ) -> dict[str, Any]:
         runtime = self._require_runtime()
         options = params.get("options") or {}
         message, routing_text = prompt_message(params.get("message"), options)
@@ -1002,7 +1020,10 @@ class ServeHost:
             session = getattr(runtime, "agent_session", None)
             prepare_mode = getattr(session, "prepare_interaction_for_prompt", None)
             if callable(prepare_mode):
-                prepare_mode(routing_text)
+                if effective_mode is None:
+                    prepare_mode(routing_text)
+                else:
+                    prepare_mode(routing_text, effective_mode=effective_mode)
 
         # 一轮对话可能要跑几分钟，而前端 sidecar 客户端对单个请求有超时。
         # 所以这里立刻返回，把这一轮放到后台 task 里跑：进度/结束全部由帧
@@ -1011,7 +1032,10 @@ class ServeHost:
         running = getattr(self, "_running_runtimes", None)
         if running is not None:
             running.add(id(runtime))
-        task = self._spawn_task(self._run_prompt(message, runtime=runtime), name="prompt")
+        task = self._spawn_task(
+            self._run_prompt(message, runtime=runtime, effective_mode=effective_mode),
+            name="prompt",
+        )
         marker = id(runtime)
         self._runtime_tasks[marker] = task
 
@@ -1027,13 +1051,22 @@ class ServeHost:
             ),
         }
 
-    async def _run_prompt(self, message: Any, *, runtime: Any | None = None) -> None:
+    async def _run_prompt(
+        self,
+        message: Any,
+        *,
+        runtime: Any | None = None,
+        effective_mode: str | None = None,
+    ) -> None:
         runtime = runtime or self._runtime
         if runtime is None:
             self._agent_running = False
             return
         try:
-            await runtime.prompt(message)
+            if effective_mode is None:
+                await runtime.prompt(message)
+            else:
+                await runtime.prompt(message, effective_mode=effective_mode)
         except asyncio.CancelledError:  # pragma: no cover - 退出时取消
             raise
         except Exception as exc:  # noqa: BLE001 - 失败要变成错误帧，前端才会显示
@@ -1227,6 +1260,101 @@ class ServeHost:
 
     # ---- 设置 ----
 
+    def _configuration(self) -> ConfigurationService:
+        runtime = self._require_runtime()
+        return ConfigurationService(
+            user_dir=getattr(runtime, "user_dir", self.user_dir),
+            cwd=getattr(runtime, "cwd", self.cwd),
+            project_trusted=bool(getattr(runtime, "project_trusted", self.project_trusted)),
+        )
+
+    async def _cmd_config_get(self, _params: dict[str, Any]) -> dict[str, Any]:
+        try:
+            return await asyncio.to_thread(self._configuration().snapshot)
+        except (OSError, PermissionError, ValueError) as exc:
+            raise HostError(f"读取产品配置失败：{exc}") from exc
+
+    @staticmethod
+    def _config_scope(params: dict[str, Any]) -> str:
+        scope = str(params.get("scope") or "user")
+        if scope not in {"user", "project"}:
+            raise HostError("scope 必须是 user 或 project")
+        return scope
+
+    async def _apply_configuration(self, operation: Callable[[], None], *, reload: bool = True) -> dict[str, Any]:
+        if self._agent_running:
+            raise HostError("Agent 运行中不能修改产品配置，请等待本轮结束")
+        try:
+            await asyncio.to_thread(operation)
+            if reload:
+                await self._reload_runtime()
+            else:
+                self._require_runtime().model_runtime.reload()
+            return await self._cmd_config_get({})
+        except HostError:
+            raise
+        except (OSError, PermissionError, ValueError) as exc:
+            raise HostError(str(exc)) from exc
+
+    async def _cmd_config_runtime_update(self, params: dict[str, Any]) -> dict[str, Any]:
+        service = self._configuration()
+        scope = self._config_scope(params)
+        return await self._apply_configuration(
+            lambda: service.update_runtime(params.get("values"), scope=scope)
+        )
+
+    async def _cmd_config_provider_save(self, params: dict[str, Any]) -> dict[str, Any]:
+        service = self._configuration()
+        return await self._apply_configuration(lambda: service.save_provider(params.get("provider")))
+
+    async def _cmd_config_provider_delete(self, params: dict[str, Any]) -> dict[str, Any]:
+        provider_id = str(params.get("id") or "").strip()
+        if not provider_id:
+            raise HostError("需要供应商 ID")
+        service = self._configuration()
+        return await self._apply_configuration(lambda: service.delete_provider(provider_id))
+
+    async def _cmd_config_credential_set(self, params: dict[str, Any]) -> dict[str, Any]:
+        provider_id = str(params.get("providerId") or "").strip()
+        api_key = str(params.get("apiKey") or "")
+        service = self._configuration()
+        return await self._apply_configuration(
+            lambda: service.set_credential(provider_id, api_key), reload=False
+        )
+
+    async def _cmd_config_credential_delete(self, params: dict[str, Any]) -> dict[str, Any]:
+        provider_id = str(params.get("providerId") or "").strip()
+        service = self._configuration()
+        return await self._apply_configuration(
+            lambda: service.delete_credential(provider_id), reload=False
+        )
+
+    async def _cmd_config_mcp_save(self, params: dict[str, Any]) -> dict[str, Any]:
+        service = self._configuration()
+        scope = self._config_scope(params)
+        return await self._apply_configuration(
+            lambda: service.save_mcp(params.get("server"), scope=scope)
+        )
+
+    async def _cmd_config_mcp_delete(self, params: dict[str, Any]) -> dict[str, Any]:
+        name = str(params.get("name") or "").strip()
+        service = self._configuration()
+        scope = self._config_scope(params)
+        return await self._apply_configuration(lambda: service.delete_mcp(name, scope=scope))
+
+    async def _cmd_config_subagent_save(self, params: dict[str, Any]) -> dict[str, Any]:
+        service = self._configuration()
+        scope = self._config_scope(params)
+        return await self._apply_configuration(
+            lambda: service.save_subagent(params.get("subagent"), scope=scope)
+        )
+
+    async def _cmd_config_subagent_delete(self, params: dict[str, Any]) -> dict[str, Any]:
+        name = str(params.get("name") or "").strip()
+        service = self._configuration()
+        scope = self._config_scope(params)
+        return await self._apply_configuration(lambda: service.delete_subagent(name, scope=scope))
+
     async def _cmd_model_select(self, params: dict[str, Any]) -> dict[str, Any]:
         runtime = self._require_runtime()
         reference = str(params.get("reference") or params.get("id") or "").strip()
@@ -1352,9 +1480,12 @@ class ServeHost:
         # Default mode for this turn.
         if getattr(runtime, "interaction_mode", "auto") == "plan":
             runtime.set_interaction_mode("default")
-        result = await self._cmd_prompt({
-            "message": "用户已批准上一条结构化计划。现在严格按照该计划开始实施并完成验证。"
-        })
+        result = await self._cmd_prompt(
+            {
+                "message": "用户已批准上一条结构化计划。现在严格按照该计划开始实施并完成验证。"
+            },
+            effective_mode="default",
+        )
         return {"id": tool_call_id, "decision": decision, **result}
 
     async def _cmd_trust_set(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -1695,6 +1826,7 @@ class ServeHost:
             "costPerMTokOut": getattr(cost, "output", None),
             "modelId": model_id,
         }
+
 
     def _skills(self) -> list[dict[str, Any]]:
         session = getattr(self._runtime, "agent_session", None)

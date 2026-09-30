@@ -96,6 +96,11 @@ class CredentialStore:
                 handle.flush()
                 os.fsync(handle.fileno())
             os.replace(temporary, self.path)
+            # auth.json is intentionally separate from ordinary settings.  On
+            # POSIX make that boundary enforceable even when the process umask
+            # is permissive; Windows ACLs are inherited from the user profile.
+            if os.name != "nt":
+                self.path.chmod(0o600)
         finally:
             if temporary is not None:
                 temporary.unlink(missing_ok=True)

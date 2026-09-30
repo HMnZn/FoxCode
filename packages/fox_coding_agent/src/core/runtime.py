@@ -18,7 +18,7 @@ from .tools import create_all_tools
 from .system_prompt import build_system_prompt
 from .extensions import ExtensionRunner, ExtensionContext
 from .permissions import PERMISSION_MODES, check_tool_permission
-from .interaction import is_plan_safe_tool
+from .interaction import EffectiveInteractionMode, is_plan_safe_tool
 from .sandbox import check_sandbox_tool
 from .paths import UserPaths
 
@@ -359,7 +359,12 @@ class AgentSessionRuntime:
             self._preparing = False
             self._hook_cancel = None
 
-    async def prompt(self, message):
+    async def prompt(
+        self,
+        message,
+        *,
+        effective_mode: EffectiveInteractionMode | None = None,
+    ):
         self._ensure_available()
         self.agent_session.ensure_idle()
         native_message = message if isinstance(message, UserMessage) else None
@@ -373,7 +378,9 @@ class AgentSessionRuntime:
                 )
             )
         if isinstance(hook_message, str):
-            self.agent_session.prepare_interaction_for_prompt(hook_message)
+            self.agent_session.prepare_interaction_for_prompt(
+                hook_message, effective_mode=effective_mode,
+            )
         self._preparing = True
         self._hook_cancel = asyncio.Event()
         try:
@@ -396,7 +403,7 @@ class AgentSessionRuntime:
         else:
             message = hook_message
         self._persist_new(self.agent_session, self.session_file)
-        await self.agent_session.prompt(message)
+        await self.agent_session.prompt(message, effective_mode=effective_mode)
 
     def set_interaction_mode(self, mode: str):
         """Select automatic, normal execution, or read-only planning for this branch."""
