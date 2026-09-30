@@ -33,6 +33,20 @@ MAX_LABEL_LENGTH = 120
 BRANCH_SUFFIX = "-分支"
 
 _BRANCH_PATTERN = re.compile(r"^(?P<root>.+?)-分支(?P<count>\d*)$")
+_LEGACY_SKILL_PATTERN = re.compile(
+    r"^\s*<skill\s+[^>]*name=(?:\"([^\"]+)\"|'([^']+)')[^>]*>.*?</skill>\s*(.*)$",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _automatic_title(text: str) -> str:
+    """Collapse pre-fix skill payloads into a readable task/name title."""
+
+    match = _LEGACY_SKILL_PATTERN.match(text)
+    if match is None:
+        return text
+    task = str(match.group(3) or "").strip()
+    return task or f"技能 · {match.group(1) or match.group(2)}"
 
 
 def branch_label(base: str) -> str:
@@ -209,7 +223,7 @@ def read_session_file(path: Path, *, live: bool = False) -> SessionFile | None:
             if role in ("user", "assistant"):
                 message_count += 1
             if role == "user" and not title:
-                title = _first_text(data.get("content"))[:80]
+                title = _automatic_title(_first_text(data.get("content")))[:80]
             if role == "assistant":
                 _append_usage(usage, data.get("usage"))
         elif etype == "model_change" and isinstance(data, dict):

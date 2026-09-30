@@ -527,6 +527,8 @@ export interface WorkspaceChanges {
   root?: string | null
   branch?: string | null
   files: FileChange[]
+  /** Files changed since this host opened the workspace (also available in non-git folders). */
+  sessionFiles?: FileChange[]
   total: number
   truncated: boolean
   error?: string | null

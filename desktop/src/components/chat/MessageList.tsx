@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { ArrowDown, Check, ChevronRight, CornerDownLeft, FileCheck2, Slash, Sparkles, Wrench, X } from 'lucide-react'
+import { ArrowDown, Check, ChevronDown, ChevronRight, CornerDownLeft, FileCheck2, Slash, Sparkles, Wrench, X } from 'lucide-react'
 import { Button, Chip } from '@/components/ui'
 import { FoxMascot } from '@/components/brand/Fox'
 import { Markdown, NoticePart, StreamingMarkdown, ThinkingPart } from '@/components/content'
@@ -7,8 +7,11 @@ import { ToolCallCard } from '@/components/chat/ToolCallCard'
 import type { AssistantBlock, Block, PlanBlock, RunStatus, ToolsBlock, UserBlock } from '@/store/timeline'
 import { useSession } from '@/store/sessionStore'
 import { TOOL_STATUS_LABEL } from '@/types/protocol'
-import { formatCost, formatTokens } from '@/lib/format'
+import { displayUserText, formatCost, formatTokens } from '@/lib/format'
 import { cn } from '@/lib/cn'
+import { useFiles } from '@/store/filesStore'
+import { useRail } from '@/store/railStore'
+import { preferredMode } from '@/lib/preview'
 
 const STOP_LABEL: Record<string, string> = {
   stop: '完成',
@@ -36,6 +39,7 @@ const SUGGESTIONS = [
 ]
 
 function UserBubble({ block }: { block: UserBlock }) {
+  const text = displayUserText(block.text)
   return (
     <div className="flex justify-end">
       <div className="flex max-w-[70.2%] flex-col items-end gap-1.5">
@@ -52,7 +56,7 @@ function UserBubble({ block }: { block: UserBlock }) {
               ))}
             </div>
           ) : null}
-          {block.text ? <span>{block.text}</span> : null}
+          {text ? <span>{text}</span> : null}
         </div>
         {block.queued ? (
           <Chip size="xs" tone="info">
@@ -281,6 +285,66 @@ function BlockView({ block }: { block: Block }) {
   }
 }
 
+/** Compact completion artifact; every row opens the real diff in the right rail. */
+function EditedFilesCard() {
+  const changes = useFiles((state) => state.changes)
+  const openFile = useRail((state) => state.openFile)
+  const openFiles = useRail((state) => state.openFiles)
+  const [expanded, setExpanded] = useState(false)
+  // Git's `files` may include edits that existed before this conversation.
+  // Completion cards only claim files observed after the host baseline.
+  const files = changes?.sessionFiles ?? (changes?.repo ? [] : changes?.files ?? [])
+  if (!files.length) return null
+  const shown = expanded ? files : files.slice(0, 4)
+  const additions = files.reduce((total, file) => total + file.additions, 0)
+  const deletions = files.reduce((total, file) => total + file.deletions, 0)
+  return (
+    <section className="overflow-hidden rounded-xl border border-line bg-surface shadow-soft">
+      <button
+        type="button"
+        onClick={openFiles}
+        className="flex w-full items-center gap-3 border-b border-line px-4 py-3 text-left hover:bg-interactive"
+      >
+        <FileCheck2 size={16} className="text-fg-muted" aria-hidden="true" />
+        <span className="font-medium text-fg">已编辑 {files.length} 个文件</span>
+        <span className="font-mono text-[11px]">
+          {additions ? <span className="text-success">+{additions}</span> : null}
+          {additions && deletions ? ' ' : null}
+          {deletions ? <span className="text-danger">−{deletions}</span> : null}
+        </span>
+        <span className="ml-auto text-2xs text-fg-subtle">在工作区改动中查看</span>
+      </button>
+      <div className="divide-y divide-line/70">
+        {shown.map((file) => (
+          <button
+            type="button"
+            key={`${file.status}-${file.path}`}
+            onClick={() => openFile(file.path, preferredMode(file.path, 'diff'))}
+            className="flex min-h-9 w-full items-center gap-3 px-4 text-left text-xs hover:bg-interactive"
+          >
+            <span className="min-w-0 flex-1 truncate font-mono text-fg-muted">{file.display}</span>
+            <span className="shrink-0 font-mono text-[11px]">
+              {file.additions ? <span className="text-success">+{file.additions}</span> : null}
+              {file.additions && file.deletions ? ' ' : null}
+              {file.deletions ? <span className="text-danger">−{file.deletions}</span> : null}
+            </span>
+          </button>
+        ))}
+      </div>
+      {files.length > 4 ? (
+        <button
+          type="button"
+          onClick={() => setExpanded((value) => !value)}
+          className="flex w-full items-center gap-1 border-t border-line px-4 py-2 text-2xs text-fg-subtle hover:bg-interactive hover:text-fg"
+        >
+          <ChevronDown size={12} className={cn('transition-transform', expanded && 'rotate-180')} />
+          {expanded ? '收起' : `再显示 ${files.length - 4} 个文件`}
+        </button>
+      ) : null}
+    </section>
+  )
+}
+
 function Welcome({ onSuggestion }: { onSuggestion?: (text: string) => void }) {
   const hints = [
     { icon: CornerDownLeft, label: 'Enter 发送', detail: 'Shift + Enter 换行' },
@@ -373,6 +437,7 @@ export function MessageList({ blocks, status, onSuggestion }: MessageListProps) 
           {blocks.map((block) => (
             <BlockView key={block.id} block={block} />
           ))}
+          {status === 'idle' && blocks.length > 0 ? <EditedFilesCard /> : null}
           <div className="h-2" />
         </div>
       </div>

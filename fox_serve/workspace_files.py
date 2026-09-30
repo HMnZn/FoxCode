@@ -2,14 +2,14 @@
 
 设计取舍（与 DSH 的 `dsh-workspace-changes` 对照后选的轻方案）：
 
-- **改动清单直接问 git**（`status --porcelain` + 两次 `diff --numstat`），不自己维护
-  轮次快照。好处是零状态、shell 里手改的文件也在；代价是 Host 重启后仍然有清单
-  （比 DSH 那种「重启即失忆」更耐用），而「本轮改动」这个语义由前端按会话时间线
-  另行给出。
+- **Git 工作区清单直接问 git**（`status --porcelain` + 两次 `diff --numstat`），
+  因此 shell 里手改的文件也在；同时维护一份有界宿主基线，只用来标出本次运行之后
+  真正改变的文件，避免把启动前的未提交改动写进完成卡片。
 - **逐文件差异用 `git diff HEAD -U3`**；HEAD 里没有的未跟踪文件合成一份「整文件新增」
   的统一差异，这样预览面板对任意一行都能给出内容。
-- **git 只是增强，不是依赖**：找不到 git、不在仓库里、命令超时都只返回 `error`
-  字段，让右侧栏退回「本轮会话触碰的文件」，绝不把异常抛给 UI。
+- **git 只是增强，不是依赖**：非 Git 工作区由宿主启动时的有界快照提供真实的
+  新增/修改/删除与 unified diff；它不从工具参数猜路径，因此 `read` / `ls` 不会
+  被误报成编辑。没有快照的旧调用才返回可展示的 `error`，绝不把异常抛给 UI。
 - 路径统一用 `-c core.quotePath=false`，避免非 ASCII 路径被 git 转义成八进制。
 """
 
@@ -17,8 +17,11 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import difflib
+import hashlib
 import os
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -57,6 +60,30 @@ MAX_IMAGE_BYTES = 2 * 1024 * 1024
 
 #: 合成未跟踪文件差异时最多展开多少行（够看开头，不用等整个大文件）。
 MAX_SYNTHETIC_LINES = 2000
+
+# A snapshot keeps hashes for change detection and the original bytes needed
+# for unified diffs.  Bound both dimensions so opening a huge monorepo cannot
+# turn the desktop host into an accidental file cache.
+MAX_SNAPSHOT_FILES = 20_000
+MAX_SNAPSHOT_CONTENT_BYTES = 64 * 1024 * 1024
+
+
+@dataclass(frozen=True)
+class SnapshotEntry:
+    """A file at the beginning of the desktop host lifetime."""
+
+    digest: str
+    size: int
+    data: bytes | None
+    binary: bool
+
+
+@dataclass(frozen=True)
+class WorkspaceSnapshot:
+    """Non-git baseline used to provide real changes and diffs."""
+
+    root: Path
+    files: dict[str, SnapshotEntry]
 
 _KIND_BY_CODE = {
     "A": "added",
@@ -294,6 +321,124 @@ def synthesize_untracked_diff(path: str, text: str, *, truncated: bool) -> str:
     return "\n".join([*header, *body])
 
 
+def _snapshot_entry(path: Path) -> SnapshotEntry | None:
+    try:
+        stat = path.stat()
+        size = stat.st_size
+        if size <= MAX_FILE_BYTES:
+            data = path.read_bytes()
+            digest = hashlib.sha256(data).hexdigest()
+        else:
+            data = None
+            # Large artifacts only need reliable change detection; hashing a
+            # multi-gigabyte video on every refresh would freeze the sidebar.
+            digest = f"stat:{size}:{stat.st_mtime_ns}"
+    except (OSError, PermissionError):
+        return None
+    return SnapshotEntry(
+        digest=digest,
+        size=size,
+        data=data,
+        binary=bool(data is not None and b"\0" in data[:8192]),
+    )
+
+
+def _capture_snapshot_sync(cwd: Path, excludes: tuple[str, ...]) -> WorkspaceSnapshot:
+    root = Path(cwd).expanduser().resolve()
+    files: dict[str, SnapshotEntry] = {}
+    retained_bytes = 0
+    for parent, directories, names in os.walk(root, followlinks=False):
+        directories[:] = [name for name in directories if name not in excludes]
+        directories.sort(key=str.casefold)
+        base = Path(parent)
+        for name in sorted(names, key=str.casefold):
+            if len(files) >= MAX_SNAPSHOT_FILES:
+                return WorkspaceSnapshot(root=root, files=files)
+            absolute = base / name
+            relative = absolute.relative_to(root).as_posix()
+            if is_excluded(relative, excludes) or absolute.is_symlink():
+                continue
+            entry = _snapshot_entry(absolute)
+            if entry is not None:
+                if entry.data is not None:
+                    if retained_bytes + len(entry.data) <= MAX_SNAPSHOT_CONTENT_BYTES:
+                        retained_bytes += len(entry.data)
+                    else:
+                        entry = SnapshotEntry(entry.digest, entry.size, None, entry.binary)
+                files[relative] = entry
+    return WorkspaceSnapshot(root=root, files=files)
+
+
+async def capture_snapshot(
+    cwd: Path, *, excludes: tuple[str, ...] = DEFAULT_EXCLUDES
+) -> WorkspaceSnapshot:
+    """Capture the non-git baseline off the event loop."""
+
+    return await asyncio.to_thread(_capture_snapshot_sync, cwd, excludes)
+
+
+def _text_lines(data: bytes | None) -> list[str] | None:
+    if data is None or b"\0" in data[:8192]:
+        return None
+    return data.decode("utf-8", "replace").splitlines()
+
+
+def _line_counts(before: bytes | None, after: bytes | None) -> tuple[int, int]:
+    old = _text_lines(before)
+    new = _text_lines(after)
+    if old is None or new is None:
+        return 0, 0
+    additions = deletions = 0
+    for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, old, new).get_opcodes():
+        if tag in ("replace", "delete"):
+            deletions += i2 - i1
+        if tag in ("replace", "insert"):
+            additions += j2 - j1
+    return additions, deletions
+
+
+def _snapshot_changes_sync(
+    cwd: Path,
+    baseline: WorkspaceSnapshot,
+    limit: int,
+    excludes: tuple[str, ...],
+) -> dict[str, Any]:
+    current = _capture_snapshot_sync(cwd, excludes)
+    files: list[dict[str, Any]] = []
+    for path in sorted(set(baseline.files) | set(current.files), key=str.casefold):
+        old = baseline.files.get(path)
+        new = current.files.get(path)
+        if old is not None and new is not None and old.digest == new.digest:
+            continue
+        status = "added" if old is None else "deleted" if new is None else "modified"
+        additions, deletions = _line_counts(old.data if old else b"", new.data if new else b"")
+        binary = bool((old and old.binary) or (new and new.binary))
+        files.append({
+            "path": path,
+            "display": path,
+            "status": status,
+            "additions": additions,
+            "deletions": deletions,
+            "binary": binary,
+            "staged": False,
+            "untracked": old is None,
+            "oversized": bool((old and old.data is None) or (new and new.data is None)),
+        })
+    payload = {
+        "cwd": str(current.root),
+        "repo": False,
+        "root": str(current.root),
+        "branch": None,
+        "files": files[:limit],
+        "total": len(files),
+        "truncated": len(files) > limit,
+        "error": None,
+        "source": "session-snapshot",
+    }
+    payload["sessionFiles"] = payload["files"]
+    return payload
+
+
 # ----------------------------------------------------------------------
 # git 调用
 # ----------------------------------------------------------------------
@@ -392,6 +537,7 @@ async def directory(
 async def changes(
     cwd: Path,
     *,
+    baseline: WorkspaceSnapshot | None = None,
     limit: int = 300,
     timeout: float = 20.0,
     excludes: tuple[str, ...] = DEFAULT_EXCLUDES,
@@ -411,6 +557,10 @@ async def changes(
     try:
         root = await repo_root(cwd, timeout=timeout)
         if root is None:
+            if baseline is not None and baseline.root == Path(cwd).expanduser().resolve():
+                return await asyncio.to_thread(
+                    _snapshot_changes_sync, cwd, baseline, limit, excludes
+                )
             base["error"] = "当前工作区不是 git 仓库，只能看本轮会话触碰的文件"
             return base
         code, status_text, status_err = await _git(
@@ -476,6 +626,11 @@ async def changes(
         base["total"] = len(files)
         base["truncated"] = len(files) > limit
         base["files"] = files[:limit]
+        if baseline is not None and baseline.root == Path(cwd).expanduser().resolve():
+            session_changes = await asyncio.to_thread(
+                _snapshot_changes_sync, cwd, baseline, limit, excludes
+            )
+            base["sessionFiles"] = session_changes["files"]
         return base
     except WorkspaceFileError as exc:
         base["error"] = str(exc)
@@ -489,11 +644,16 @@ async def diff(
     cwd: Path,
     path: str,
     *,
+    baseline: WorkspaceSnapshot | None = None,
     context: int = 3,
     timeout: float = 20.0,
     max_bytes: int = MAX_FILE_BYTES,
 ) -> dict[str, Any]:
     """单个文件的统一差异（未跟踪文件合成「整文件新增」）。"""
+
+    root = await repo_root(cwd, timeout=timeout)
+    if root is None and baseline is not None:
+        return await asyncio.to_thread(_snapshot_diff_sync, cwd, path, baseline, context)
 
     target, display, repo_relative = _resolve(cwd, path)
     result: dict[str, Any] = {
@@ -507,7 +667,6 @@ async def diff(
         "deletions": None,
         "error": None,
     }
-    root = await repo_root(cwd, timeout=timeout)
     if root is not None:
         # 用仓库根再解析一次，这样 `../` 形式的路径与 git 的相对路径都能对上。
         target, display, repo_relative = _resolve(cwd, path, extra_root=root)
@@ -574,6 +733,57 @@ async def diff(
         return result
 
     result["error"] = "这个文件和 HEAD 相比没有改动"
+    return result
+
+
+def _snapshot_diff_sync(
+    cwd: Path, path: str, baseline: WorkspaceSnapshot, context: int
+) -> dict[str, Any]:
+    root = Path(cwd).expanduser().resolve()
+    raw = path.replace("\\", "/")
+    while raw.startswith("./"):
+        raw = raw[2:]
+    target = (root / raw).resolve()
+    try:
+        relative = target.relative_to(root).as_posix()
+    except ValueError as exc:
+        raise WorkspaceFileError(f"路径在工作区之外：{path}") from exc
+    old = baseline.files.get(relative)
+    new = _snapshot_entry(target) if target.is_file() else None
+    if old is None and new is None:
+        raise WorkspaceFileError(f"文件不存在：{path}")
+    binary = bool((old and old.binary) or (new and new.binary))
+    result: dict[str, Any] = {
+        "path": relative,
+        "absolute": str(target),
+        "diff": "",
+        "binary": binary,
+        "untracked": old is None,
+        "truncated": bool((old and old.data is None) or (new and new.data is None)),
+        "additions": 0,
+        "deletions": 0,
+        "error": None,
+    }
+    if binary:
+        result["error"] = "二进制文件已变化，无法预览文本差异"
+        return result
+    old_lines = _text_lines(old.data if old else b"")
+    new_lines = _text_lines(new.data if new else b"")
+    if old_lines is None or new_lines is None:
+        result["error"] = "文件过大，只能显示已修改状态"
+        return result
+    unified = list(difflib.unified_diff(
+        old_lines,
+        new_lines,
+        fromfile=f"a/{relative}" if old else "/dev/null",
+        tofile=f"b/{relative}" if new else "/dev/null",
+        n=max(int(context), 0),
+        lineterm="",
+    ))
+    result["diff"] = "\n".join(unified)
+    result.update(_diff_counts(result["diff"]))
+    if not unified:
+        result["error"] = "这个文件与会话开始时相比没有改动"
     return result
 
 

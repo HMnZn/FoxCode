@@ -65,6 +65,14 @@ export function truncate(text: string, max: number): string {
   return `${text.slice(0, max - 1)}…`
 }
 
+/** Render legacy skill invocations without exposing the injected SKILL.md body. */
+export function displayUserText(text: string): string {
+  const match = /^\s*<skill\s+[^>]*name=(?:"([^"]+)"|'([^']+)')[^>]*>[\s\S]*?<\/skill>\s*([\s\S]*)$/i.exec(text)
+  if (!match) return text
+  const task = (match[3] ?? '').trim()
+  return task || `使用技能 · ${match[1] ?? match[2]}`
+}
+
 export function pluralize(count: number, one: string, many = `${one}s`): string {
   return count === 1 ? one : many
 }

@@ -26,6 +26,7 @@ from fox_serve.tests._tmp import temp_dir as _temp_dir  # noqa: E402
 from fox_serve.workspace_files import (  # noqa: E402
     WorkspaceFileError,
     _resolve,
+    capture_snapshot,
     changes,
     directory,
     diff,
@@ -194,6 +195,36 @@ class ResolveGuardTests(unittest.IsolatedAsyncioTestCase):
                 await read(base, "missing.txt")
             with self.assertRaises(WorkspaceFileError):
                 await read(base, ".")
+        finally:
+            _drop(base)
+
+    async def test_non_git_snapshot_reports_only_real_edits_and_provides_diff(self) -> None:
+        base = _temp_dir("plain-workspace-")
+        try:
+            source = base / "page.html"
+            source.write_text("<h1>before</h1>\n", encoding="utf-8")
+            snapshot = await capture_snapshot(base)
+
+            # Reading/listing does not change the snapshot result.
+            await directory(base)
+            await read(base, "page.html")
+            with unittest.mock.patch.object(workspace_files, "repo_root", new=_no_repo):
+                clean = await changes(base, baseline=snapshot)
+            self.assertEqual(clean["files"], [])
+
+            source.write_text("<h1>after</h1>\n", encoding="utf-8")
+            (base / "new.txt").write_text("new\n", encoding="utf-8")
+            with unittest.mock.patch.object(workspace_files, "repo_root", new=_no_repo):
+                payload = await changes(base, baseline=snapshot)
+                patch = await diff(base, "page.html", baseline=snapshot)
+            self.assertIsNone(payload["error"])
+            self.assertFalse(payload["repo"])
+            self.assertEqual(
+                {item["path"]: item["status"] for item in payload["files"]},
+                {"new.txt": "added", "page.html": "modified"},
+            )
+            self.assertIn("-<h1>before</h1>", patch["diff"])
+            self.assertIn("+<h1>after</h1>", patch["diff"])
         finally:
             _drop(base)
 

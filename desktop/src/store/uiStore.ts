@@ -97,6 +97,9 @@ interface UiStore extends Prefs {
   drafts: Record<string, string>
   setDraft(key: string, value: string): void
   clearDraft(key: string): void
+  /** Explicit skill selected for a draft; selection alone never sends a message. */
+  selectedSkills: Record<string, string>
+  setSelectedSkill(key: string, name: string | null): void
 }
 
 const initial = loadPrefs()
@@ -121,6 +124,7 @@ export const useUi = create<UiStore>((set, get) => {
     view: 'chat',
     paletteOpen: false,
     drafts: {},
+    selectedSkills: {},
 
     setView: (view) => set({ view, paletteOpen: false }),
     setChatView: (chatView) => {
@@ -198,6 +202,13 @@ export const useUi = create<UiStore>((set, get) => {
         const drafts = { ...state.drafts }
         delete drafts[key]
         return { drafts }
+      }),
+    setSelectedSkill: (key, name) =>
+      set((state) => {
+        const selectedSkills = { ...state.selectedSkills }
+        if (name) selectedSkills[key] = name
+        else delete selectedSkills[key]
+        return { selectedSkills }
       }),
   }
 })

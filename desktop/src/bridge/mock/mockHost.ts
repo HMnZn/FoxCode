@@ -829,7 +829,7 @@ export class MockHost implements FoxBridge {
       case 'run_command':
         return this.runCommand(command.params.name, command.params.arguments ?? '')
       case 'invoke_skill':
-        return this.invokeSkill(command.params.name)
+        return this.invokeSkill(command.params.name, command.params.instructions ?? '')
       case 'model.select': {
         const model = MODELS.find((m) => m.id === command.params.reference)
         if (!model) throw new Error(`Unknown model: ${command.params.reference}`)
@@ -1423,12 +1423,17 @@ export class MockHost implements FoxBridge {
     return `command ${name} ${args}`.trim()
   }
 
-  private async invokeSkill(name: string): Promise<unknown> {
+  private async invokeSkill(name: string, instructions: string): Promise<unknown> {
+    if (!instructions.trim()) throw new Error('调用技能前需要填写任务说明')
+    this.emit({
+      type: 'message_end',
+      message: { role: 'user', content: [{ type: 'text', text: instructions }] },
+    })
     this.emit({
       type: 'message_end',
       message: {
         role: 'assistant',
-        content: [{ type: 'text', text: `已调用技能 \`${name}\`，把它的说明作为一次提示注入当前会话。` }],
+        content: [{ type: 'text', text: `已使用技能 \`${name}\` 完成任务。` }],
         stopReason: 'stop',
       },
     })

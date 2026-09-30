@@ -217,6 +217,10 @@ class ServeHost:
         #: 少了这个信号，一轮如果在模型请求里静默卡住，前端会永远停在「生成中」。
         self._agent_running = False
         self._last_frame_at = self._started_at
+        # Baseline for workspaces without git.  Unlike tool-argument guessing,
+        # this catches writes performed through shell commands and ignores reads.
+        self._workspace_snapshot: workspace_files.WorkspaceSnapshot | None = None
+        self._workspace_snapshots: dict[int, workspace_files.WorkspaceSnapshot] = {}
 
     # ------------------------------------------------------------------
     # 生命周期
@@ -254,6 +258,7 @@ class ServeHost:
         }
         self._policy.set_cwd(self._runtime.cwd)
         self._sessions = SessionIndex(cwd=self._runtime.cwd, user_dir=self.user_dir)
+        await self._reset_workspace_snapshot(self._runtime)
         self._register_runtime(self._runtime)
 
         if self.thinking:
@@ -295,6 +300,7 @@ class ServeHost:
             except Exception as exc:  # noqa: BLE001
                 self._log(f"关闭 runtime 时出错：{type(exc).__name__}: {exc}")
         self._runtimes.clear()
+        self._workspace_snapshots.clear()
         self._running_runtimes.clear()
         self._unsubscribe = None
         self._runtime = None
@@ -391,6 +397,7 @@ class ServeHost:
 
     def _activate_runtime(self, runtime: Any) -> None:
         self._runtime = runtime
+        self._workspace_snapshot = self._workspace_snapshots.get(id(runtime))
         self._register_runtime(runtime)
         self._unsubscribe = self._runtime_unsubscribes.get(id(runtime))
         self._agent_running = id(runtime) in self._running_runtimes
@@ -403,6 +410,16 @@ class ServeHost:
             self._policy.reset_allowlist()
             self._policy.set_cwd(runtime.cwd)
         self._sessions = SessionIndex(cwd=runtime.cwd, user_dir=self.user_dir)
+
+    async def _reset_workspace_snapshot(self, runtime: Any | None = None) -> None:
+        """Start a fresh edited-file baseline for the active conversation."""
+
+        owner = runtime or self._runtime
+        root = Path(getattr(owner, "cwd", self.cwd))
+        snapshot = await workspace_files.capture_snapshot(root)
+        self._workspace_snapshots[id(owner)] = snapshot
+        if owner is self._runtime:
+            self._workspace_snapshot = snapshot
 
     def _build_runtime(
         self,
@@ -695,6 +712,7 @@ class ServeHost:
         if self._agent_running:
             candidate = self._build_runtime(cwd=self.cwd, session_file=path)
             self._activate_runtime(candidate)
+            await self._reset_workspace_snapshot(candidate)
             self._emit_session_start()
             replayed = self._replay_current_session()
             self._log(f"后台保留原任务，打开会话 {path.name}，回放 {replayed} 条消息")
@@ -702,6 +720,7 @@ class ServeHost:
             return summary or {"id": session_id_from_path(path), "file": str(path), "title": session_id_from_path(path)}
         old_key = self._runtime_key(runtime)
         await runtime.switch_session(str(path))
+        await self._reset_workspace_snapshot(runtime)
         self._runtimes.pop(old_key, None)
         self._register_runtime(runtime)
         assert self._policy is not None
@@ -731,6 +750,7 @@ class ServeHost:
             await runtime.new_session()
             self._runtimes.pop(old_key, None)
             self._register_runtime(runtime)
+        await self._reset_workspace_snapshot(runtime)
         path = self._current_session_path(runtime)
         assert self._policy is not None
         self._policy.reset_allowlist()
@@ -836,6 +856,7 @@ class ServeHost:
         from_id = params.get("fromId") or params.get("from_id")
         old_key = self._runtime_key(runtime)
         path = await runtime.fork(str(from_id) if from_id else None)
+        await self._reset_workspace_snapshot(runtime)
         self._runtimes.pop(old_key, None)
         self._register_runtime(runtime)
         self._emit_session_start()
@@ -1150,12 +1171,44 @@ class ServeHost:
         name = str(params.get("name") or "").strip()
         if not name:
             raise HostError("invoke_skill 需要 name")
-        instructions = str(params.get("instructions") or "")
+        instructions = str(params.get("instructions") or "").strip()
+        if not instructions:
+            raise HostError("调用技能前需要提供具体任务，选择技能本身不会发送消息")
+        if self._agent_running:
+            raise HostError("当前任务仍在运行，请结束后再调用技能")
+        skills = getattr(getattr(runtime, "agent_session", None), "skills", [])
+        if not any(getattr(skill, "name", None) == name for skill in skills):
+            raise HostError(f"Unknown skill: {name}")
+
+        # Like a normal prompt, a skill run may take minutes.  Return to the
+        # renderer immediately and let runtime frames carry progress/results.
+        self._agent_running = True
+        self._running_runtimes.add(id(runtime))
+        task = self._spawn_task(
+            self._run_skill(runtime, name, instructions), name=f"skill:{name}"
+        )
+        marker = id(runtime)
+        self._runtime_tasks[marker] = task
+        task.add_done_callback(
+            lambda done: self._runtime_tasks.pop(marker, None)
+            if self._runtime_tasks.get(marker) is done
+            else None
+        )
+        return {"queued": "skill", "name": name}
+
+    async def _run_skill(self, runtime: Any, name: str, instructions: str) -> None:
         try:
-            result = await runtime.invoke_skill(name, instructions)
-        except ValueError as exc:
-            raise HostError(str(exc)) from exc
-        return {"ok": True, "result": to_jsonable(result)}
+            await runtime.invoke_skill(name, instructions)
+        except asyncio.CancelledError:  # pragma: no cover - host shutdown
+            raise
+        except Exception as exc:  # noqa: BLE001 - surface failures as timeline frames
+            self._log(f"skill {name} 失败：{type(exc).__name__}: {exc}")
+            if runtime is self._runtime:
+                self._emit_frame({"type": "error", "error": f"{type(exc).__name__}: {exc}"})
+        finally:
+            self._running_runtimes.discard(id(runtime))
+            if runtime is self._runtime:
+                self._agent_running = False
 
     async def _reload_runtime(self) -> None:
         """重载设置/扩展，并刷新 cwd 绑定的工具表。"""
@@ -1358,6 +1411,7 @@ class ServeHost:
         self._policy.set_cwd(runtime.cwd)
         self.cwd = Path(runtime.cwd)
         self._sessions = SessionIndex(cwd=runtime.cwd, user_dir=self.user_dir)
+        await self._reset_workspace_snapshot(runtime)
         self._emit_session_start()
         return {"cwd": str(runtime.cwd)}
 
@@ -1377,7 +1431,9 @@ class ServeHost:
     async def _cmd_files_changes(self, params: dict[str, Any]) -> dict[str, Any]:
         limit = params.get("limit")
         count = int(limit) if isinstance(limit, int) and limit > 0 else 300
-        return await workspace_files.changes(self._workspace_root(), limit=count)
+        return await workspace_files.changes(
+            self._workspace_root(), limit=count, baseline=self._workspace_snapshot
+        )
 
     async def _cmd_files_list(self, params: dict[str, Any]) -> dict[str, Any]:
         path = str(params.get("path") or "").strip()
@@ -1398,6 +1454,7 @@ class ServeHost:
                 self._workspace_root(),
                 path,
                 context=int(context) if isinstance(context, int) else 3,
+                baseline=self._workspace_snapshot,
             )
         except workspace_files.WorkspaceFileError as exc:
             raise HostError(str(exc)) from exc

@@ -137,10 +137,15 @@ function SourceBody({ text, path, truncated }: { text: string; path: string; tru
  *
  * - 图片：宿主已经把 base64 放进 `content.data`（`file://` 在开发模式下会被
  *   webSecurity 拦掉，所以走宿主读盘这一条路）。
- * - HTML：进 `sandbox=""` 的 iframe —— 允许样式与布局，不允许脚本。
+ * - HTML：进不具备同源权限的 iframe；允许页面自己的脚本，阻断网络、弹窗与宿主访问。
  * - SVG：文本内联成 `data:` URL 交给浏览器画（`<img>` 里的 SVG 本来也不跑脚本）。
  * - Markdown / JSON：复用正文那两套渲染器，配色与聊天里一致。
  */
+const PREVIEW_CSP =
+  '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; ' +
+  "script-src 'unsafe-inline' blob:; style-src 'unsafe-inline'; " +
+  'img-src data: blob:; media-src data: blob:; font-src data:; worker-src blob:">'
+
 const FIT_STYLE =
   '<style>html,body{max-width:100%;overflow-x:hidden}' +
   'img,svg,video,canvas{max-width:100% !important;height:auto !important}' +
@@ -154,16 +159,19 @@ const FIT_STYLE =
  * 插在 `</head>` 之前 —— 排在页面自己的样式后面，同权重时我们说了算。
  */
 export function fitHtml(html: string): string {
+  const head = /<head[^>]*>/i.exec(html)
   const close = /<\/head\s*>/i.exec(html)
-  if (close) {
-    return `${html.slice(0, close.index)}${FIT_STYLE}${html.slice(close.index)}`
+  if (head && close && head.index < close.index) {
+    const afterHead = head.index + head[0].length
+    // CSP must precede page scripts; the fit style stays last so it wins ties.
+    return `${html.slice(0, afterHead)}${PREVIEW_CSP}${html.slice(afterHead, close.index)}${FIT_STYLE}${html.slice(close.index)}`
   }
   const root = /<html[^>]*>/i.exec(html)
   if (root) {
     const at = root.index + root[0].length
-    return `${html.slice(0, at)}${FIT_STYLE}${html.slice(at)}`
+    return `${html.slice(0, at)}<head>${PREVIEW_CSP}${FIT_STYLE}</head>${html.slice(at)}`
   }
-  return FIT_STYLE + html
+  return FIT_STYLE + PREVIEW_CSP + html
 }
 
 function RenderBody({
@@ -237,7 +245,8 @@ function RenderBody({
     return (
       <iframe
         title={`预览 ${path}`}
-        sandbox=""
+        sandbox="allow-scripts"
+        referrerPolicy="no-referrer"
         srcDoc={fitHtml(content.text)}
         className="min-h-0 w-full flex-1 border-0 bg-white"
       />

@@ -14,6 +14,7 @@ import {
   type TimelineState,
 } from '@/store/timeline'
 import { toast, useToasts } from '@/store/toastStore'
+import { useFiles } from '@/store/filesStore'
 import type {
   ExtensionScope,
   ExecutionMode,
@@ -96,7 +97,7 @@ export interface SessionStore {
   deleteSession(id: string): Promise<void>
   setExtension(id: string, enabled: boolean, scope?: ExtensionScope): Promise<void>
   runCommand(name: string, args?: string): Promise<void>
-  invokeSkill(name: string): Promise<void>
+  invokeSkill(name: string, instructions: string): Promise<void>
   exportSession(format: 'json' | 'markdown'): Promise<void>
   clearTimeline(): void
   dropQueued(id: string): void
@@ -263,7 +264,10 @@ export const useSession = create<SessionStore>((set, get) => {
         const timeline = applyFrame(useSession.getState().timeline, frame)
         set({ timeline })
         syncPermissionToasts(timeline.permissions.map((request) => request.id))
-        if (frame.type === 'agent_end') void get().refreshHost()
+        if (frame.type === 'agent_end') {
+          void get().refreshHost()
+          void useFiles.getState().refresh()
+        }
       })
 
       BRIDGE.onPermission((request) => {
@@ -787,8 +791,13 @@ export const useSession = create<SessionStore>((set, get) => {
       await get().refreshHost()
     },
 
-    invokeSkill: async (name) => {
-      await get().send({ method: 'invoke_skill', params: { name } })
+    invokeSkill: async (name, instructions) => {
+      try {
+        await get().send({ method: 'invoke_skill', params: { name, instructions } })
+      } catch (error) {
+        fail(error, `调用技能 ${name}`)
+        throw error
+      }
     },
 
     exportSession: async (format) => {

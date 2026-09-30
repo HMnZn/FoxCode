@@ -1,8 +1,9 @@
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen } from '@testing-library/react'
 import { MessageList } from './MessageList'
 import type { Block, PlanBlock, ToolCallState, ToolsBlock } from '@/store/timeline'
 import { useSession } from '@/store/sessionStore'
+import { useFiles } from '@/store/filesStore'
 
 function call(name: string, id: string, status: ToolCallState['status'] = 'success'): ToolCallState {
   return { id, name, args: { path: 'packages/fox_agent_core/README.md' }, status, startedAt: 0, updates: [] }
@@ -17,6 +18,10 @@ function renderBlocks(blocks: Block[]) {
 }
 
 describe('MessageList tool group', () => {
+  beforeEach(() => {
+    useFiles.setState({ changes: null, loading: false, error: null, fetchedAt: null, previews: {} })
+  })
+
   it('lists the called tool names in one collapsed row', () => {
     renderBlocks([toolsBlock([call('read_file', 'c1'), call('grep', 'c2'), call('grep', 'c3')])])
 
@@ -81,5 +86,32 @@ describe('MessageList tool group', () => {
     expect(screen.getByText('控制消息大小')).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: /开始实施/ }))
     expect(answerPlan).toHaveBeenCalledWith('call-plan', 'accept')
+  })
+
+  it('shows the actual edited-file summary after a completed run', () => {
+    useFiles.setState({
+      changes: {
+        cwd: 'C:/work', repo: false, files: [], total: 0, truncated: false,
+        sessionFiles: [{
+          path: 'page.html', display: 'page.html', status: 'modified', additions: 5,
+          deletions: 2, binary: false, staged: false, untracked: false,
+        }],
+      },
+    })
+    renderBlocks([{ kind: 'user', id: 'u1', ts: 0, text: '修改页面' }])
+
+    expect(screen.getByText('已编辑 1 个文件')).toBeTruthy()
+    expect(screen.getByText('page.html')).toBeTruthy()
+    expect(screen.getAllByText('+5')).toHaveLength(2)
+    expect(screen.getAllByText('−2')).toHaveLength(2)
+  })
+
+  it('collapses a legacy raw skill payload to the skill name', () => {
+    renderBlocks([{
+      kind: 'user', id: 'legacy-skill', ts: 0,
+      text: '<skill name="api-request-planner" location="x">\nsecret body\n</skill>',
+    }])
+    expect(screen.getByText('使用技能 · api-request-planner')).toBeTruthy()
+    expect(screen.queryByText(/secret body/)).toBeNull()
   })
 })

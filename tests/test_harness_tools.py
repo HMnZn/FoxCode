@@ -94,9 +94,26 @@ class ToolTests(unittest.IsolatedAsyncioTestCase):
         harness = AgentSession(AgentSessionConfig(model=FAUX_MODEL, tools=[], cwd=self.path, skill_options=options, stream_fn=stream))
         self.assertNotIn("<name>example</name>", harness.state.system_prompt)
         await harness.invoke_skill("example", "Do this task")
+        self.assertIn("Follow these steps", contexts[0].system_prompt)
         prompt = contexts[0].messages[0].content[0].text
-        self.assertIn("Follow these steps", prompt)
-        self.assertIn("Do this task", prompt)
+        self.assertEqual(prompt, "Do this task")
+        self.assertNotIn("Follow these steps", prompt)
+        self.assertNotIn("Follow these steps", harness.state.system_prompt)
+
+    async def test_explicit_skill_requires_a_real_task(self):
+        skill_dir = self.path / ".foxcode/skills/example"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: example\ndescription: test skill\n---\nFollow these steps."
+        )
+        harness = AgentSession(AgentSessionConfig(
+            model=FAUX_MODEL,
+            tools=[],
+            cwd=self.path,
+            skill_options=LoadSkillsOptions(cwd=str(self.path), user_dir=str(self.path / "user")),
+        ))
+        with self.assertRaisesRegex(ValueError, "requires task instructions"):
+            await harness.invoke_skill("example")
 
     @unittest.skipUnless(os.name == "posix", "symlink creation requires POSIX")
     async def test_skill_symlink_cycle(self):

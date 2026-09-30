@@ -75,7 +75,9 @@ export function SkillsPage() {
 
   const confirmInvoke = () => {
     if (callingName == null) return
-    void invokeSkill(callingName)
+    const task = instructions.trim()
+    if (!task) return
+    void invokeSkill(callingName, task)
     closeDialog()
   }
 
@@ -243,25 +245,28 @@ export function SkillsPage() {
               <Button variant="ghost" onClick={closeDialog}>
                 取消
               </Button>
-              <Button variant="primary" iconLeft={<Sparkles size={13} aria-hidden="true" />} onClick={confirmInvoke}>
+              <Button
+                variant="primary"
+                iconLeft={<Sparkles size={13} aria-hidden="true" />}
+                disabled={!instructions.trim()}
+                onClick={confirmInvoke}
+              >
                 调用
               </Button>
             </>
           }
         >
           <div className="flex flex-col gap-1.5">
-            <span className="text-2xs text-fg-muted">附加说明（可留空）</span>
+            <span className="text-2xs text-fg-muted">任务说明</span>
             <TextArea
               minRows={3}
               maxRows={8}
               value={instructions}
               onChange={(event) => setInstructions(event.target.value)}
-              placeholder="例如：只关注鉴权流程，先给出调用链再给结论。"
+              placeholder="描述希望这个技能完成的具体任务…"
               aria-label="附加说明"
             />
-            <span className="text-2xs text-fg-subtle">
-              当前协议下 <span className="font-mono">invoke_skill</span> 只接收技能名称，这段文字仅在宿主支持透传指令时才生效。
-            </span>
+            <span className="text-2xs text-fg-subtle">技能正文会作为本轮系统上下文加载，不会作为用户消息直接发送。</span>
           </div>
         </Dialog>
       </div>

@@ -143,21 +143,12 @@ describe('Inspector · 文件标签', () => {
     expect(screen.getByLabelText('工作区面板').style.width).toBe('360px')
   })
 
-  it('lists the files this session touched and previews them as source', async () => {
+  it('does not mistake a read-only tool call for an edited file', async () => {
     useSession.setState({ timeline: touchedTimeline() })
     render(<Inspector />)
-    const header = await screen.findByText('本轮涉及 1 个文件')
-    expect(header).toBeTruthy()
-    // 列表里显示的是缩短后的路径，用 title（完整路径）定位那一行。
-    fireEvent.click(screen.getByTitle('packages/fox_coding_agent/src/core/runtime.py'))
-    expect(await screen.findByRole('tab', { name: '原文' })).toBeTruthy()
-    const panel = screen.getByLabelText('工作区面板')
-    // 高亮会把一行拆成多个 token span，所以按 textContent 全等匹配那一行。
-    expect(
-      within(panel).getByText(
-        (_content, element) => element?.textContent === "export const name = 'runtime.py'",
-      ),
-    ).toBeTruthy()
+    await screen.findByText(pathRow('desktop/src/components/layout/Inspector.tsx'))
+    expect(screen.queryByText(/本轮涉及/)).toBeNull()
+    expect(screen.queryByTitle('packages/fox_coding_agent/src/core/runtime.py')).toBeNull()
   })
 
   it('renders an image instead of reporting it as a binary blob', async () => {

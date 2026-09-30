@@ -224,6 +224,24 @@ class RenameTests(unittest.TestCase):
         with self.assertRaises(FileNotFoundError):
             self.index.rename("nope", "标题")
 
+    def test_legacy_skill_payload_uses_the_skill_name_as_automatic_title(self) -> None:
+        path = self.sessions_dir / "session-skill" / "session.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        lines = [
+            json.dumps({"_meta": {"cwd": str(self.root), "timestamp": "2026-09-27T22:00:00"}}),
+            json.dumps({
+                "type": "message",
+                "data": {"role": "user", "content": [{
+                    "type": "text",
+                    "text": '<skill name="api-request-planner" location="x">\nbody\n</skill>',
+                }]},
+            }),
+        ]
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        session = read_session_file(path)
+        assert session is not None
+        self.assertEqual(session.title, "技能 · api-request-planner")
+
     def test_rename_refuses_files_outside_the_session_dirs(self) -> None:
         stranger = self.root / "elsewhere.jsonl"
         stranger.write_text(json.dumps({"_meta": {"cwd": str(self.root)}}) + "\n", encoding="utf-8")

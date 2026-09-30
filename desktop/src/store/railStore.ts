@@ -114,7 +114,7 @@ export const useRail = create<RailState>((set, get) => ({
 
   reset: () => {
     // 换工作区等于换了一整套相对路径：旧目录的预览与那里的 shell 都不再适用。
-    useFiles.getState().closeAll()
+    useFiles.getState().reset()
     useTerminal.getState().stop()
     set({ tabs: [HOME_TAB], activeId: HOME_TAB.id })
   },

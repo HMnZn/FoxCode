@@ -1,10 +1,10 @@
 /**
- * 「文件」标签：工作区目录浏览 + 工作区改动 + 本轮涉及的文件。
+ * 「文件」标签：工作区目录浏览 + 工作区改动。
  *
  * 点一行不会在这里就地打开预览 —— 每个文件都开成右侧工作台自己的标签
  * （见 `railStore.openFile`），这样浏览、看文件、跑命令三件事可以同时在。
  */
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import {
   ChevronLeft,
   FileCode2,
@@ -16,7 +16,7 @@ import {
 import { EmptyState, IconButton, Tooltip } from '@/components/ui'
 import { getBridge } from '@/bridge'
 import { preferredMode } from '@/lib/preview'
-import { basename, shortPath } from '@/lib/format'
+import { basename } from '@/lib/format'
 import { useFiles } from '@/store/filesStore'
 import { useRail } from '@/store/railStore'
 import { useSession } from '@/store/sessionStore'
@@ -38,14 +38,6 @@ const STATUS_META: Record<FileChangeStatus, { letter: string; label: string; cla
     conflicted: { letter: 'U', label: '冲突', className: 'text-danger' },
     untracked: { letter: '?', label: '未跟踪', className: 'text-fg-subtle' },
   }
-
-interface TouchedFile {
-  path: string
-  count: number
-  tools: string[]
-  errors: number
-  lastTs: number
-}
 
 function Stat({ additions, deletions }: { additions: number; deletions: number }) {
   if (!additions && !deletions) return null
@@ -91,36 +83,11 @@ function ChangeRow({ change, onOpen }: { change: FileChange; onOpen: () => void 
   )
 }
 
-function TouchedRow({ file, onOpen }: { file: TouchedFile; onOpen: () => void }) {
-  return (
-    <button
-      type="button"
-      onClick={onOpen}
-      title={file.path}
-      className="flex min-h-[34px] w-full flex-col items-start justify-center gap-0.5 rounded-md px-2 text-left transition-colors hover:bg-interactive"
-    >
-      <span className="w-full truncate font-mono text-[11.5px] text-fg-muted">
-        {shortPath(file.path, 2)}
-      </span>
-      <span className="flex items-center gap-1.5 text-[10.5px] text-fg-subtle">
-        <span className="font-mono">{file.tools.join(' · ')}</span>
-        <span className="opacity-40">·</span>
-        <span>{file.count} 次</span>
-        {file.errors ? (
-          <>
-            <span className="opacity-40">·</span>
-            <span className="text-danger">{file.errors} 次失败</span>
-          </>
-        ) : null}
-      </span>
-    </button>
-  )
-}
-
 export function FilesTab() {
   const timeline = useSession((s) => s.timeline)
   const host = useSession((s) => s.host)
   const toolCalls = timeline.totals.toolCalls
+  const runStatus = timeline.status
   const changes = useFiles((s) => s.changes)
   const loading = useFiles((s) => s.loading)
   const error = useFiles((s) => s.error)
@@ -151,7 +118,7 @@ export function FilesTab() {
   // Agent 刚写完文件，右侧栏应当马上能看到那一行。
   useEffect(() => {
     void refresh()
-  }, [refresh, host?.cwd, toolCalls])
+  }, [refresh, host?.cwd, toolCalls, runStatus])
 
   useEffect(() => {
     setDirectoryPath('')
@@ -160,35 +127,6 @@ export function FilesTab() {
   useEffect(() => {
     void loadDirectory(directoryPath)
   }, [directoryPath, host?.cwd, loadDirectory, toolCalls])
-
-  const touched = useMemo(() => {
-    const map = new Map<string, TouchedFile>()
-    for (const block of timeline.blocks) {
-      if (block.kind !== 'tools') continue
-      for (const call of block.calls) {
-        const args = call.args ?? {}
-        const raw =
-          (typeof args.path === 'string' && args.path) ||
-          (typeof args.file_path === 'string' && args.file_path) ||
-          (typeof args.file === 'string' && args.file) ||
-          ''
-        if (!raw) continue
-        const entry = map.get(raw) ?? {
-          path: raw,
-          count: 0,
-          tools: [],
-          errors: 0,
-          lastTs: call.startedAt,
-        }
-        entry.count += 1
-        if (!entry.tools.includes(call.name)) entry.tools.push(call.name)
-        if (call.isError) entry.errors += 1
-        entry.lastTs = Math.max(entry.lastTs, call.endedAt ?? call.startedAt)
-        map.set(raw, entry)
-      }
-    }
-    return [...map.values()].sort((a, b) => b.lastTs - a.lastTs)
-  }, [timeline.blocks])
 
   const files = changes?.files ?? []
 
@@ -311,30 +249,11 @@ export function FilesTab() {
         </div>
       ) : null}
 
-      {touched.length ? (
-        <>
-          <div className="flex items-center gap-2 border-y border-line px-3 py-2">
-            <h3 className="text-2xs font-medium tracking-wide text-fg-subtle uppercase">
-              本轮涉及 {touched.length} 个文件
-            </h3>
-          </div>
-          <div className="flex flex-col gap-0.5 px-1.5 py-1.5">
-            {touched.map((file) => (
-              <TouchedRow
-                key={file.path}
-                file={file}
-                onOpen={() => openFile(file.path, preferredMode(file.path, 'source'))}
-              />
-            ))}
-          </div>
-        </>
-      ) : null}
-
-      {files.length === 0 && touched.length === 0 && !loading && !error ? (
+      {files.length === 0 && !loading && !error ? (
         <EmptyState
           icon={<FileCode2 size={18} />}
-          title="还没有文件活动"
-          description="Agent 读写文件后，这里会列出工作区改动与本轮触碰过的路径，点一行就会在右边开一个标签。"
+          title="还没有文件改动"
+          description="Agent 修改文件后，这里会列出真实工作区差异；读取文件或执行 ls 不会被误算成编辑。"
         />
       ) : null}
     </div>

@@ -54,7 +54,7 @@ export function CommandPalette() {
   const refreshHost = useSession((s) => s.refreshHost)
   const openSession = useSession((s) => s.openSession)
   const runCommand = useSession((s) => s.runCommand)
-  const invokeSkill = useSession((s) => s.invokeSkill)
+  const setSelectedSkill = useUi((s) => s.setSelectedSkill)
   const recentWorkspaces = useWorkspace((s) => s.recent)
   const pickWorkspace = useWorkspace((s) => s.pick)
   const openWorkspace = useWorkspace((s) => s.open)
@@ -231,7 +231,7 @@ export function CommandPalette() {
         keywords: `skill ${skill.name}`,
         run: () => {
           setView('chat')
-          void invokeSkill(skill.name)
+          setSelectedSkill(host?.sessionFile ?? 'draft', skill.name)
         },
       })),
       ...sessions.slice(0, 6).map((session) => ({
@@ -277,7 +277,7 @@ export function CommandPalette() {
     host?.cwd,
     host?.commands,
     host?.skills,
-    invokeSkill,
+    setSelectedSkill,
     newSession,
     openFilesTab,
     openTerminalTab,

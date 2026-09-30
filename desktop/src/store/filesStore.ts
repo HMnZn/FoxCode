@@ -14,6 +14,7 @@ import { getBridge } from '@/bridge'
 import type { FileContent, FileDiff, WorkspaceChanges } from '@/types/protocol'
 
 const BRIDGE = getBridge()
+let refreshQueued = false
 
 /**
  * 预览的三种视角：差异、文件现在的样子（原文）、以及渲染结果。
@@ -64,7 +65,11 @@ export const useFiles = create<FilesState>((set, get) => ({
 
   async refresh() {
     // 已经在拉就不再叠加请求：预览与回合结束会连着触发好几次。
-    if (get().loading) return
+    // 但要记住最后一次请求，否则工具结束与 agent_end 靠得太近时会永远漏掉最终状态。
+    if (get().loading) {
+      refreshQueued = true
+      return
+    }
     set({ loading: true })
     try {
       const payload = (await BRIDGE.send({ method: 'files.changes' })) as WorkspaceChanges
@@ -76,6 +81,11 @@ export const useFiles = create<FilesState>((set, get) => ({
       })
     } catch (error) {
       set({ error: messageOf(error), loading: false })
+    } finally {
+      if (refreshQueued) {
+        refreshQueued = false
+        queueMicrotask(() => void get().refresh())
+      }
     }
   },
 
@@ -158,6 +168,7 @@ export const useFiles = create<FilesState>((set, get) => ({
   },
 
   reset() {
+    refreshQueued = false
     set({ changes: null, loading: false, error: null, fetchedAt: null, previews: {} })
   },
 }))

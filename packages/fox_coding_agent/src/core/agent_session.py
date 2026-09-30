@@ -117,6 +117,10 @@ class AgentSession(CoreAgentHarness):
         self.cwd = Path(config.cwd).expanduser().resolve()
         self.session = config.session if config.session is not None else SessionManager()
         self._manual_cancel: asyncio.Event | None = None
+        # Explicit skill invocations belong to the system context for exactly
+        # one run.  Keeping the skill body out of the UserMessage prevents it
+        # from becoming the conversation title or a giant user bubble.
+        self._active_skill_context = ""
         tools = list(config.tools) if config.tools is not None else create_coding_tools(self.cwd)
         self._tools = {tool.name: tool for tool in tools}
         self._runtime_tool_names: set[str] = set()
@@ -299,7 +303,25 @@ class AgentSession(CoreAgentHarness):
         skill = next((s for s in self.skills if s.name == name), None)
         if skill is None:
             raise ValueError(f"Unknown skill: {name}")
-        await self.prompt(format_skill_invocation(skill, instructions))
+        task = instructions.strip()
+        if not task:
+            raise ValueError("Invoking a skill requires task instructions")
+        self.activate_skill(skill)
+        try:
+            await self.prompt(task)
+        finally:
+            self.clear_active_skill()
+
+    def activate_skill(self, skill: Skill) -> None:
+        """Inject ``skill`` for the next run without persisting its body as user text."""
+
+        self.ensure_idle()
+        self._active_skill_context = format_skill_invocation(skill)
+        self._refresh_system_prompt()
+
+    def clear_active_skill(self) -> None:
+        self._active_skill_context = ""
+        self._refresh_system_prompt()
 
     async def _prepare_request(self, request):
         context = request["context"]
@@ -497,6 +519,8 @@ class AgentSession(CoreAgentHarness):
             prompt = builder(tools, self.skills, self.cwd)
         if self._effective_interaction_mode == "plan" and PLAN_MODE_SECTION not in prompt:
             prompt = f"{prompt}\n\n{PLAN_MODE_SECTION}"
+        if self._active_skill_context:
+            prompt = f"{prompt}\n\n{self._active_skill_context}"
         return prompt
 
     def prepare_interaction_for_prompt(self, message: str) -> EffectiveInteractionMode:
@@ -580,6 +604,8 @@ class AgentSession(CoreAgentHarness):
             self.state.system_prompt = self._base_system_prompt
             if self._effective_interaction_mode == "plan":
                 self.state.system_prompt += f"\n\n{PLAN_MODE_SECTION}"
+            if self._active_skill_context:
+                self.state.system_prompt += f"\n\n{self._active_skill_context}"
 
     def move_to(self, entry_id: str | None) -> None:
         self.ensure_idle()

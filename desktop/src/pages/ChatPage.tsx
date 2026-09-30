@@ -9,7 +9,7 @@ import { PermissionPrompt } from '@/components/chat/PermissionPrompt'
 import { useSession } from '@/store/sessionStore'
 import { CHAT_VIEW_LABEL, useUi, type ChatView } from '@/store/uiStore'
 import { useWorkspace } from '@/store/workspaceStore'
-import { basename, shortPath } from '@/lib/format'
+import { basename, displayUserText, shortPath } from '@/lib/format'
 import { cn } from '@/lib/cn'
 import { FoxMark } from '@/components/brand/Fox'
 
@@ -20,7 +20,7 @@ const CHAT_VIEWS: ReadonlyArray<{ value: ChatView; label: string }> = [
 
 function headerTitle(blocks: ReturnType<typeof useSession.getState>['timeline']['blocks'], fallback: string) {
   const first = blocks.find((block) => block.kind === 'user')
-  if (first && first.kind === 'user') return first.text.split('\n')[0]?.slice(0, 80) ?? fallback
+  if (first && first.kind === 'user') return displayUserText(first.text).split('\n')[0]?.slice(0, 80) ?? fallback
   return fallback
 }
 

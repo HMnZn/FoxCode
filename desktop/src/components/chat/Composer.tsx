@@ -116,6 +116,8 @@ export interface ComposerProps {
 export function Composer({ draftKey, className, hero = false }: ComposerProps) {
   const draft = useUi((s) => s.drafts[draftKey] ?? '')
   const setDraft = useUi((s) => s.setDraft)
+  const selectedSkill = useUi((s) => s.selectedSkills[draftKey] ?? null)
+  const setSelectedSkill = useUi((s) => s.setSelectedSkill)
   const host = useSession((s) => s.host)
   const timeline = useSession((s) => s.timeline)
   const prompt = useSession((s) => s.prompt)
@@ -254,6 +256,24 @@ export function Composer({ draftKey, className, hero = false }: ComposerProps) {
   const submit = (interrupt = false) => {
     const text = value.trim()
     if (!text && images.length === 0) return
+    if (selectedSkill) {
+      if (!text) {
+        toast.info({ title: '请先描述要交给技能完成的任务' })
+        return
+      }
+      if (busy) {
+        toast.info({ title: '技能会在当前任务结束后才能调用' })
+        return
+      }
+      if (images.length) {
+        toast.warn({ title: '技能调用暂不接收图片', description: '移除图片后发送，或取消技能后按普通消息发送。' })
+        return
+      }
+      setDraft(draftKey, '')
+      setSelectedSkill(draftKey, null)
+      void invokeSkill(selectedSkill, text)
+      return
+    }
     if (text.startsWith('/') && images.length === 0) {
       const [name, ...rest] = text.slice(1).split(/\s+/)
       if (name === SLASH_FILE) {
@@ -483,6 +503,24 @@ export function Composer({ draftKey, className, hero = false }: ComposerProps) {
 
         <QueuedMessages className="rounded-t-panel border-b border-line/70" />
 
+        {selectedSkill ? (
+          <div className="flex items-center gap-2 border-b border-line/70 px-3 py-2 text-xs">
+            <Sparkles size={13} className="shrink-0 text-accent" aria-hidden="true" />
+            <span className="text-fg-subtle">使用技能</span>
+            <span className="min-w-0 truncate rounded-md bg-accent-soft px-2 py-0.5 font-mono text-accent">
+              {selectedSkill}
+            </span>
+            <button
+              type="button"
+              aria-label={`取消技能 ${selectedSkill}`}
+              className="ml-auto grid size-6 place-items-center rounded-md text-fg-subtle hover:bg-interactive hover:text-fg"
+              onClick={() => setSelectedSkill(draftKey, null)}
+            >
+              <X size={12} />
+            </button>
+          </div>
+        ) : null}
+
         {images.length ? (
           <div className="flex gap-2 overflow-x-auto border-b border-line/70 px-3 py-2">
             {images.map((image, index) => (
@@ -588,8 +626,11 @@ export function Composer({ draftKey, className, hero = false }: ComposerProps) {
                 <MenuItem
                   key={skill.name}
                   label={skill.name}
-                  hint={skill.description}
-                  onSelect={() => void invokeSkill(skill.name)}
+                  selected={selectedSkill === skill.name}
+                  onSelect={() => {
+                    setSelectedSkill(draftKey, skill.name)
+                    area.current?.focus()
+                  }}
                 />
               ))
             )}

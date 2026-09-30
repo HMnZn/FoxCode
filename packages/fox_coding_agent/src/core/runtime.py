@@ -417,11 +417,17 @@ class AgentSessionRuntime:
         await self.agent_session.continue_()
 
     async def invoke_skill(self, name, instructions=""):
-        from .skills import format_skill_invocation
         skill = next((s for s in self.agent_session.skills if s.name == name), None)
         if skill is None:
             raise ValueError(f"Unknown skill: {name}")
-        await self.prompt(format_skill_invocation(skill, instructions))
+        task = str(instructions).strip()
+        if not task:
+            raise ValueError("Invoking a skill requires task instructions")
+        self.agent_session.activate_skill(skill)
+        try:
+            await self.prompt(task)
+        finally:
+            self.agent_session.clear_active_skill()
 
     async def invoke_prompt(self, name, arguments=""):
         self._ensure_available()

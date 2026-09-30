@@ -20,6 +20,7 @@ const bridge = useSession.getState().bridge
 describe('Composer · 命令目录', () => {
   beforeEach(async () => {
     useSession.setState({ host: await bridge.info(), timeline: { ...EMPTY_TIMELINE }, queue: [] })
+    useUi.setState({ selectedSkills: {} })
   })
 
   it('offers exactly the two commands worth having in the composer', () => {
@@ -137,5 +138,25 @@ describe('Composer · 命令目录', () => {
     fireEvent.click(await screen.findByRole('menuitem', { name: /沙盒执行/ }))
 
     expect(setExecutionMode).toHaveBeenCalledWith('sandbox')
+  })
+
+  it('selects a skill by name and waits for the actual task before invoking it', async () => {
+    const invokeSkill = vi.fn(async () => undefined)
+    useSession.setState({ invokeSkill })
+    useUi.setState({ drafts: { main: '' }, selectedSkills: {} })
+    render(<Composer draftKey="main" />)
+
+    fireEvent.click(screen.getByRole('button', { name: '调用技能' }))
+    const skill = useSession.getState().host?.skills[0]
+    expect(skill).toBeTruthy()
+    fireEvent.click(await screen.findByRole('menuitem', { name: skill!.name }))
+
+    expect(invokeSkill).not.toHaveBeenCalled()
+    expect(screen.getByText(skill!.name)).toBeTruthy()
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: '检查这个 API 流程' } })
+    fireEvent.click(screen.getByRole('button', { name: '发送' }))
+
+    await waitFor(() => expect(invokeSkill).toHaveBeenCalledWith(skill!.name, '检查这个 API 流程'))
+    expect(screen.queryByText(skill!.name)).toBeNull()
   })
 })

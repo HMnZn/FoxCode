@@ -10,6 +10,7 @@ describe('fitHtml', () => {
     expect(out).toContain(STYLE_MARK)
     expect(out.indexOf('<title>')).toBeLessThan(out.indexOf(STYLE_MARK))
     expect(out.indexOf(STYLE_MARK)).toBeLessThan(out.indexOf('</head>'))
+    expect(out).toContain("script-src 'unsafe-inline' blob:")
   })
 
   it('没有 head 就插在 html 根标签之后', () => {
