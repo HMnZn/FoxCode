@@ -258,7 +258,10 @@ class AgentSession(CoreAgentHarness):
 
     @staticmethod
     def _failure_kind(message: AssistantMessage) -> str | None:
-        if message.stop_reason != "error" or message.content:
+        # Providers can disconnect after streaming part of a text or tool call.
+        # Partial content does not make the response usable: retry it just like
+        # an error received before the first delta.
+        if message.stop_reason != "error":
             return None
         error = (message.error_message or "").lower()
         overflow_terms = (
@@ -273,17 +276,46 @@ class AgentSession(CoreAgentHarness):
         )
         return "retry" if any(term in error for term in retry_terms) else None
 
+    def _failed_attempt(self):
+        """Return the terminal failed assistant, past its paired tool results.
+
+        The loop deliberately pairs a partially streamed tool call with an
+        error ToolResultMessage so the durable transcript remains structurally
+        valid.  Those result messages used to hide the assistant from recovery,
+        causing the configured retry loop to stop early.
+        """
+
+        trailing_results: list[ToolResultMessage] = []
+        for entry in reversed(self.session.get_branch()):
+            if entry.type != "message":
+                continue
+            message = entry.data
+            if isinstance(message, ToolResultMessage):
+                trailing_results.append(message)
+                continue
+            if not isinstance(message, AssistantMessage):
+                return None
+            kind = self._failure_kind(message)
+            if kind is None:
+                return None
+            call_ids = {
+                block.id for block in message.content if isinstance(block, ToolCall)
+            }
+            if trailing_results and any(
+                result.tool_call_id not in call_ids for result in trailing_results
+            ):
+                return None
+            return entry, message, kind
+        return None
+
     async def _run_with_recovery(self, action) -> None:
         await self.run(action)
         for attempt in range(1, self.session_config.model_retry_attempts + 1):
-            entry = self.session.get_entry(self.session.leaf_id) if self.session.leaf_id else None
-            message = entry.data if entry is not None and entry.type == "message" else None
-            if not isinstance(message, AssistantMessage):
+            failed = self._failed_attempt()
+            if failed is None:
                 return
-            kind = self._failure_kind(message)
-            if kind is None:
-                return
-            failed_leaf = entry.id
+            entry, message, kind = failed
+            failed_leaf = self.session.leaf_id
             self.session.move_to(entry.parent_id)
             self.state.messages = self.session.build_context()
             self.state.error_message = None

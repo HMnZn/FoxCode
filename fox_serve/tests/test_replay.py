@@ -164,6 +164,36 @@ class ReplayTest(unittest.TestCase):
         host._replay_current_session()  # noqa: SLF001
         self.assertEqual(self._kinds(frames), ["message_end", "message_end"])
 
+    def test_replay_hides_failed_partial_tool_attempt_but_keeps_audit_entries(self) -> None:
+        entries = [
+            _Entry("message", {"role": "user", "content": _text("验证页面")}),
+            _Entry("message", {
+                "role": "assistant",
+                "stopReason": "error",
+                "errorMessage": "connection error: Connection error.",
+                "content": [
+                    {"type": "text", "text": "准备检查"},
+                    {"type": "toolCall", "id": "partial", "name": "browser_evaluate",
+                     "arguments": {"function": "() => document.title"}},
+                ],
+            }),
+            _Entry("message", {
+                "role": "toolResult",
+                "toolCallId": "partial",
+                "toolName": "browser_evaluate",
+                "isError": True,
+                "content": _text("Tool call was not executed because the response failed or was aborted"),
+            }),
+            _Entry("message", {"role": "user", "content": _text("继续")}),
+            _Entry("message", {"role": "assistant", "stopReason": "stop", "content": _text("已完成")}),
+        ]
+        host, frames = self._host(entries)
+        replayed = host._replay_current_session()  # noqa: SLF001
+
+        self.assertEqual(replayed, 3)
+        self.assertEqual(self._kinds(frames), ["message_end", "message_end", "message_end"])
+        self.assertEqual(len(entries), 5)
+
     def test_replay_restores_plan_card_details_and_decision(self) -> None:
         plan = {
             "summary": "增加原生图片输入",

@@ -297,6 +297,30 @@ describe('timeline reducer', () => {
     expect(state.status).toBe('idle')
   })
 
+  it('absorbs partial failed replies and never-executed tool cards into recovery', () => {
+    const state = run([
+      { type: 'agent_start' },
+      userMessage('验证页面'),
+      { type: 'message_end', message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: '准备检查' }, {
+          type: 'toolCall', id: 'partial', name: 'browser_evaluate', arguments: {},
+        }],
+        stopReason: 'error',
+        errorMessage: 'connection error: Connection error.',
+      } },
+      { type: 'tool_execution_start', tool_call_id: 'partial', tool_name: 'browser_evaluate', args: {} },
+      { type: 'tool_execution_end', tool_call_id: 'partial', tool_name: 'browser_evaluate',
+        result: 'Tool call was not executed because the response failed or was aborted', is_error: true },
+      // Old hosts used `error`; the reducer remains compatible while new hosts emit `message`.
+      { type: 'model_retry', attempt: 1, error: 'connection error: Connection error.' },
+    ])
+
+    expect(state.blocks.some((block) => block.kind === 'assistant' && block.stopReason === 'error')).toBe(false)
+    expect(toolCalls(state.blocks)).toHaveLength(0)
+    expect(recoveryBlocks(state.blocks)[0].attempts[0].message).toBe('connection error: Connection error.')
+  })
+
   it('settles an exhausted retry sequence as one failed recovery card', () => {
     const state = run([
       { type: 'agent_start' },

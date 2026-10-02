@@ -113,7 +113,8 @@ class AgentTests(unittest.IsolatedAsyncioTestCase):
         await agent.prompt("run")
         self.assertTrue(agent.state.messages[-1].is_error)
         self.assertIn("truncated", agent.state.messages[-1].content[0].text)
-        self.assertEqual(events.count("tool_execution_end"), 1)
+        self.assertEqual(events.count("tool_execution_start"), 0)
+        self.assertEqual(events.count("tool_execution_end"), 0)
         self.assertEqual(len(stream.contexts), 1)
 
     async def test_steering_before_follow_up_and_one_at_a_time(self):
@@ -243,6 +244,9 @@ class AgentTests(unittest.IsolatedAsyncioTestCase):
                 results = [m for m in agent.state.messages if isinstance(m, ToolResultMessage)]
                 self.assertEqual([r.tool_call_id for r in results], ["a", "b"])
                 self.assertTrue(all(r.is_error for r in results))
+                self.assertTrue(all(
+                    "agent run was interrupted" in r.content[0].text for r in results
+                ))
                 self.assertTrue(cleaned)
                 self.assertFalse(agent.state.pending_tool_calls)
 
@@ -420,6 +424,24 @@ class SessionAndHarnessTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(restored.build_context()[-1].content[0].text, "dynamic page ready")
         restored.append_compaction("summary", [interrupted])
         self.assertEqual(len(restored.build_context()), 1)
+
+    async def test_failed_partial_tool_call_and_result_are_not_replayed(self):
+        session = SessionManager(JsonlSessionStorage(self.path / "partial-error.jsonl"))
+        session.append_message(UserMessage(content="verify in browser"))
+        session.append_message(AssistantMessage(
+            content=[ToolCall(id="partial", name="browser_evaluate", arguments={})],
+            stop_reason="error",
+            error_message="connection error: Connection error.",
+        ))
+        session.append_message(ToolResultMessage(
+            tool_call_id="partial",
+            tool_name="browser_evaluate",
+            content=[TextContent(text="Tool call was not executed because the response failed or was aborted")],
+            is_error=True,
+        ))
+
+        self.assertEqual([message.role for message in session.build_context()], ["user"])
+        self.assertEqual(len(session.get_entries()), 3)
 
     async def test_harness_persists_tools_and_restores_configuration(self):
         file = self.path / "session.jsonl"

@@ -314,7 +314,13 @@ def event_payload(event: Any) -> dict[str, Any] | None:
                 payload["retainedCount"] = len(retained)
         return payload
     if etype in ("context_overflow_retry", "model_retry"):
-        return to_jsonable(event, alias=True)
+        # RecoveryEvent calls the Python field ``error`` while the stable wire
+        # protocol calls the human-readable value ``message``.
+        return {
+            "type": etype,
+            "attempt": int(getattr(event, "attempt", 0) or 0),
+            "message": str(getattr(event, "error", "") or ""),
+        }
     if etype == "session_start":
         return {
             "type": etype,

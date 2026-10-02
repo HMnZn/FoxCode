@@ -256,6 +256,8 @@ class SubAgentService:
             if final is None:
                 raise RuntimeError("Sub-agent produced no assistant response")
             if final.stop_reason in {"error", "aborted"}:
+                if final.stop_reason == "aborted" and cancel_event is not None and cancel_event.is_set():
+                    raise RuntimeError("Sub-agent was cancelled because the parent run was interrupted")
                 raise RuntimeError(final.error_message or "Sub-agent failed")
             text = "\n".join(
                 block.text for block in final.content if isinstance(block, TextContent)

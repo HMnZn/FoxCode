@@ -1018,6 +1018,7 @@ class ServeHost:
             return 0
         count = 0
         tool_frames = 0
+        discarded_tool_calls: set[str] = set()
         for entry in entries:
             if str(getattr(entry, "type", "")) != "message":
                 continue
@@ -1029,6 +1030,17 @@ class ServeHost:
             ):
                 continue
             role = payload["role"]
+            if role == "assistant" and payload.get("stopReason") in ("error", "aborted"):
+                # The durable transcript keeps incomplete provider output for
+                # diagnostics. Replaying it would recreate “本轮出错” and fake
+                # tool cards every time the session is opened.
+                discarded_tool_calls.update(
+                    str(call.get("id")) for call in tool_call_parts(payload) if call.get("id")
+                )
+                continue
+            if role == "toolResult" and str(payload.get("toolCallId")) in discarded_tool_calls:
+                discarded_tool_calls.discard(str(payload.get("toolCallId")))
+                continue
             self._emit_frame({"type": "message_end", "message": payload})
             if role == "assistant":
                 for call in tool_call_parts(payload):

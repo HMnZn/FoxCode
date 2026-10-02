@@ -121,9 +121,14 @@ class StreamedWriteTests(unittest.IsolatedAsyncioTestCase):
             with patch("fox_ai.src.providers.openai_provider._create_client", return_value=client):
                 await asyncio.wait_for(session.prompt("Create index.html"), 3)
             self.assertFalse((Path(directory) / "index.html").exists())
-            assistant = next(message for message in reversed(session.state.messages)
-                             if message.role == "assistant")
+            # Interrupted output stays in the durable audit tree but is
+            # intentionally absent from the replayable model context.
+            assistant = next(
+                entry.data for entry in reversed(session.session.get_entries())
+                if entry.type == "message" and entry.data.role == "assistant"
+            )
             self.assertEqual(assistant.stop_reason, "aborted")
+            self.assertFalse(any(message.role == "assistant" for message in session.state.messages))
             self.assertLess(response.delivered, 100)
             response.close.assert_awaited_once()
 

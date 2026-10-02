@@ -291,6 +291,22 @@ def _convert_tools(tools: list[AgentTool]) -> list[Tool]:
 
 async def _execute_tool_calls(context, message, config, cancel_event, emit, skip=None):
     calls = [c for c in message.content if isinstance(c, AgentToolCall)]
+    if skip:
+        # Keep tool-call/result pairing in the audit transcript, but do not emit
+        # execution events for calls that were never dispatched.  Otherwise the
+        # UI presents a transport failure as a failed shell/MCP/browser action.
+        messages = []
+        for call in calls:
+            result = ToolResultMessage(
+                tool_call_id=call.id,
+                tool_name=call.name,
+                content=[TextContent(text=skip)],
+                is_error=True,
+                timestamp=int(time.time() * 1000),
+            )
+            messages.append(result)
+            await _emit_message(emit, result)
+        return {"messages": messages, "terminate": False}
     sequential = config.tool_execution == "sequential" or any(
         getattr(_find_tool(context.tools, c.name), "execution_mode", None) == "sequential" for c in calls)
     if sequential:
@@ -356,6 +372,10 @@ async def _execute_single(context, message, call, config, cancel_event, emit, sk
                 raise TypeError("Tool execute() must return AgentToolResult")
     except _EventSinkError:
         raise
+    except OperationAborted:
+        result, is_error = _error_result(
+            "Tool execution was cancelled because the agent run was interrupted"
+        ), True
     except Exception as exc:
         result, is_error = _error_result(str(exc)), True
     finally:

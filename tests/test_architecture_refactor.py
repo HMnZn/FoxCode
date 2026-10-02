@@ -2,6 +2,7 @@
 
 import json
 import importlib
+import asyncio
 import tempfile
 import unittest
 from pathlib import Path
@@ -9,9 +10,10 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from fox_ai.src import (
-    AssistantMessage, Context, TextContent, ThinkingContent, ToolCall, Usage,
+    AssistantMessage, Context, EventStream, TextContent, ThinkingContent, ToolCall, Usage,
     UsageCost, UserMessage,
 )
+from fox_ai.src.events import ErrorEvent
 from fox_ai.src.providers.faux import FAUX_MODEL, FauxScript, clear_scripts, push_script
 from fox_ai.src.providers.openai_provider import (
     _convert_messages,
@@ -219,6 +221,58 @@ class SessionRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("503", " ".join(getattr(m, "error_message", "") or ""
                                            for m in session.state.messages))
         self.assertIn("model_retry", events)
+
+    async def test_partial_tool_call_connection_error_uses_full_retry_budget(self):
+        attempts = 0
+        contexts = []
+
+        def stream(model, context, options):
+            nonlocal attempts
+            attempts += 1
+            contexts.append(context.model_copy(deep=True))
+            if attempts <= 2:
+                result = EventStream()
+
+                async def fail_after_partial_call():
+                    message = AssistantMessage(
+                        api=model.api,
+                        provider=model.provider,
+                        model=model.id,
+                        content=[ToolCall(
+                            id=f"partial-{attempts}",
+                            name="browser_evaluate",
+                            arguments={"expression": "document.title"},
+                        )],
+                        stop_reason="error",
+                        error_message="connection error: Connection error.",
+                    )
+                    result.push(ErrorEvent(reason="error", error=message))
+                    result.end(message)
+
+                result.set_producer(asyncio.create_task(fail_after_partial_call()))
+                return result
+            push_script(FauxScript(text="browser verification completed"))
+            from fox_ai.src.providers.faux import faux_api_provider
+            return faux_api_provider.stream_simple(model, context, options)
+
+        session = AgentSession(AgentSessionConfig(
+            model=FAUX_MODEL,
+            cwd=self.temp.name,
+            tools=[],
+            skills=[],
+            stream_fn=stream,
+            model_retry_attempts=5,
+        ))
+        events = []
+        session.subscribe(lambda event, cancel: events.append(event.type))
+        await session.prompt("verify the page")
+
+        self.assertEqual(attempts, 3)
+        self.assertEqual(events.count("model_retry"), 2)
+        self.assertNotIn("tool_execution_start", events)
+        self.assertEqual(session.state.messages[-1].content[0].text, "browser verification completed")
+        self.assertEqual([message.role for message in contexts[-1].messages], ["user"])
+        self.assertGreaterEqual(len(session.session.get_entries()), 6)  # audit history is retained
 
     async def test_context_overflow_compacts_then_retries_once(self):
         stored = SessionManager()

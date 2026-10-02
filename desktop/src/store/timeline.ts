@@ -360,7 +360,28 @@ function childContextFromDetails(details: Record<string, unknown> | undefined) {
 }
 
 function isTransientAssistantError(block: Block): boolean {
-  return block.kind === 'assistant' && block.stopReason === 'error' && !block.text && !block.thinking
+  return block.kind === 'assistant' && block.stopReason === 'error'
+}
+
+function isUnexecutedToolFailure(block: Block): boolean {
+  return block.kind === 'tools' && block.calls.length > 0 && block.calls.every((call) =>
+    call.isError === true &&
+    call.result?.includes('Tool call was not executed because the response failed or was aborted'),
+  )
+}
+
+/** Remove only retry debris from the current user turn, preserving older audit cards. */
+function cleanRetryAttempt(blocks: Block[]): Block[] {
+  let boundary = -1
+  for (let i = blocks.length - 1; i >= 0; i -= 1) {
+    if (blocks[i].kind === 'user') {
+      boundary = i
+      break
+    }
+  }
+  return blocks.filter((block, index) =>
+    index <= boundary || (!isTransientAssistantError(block) && !isUnexecutedToolFailure(block)),
+  )
 }
 
 /** One recovery sequence owns one card; failed attempts never leak out as assistant errors. */
@@ -371,7 +392,7 @@ function upsertRecovery(
   message: string | undefined,
   ts: number,
 ): Block[] {
-  const cleaned = blocks.filter((block) => !isTransientAssistantError(block))
+  const cleaned = cleanRetryAttempt(blocks)
   let index = -1
   for (let i = cleaned.length - 1; i >= 0; i -= 1) {
     const block = cleaned[i]
@@ -1037,7 +1058,7 @@ function foldFrame(state: TimelineState, frame: HostFrame): TimelineState {
           state.blocks,
           frame.type === 'model_retry' ? 'model' : 'context',
           frame.attempt,
-          frame.message,
+          frame.message ?? frame.error,
           ts,
         ),
       }

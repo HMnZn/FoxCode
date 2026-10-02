@@ -246,8 +246,8 @@ export type HostEvent =
       result?: unknown
     }
   | { type: 'compaction_error'; error?: string }
-  | { type: 'context_overflow_retry'; attempt?: number; message?: string }
-  | { type: 'model_retry'; attempt?: number; message?: string }
+  | { type: 'context_overflow_retry'; attempt?: number; message?: string; error?: string }
+  | { type: 'model_retry'; attempt?: number; message?: string; error?: string }
   | { type: 'error'; error: string }
 
 /** Envelope actually shipped across the bridge. */

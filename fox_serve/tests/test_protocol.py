@@ -152,6 +152,18 @@ class MessageAndStreamTests(unittest.TestCase):
 
 
 class EventPayloadTests(unittest.TestCase):
+    def test_recovery_error_is_exposed_as_wire_message(self) -> None:
+        event = dataclasses.make_dataclass(
+            "Recovery",
+            [("attempt", int), ("error", str),
+             ("type", str, dataclasses.field(default="model_retry"))],
+        )(4, "connection error: Connection error.")
+        self.assertEqual(event_payload(event), {
+            "type": "model_retry",
+            "attempt": 4,
+            "message": "connection error: Connection error.",
+        })
+
     def test_tool_execution_start_keeps_raw_args(self) -> None:
         payload = event_payload(
             _FakeToolStart("call_1", "read", {"path": "a.txt", "limit": 10})
