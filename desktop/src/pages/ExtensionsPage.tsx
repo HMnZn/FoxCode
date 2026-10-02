@@ -13,6 +13,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { AlertTriangle, Ban, FolderCog, Info, ShieldCheck, UserCog } from 'lucide-react'
 import { Chip, EmptyState, Switch, Tooltip } from '@/components/ui'
 import { FoxMark } from '@/components/brand/Fox'
+import { SettingsControlPlane } from '@/components/settings/SettingsControlPlane'
 import { useSession } from '@/store/sessionStore'
 import { shortPath, truncate } from '@/lib/format'
 import type { ExtensionInfo } from '@/types/protocol'
@@ -204,6 +205,16 @@ export function ExtensionsPage() {
               )
             })
           )}
+        </section>
+
+        <section className="mt-2 flex flex-col gap-4 border-t border-line pt-6">
+          <div>
+            <h2 className="text-sm font-medium text-fg">扩展配置</h2>
+            <p className="mt-1 text-2xs leading-relaxed text-fg-subtle">
+              MCP 服务器和 Subagent 都由扩展提供，在这里管理它们的连接与角色配置。
+            </p>
+          </div>
+          <SettingsControlPlane surface="extensions" />
         </section>
 
         <footer className="flex flex-wrap items-center gap-2 border-t border-line pt-3 text-2xs text-fg-subtle">

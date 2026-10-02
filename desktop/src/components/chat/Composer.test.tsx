@@ -13,6 +13,7 @@ import { Composer } from '@/components/chat/Composer'
 import { useSession } from '@/store/sessionStore'
 import { EMPTY_TIMELINE } from '@/store/timeline'
 import { useUi } from '@/store/uiStore'
+import { useWorkspace } from '@/store/workspaceStore'
 import type { PromptImage } from '@/types/protocol'
 
 const bridge = useSession.getState().bridge
@@ -21,6 +22,7 @@ describe('Composer · 命令目录', () => {
   beforeEach(async () => {
     useSession.setState({ host: await bridge.info(), timeline: { ...EMPTY_TIMELINE }, queue: [] })
     useUi.setState({ selectedSkills: {} })
+    useWorkspace.setState({ current: null, applying: null })
   })
 
   it('offers exactly the two commands worth having in the composer', () => {
@@ -137,6 +139,22 @@ describe('Composer · 命令目录', () => {
     const toolbar = container.querySelector('.flex-nowrap')
     expect(toolbar).toBeTruthy()
     expect(toolbar?.className).not.toContain('flex-wrap')
+  })
+
+  it('keeps a draft while the host is still switching to the remembered workspace', () => {
+    const prompt = vi.fn(async () => undefined)
+    useSession.setState({ prompt })
+    useWorkspace.setState({ current: '/next/project', applying: '/next/project' })
+    useUi.setState({ drafts: { main: '不要丢掉这条任务' } })
+    render(<Composer draftKey="main" />)
+
+    const box = screen.getByRole('textbox') as HTMLTextAreaElement
+    expect(box.value).toBe('不要丢掉这条任务')
+    expect((screen.getByRole('button', { name: '发送' }) as HTMLButtonElement).disabled).toBe(true)
+    fireEvent.keyDown(box, { key: 'Enter' })
+
+    expect(prompt).not.toHaveBeenCalled()
+    expect(box.value).toBe('不要丢掉这条任务')
   })
 
   it('lets the user select sandbox execution from the compact settings menu', async () => {

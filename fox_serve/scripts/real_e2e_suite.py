@@ -121,9 +121,26 @@ class Suite:
         start = len(self.client.file_frames)
         permission_start = len(self.client.permissions)
         self.request("prompt", {"message": message})
+        # AgentSession emits agent_end for each provider attempt. A recoverable
+        # failure is followed by model_retry and another agent_start while the
+        # host remains busy, so agent_end alone is not a request-level terminal
+        # signal. Wait for the host to settle to avoid closing the sidecar in
+        # the middle of an automatic retry.
+        next_busy_check = 0.0
+
+        def request_finished(batch: list[dict[str, Any]]) -> bool:
+            nonlocal next_busy_check
+            if not any(frame.get("type") == "agent_end" for frame in batch):
+                return False
+            now = time.monotonic()
+            if now < next_busy_check:
+                return False
+            next_busy_check = now + 0.25
+            return not bool(self.request("host.info", timeout=10).get("busy"))
+
         frames = self.wait_for(
             start,
-            lambda batch: any(frame.get("type") == "agent_end" for frame in batch),
+            request_finished,
             timeout=timeout,
             answer=permission,
             permission_start=permission_start,
@@ -344,7 +361,11 @@ class Suite:
             if frame.get("tool_name") == "write"
         ]
         self.require(writes and not writes[-1].get("is_error"), f"write 工具失败：{writes}")
-        self.require(target.read_text(encoding="utf-8") == "MODEL_WRITE_OK", "模型写入的磁盘内容不精确")
+        written = target.read_text(encoding="utf-8")
+        self.require(
+            written.rstrip("\n") == "MODEL_WRITE_OK" and written.count("\n") <= 1,
+            "模型写入的磁盘内容不精确",
+        )
 
         self.request("permission.set", {"mode": "read-only"})
         denied = self.workspace / "readonly_should_not_exist.txt"
@@ -386,7 +407,11 @@ class Suite:
         diff = self.request("files.diff", {"path": "generated_by_model.txt", "context": 3})
         changes = self.request("files.changes")
         changed_paths = [item.get("path") for item in changes.get("files", [])]
-        self.require(preview.get("text") == "MODEL_WRITE_OK", f"文件原文预览错误：{preview}")
+        preview_text = str(preview.get("text") or "")
+        self.require(
+            preview_text.rstrip("\n") == "MODEL_WRITE_OK" and preview_text.count("\n") <= 1,
+            f"文件原文预览错误：{preview}",
+        )
         self.require("MODEL_WRITE_OK" in str(diff.get("diff") or diff.get("text") or ""), "diff 未包含新增内容")
         self.require("generated_by_model.txt" in changed_paths, f"改动列表缺文件：{changed_paths}")
         return {"previewKind": preview.get("kind"), "changedPaths": changed_paths, "diffBytes": len(json.dumps(diff, ensure_ascii=False))}
@@ -483,7 +508,7 @@ class Suite:
         return {"changed": changed, "newCwd": info.get("cwd"), "back": back}
 
     def _model_and_thinking(self) -> dict[str, Any]:
-        selected = self.request("model.select", {"reference": "deepseek/deepseek-v4-flash"})
+        selected = self.request("model.select", {"reference": "deepseek/deepseek-flash"})
         thinking = self.request("thinking.set", {"level": "high"})
         active = self.request("host.info")
         self.require(active.get("thinkingLevel") == "high", f"宿主未保存 high 思考等级：{active.get('thinkingLevel')}")

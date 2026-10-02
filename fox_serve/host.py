@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import copy
 import contextlib
 import sys
 import time
@@ -54,6 +55,12 @@ MAX_PROMPT_IMAGES = 4
 MAX_PROMPT_IMAGE_BYTES = 8 * 1024 * 1024
 MAX_PROMPT_IMAGES_BYTES = 20 * 1024 * 1024
 PROMPT_IMAGE_MIMES = frozenset({"image/png", "image/jpeg", "image/webp", "image/gif"})
+# Tool arguments can contain whole source files. Providers often stream them a
+# few characters at a time, while the desktop currently only uses these delta
+# events to show an activity label. Bound the host-to-renderer update rate and
+# coalesce skipped fragments so protocol clients can still reconstruct the
+# complete argument stream before the authoritative ``toolcall_end``.
+TOOLCALL_DELTA_INTERVAL_SECONDS = 0.05
 
 #: `run_command` 的内置命令表（对齐 `packages/fox_coding_agent/src/cli.py:126` 的用法）。
 BUILTIN_COMMANDS: tuple[dict[str, str], ...] = (
@@ -208,6 +215,8 @@ class ServeHost:
         self._runtimes: dict[str, Any] = {}
         self._runtime_unsubscribes: dict[int, Callable[[], None]] = {}
         self._running_runtimes: set[int] = set()
+        self._toolcall_delta_at: dict[tuple[int, int], float] = {}
+        self._toolcall_delta_pending: dict[tuple[int, int], tuple[Any, str]] = {}
         #: 后台任务（`prompt` 这类长耗时操作），退出时统一取消。
         self._tasks: set[asyncio.Task[Any]] = set()
         #: 每个 runtime 当前的前台运行任务。显式插话要先等旧请求完成取消清理，
@@ -462,13 +471,80 @@ class ServeHost:
     def _on_runtime_event(self, runtime: Any, event: Any, cancel: Any = None) -> None:
         kind = getattr(event, "type", None)
         marker = id(runtime)
+        stream_event = (
+            getattr(event, "assistant_message_event", None)
+            if kind == "message_update"
+            else None
+        )
+        stream_kind = getattr(stream_event, "type", None)
+        content_index = getattr(stream_event, "content_index", None)
+        delta_key = (
+            (marker, content_index)
+            if isinstance(content_index, int) and not isinstance(content_index, bool)
+            else None
+        )
+        delta_times = getattr(self, "_toolcall_delta_at", None)
+        if delta_times is None:
+            # Some embedders and focused tests construct a host without calling
+            # __init__. Keep event forwarding robust for those callers.
+            delta_times = {}
+            self._toolcall_delta_at = delta_times
+        pending_deltas = getattr(self, "_toolcall_delta_pending", None)
+        if pending_deltas is None:
+            pending_deltas = {}
+            self._toolcall_delta_pending = pending_deltas
+        if stream_kind == "toolcall_start" and delta_key is not None:
+            delta_times.pop(delta_key, None)
+            pending_deltas.pop(delta_key, None)
+        elif stream_kind == "toolcall_delta" and delta_key is not None:
+            now = time.monotonic()
+            previous = delta_times.get(delta_key)
+            if previous is not None and now - previous < TOOLCALL_DELTA_INTERVAL_SECONDS:
+                queued = pending_deltas.get(delta_key)
+                prefix = queued[1] if queued is not None else ""
+                pending_deltas[delta_key] = (
+                    event,
+                    prefix + str(getattr(stream_event, "delta", "")),
+                )
+                return
+            queued = pending_deltas.pop(delta_key, None)
+            if queued is not None:
+                event = self._replace_toolcall_delta(
+                    event,
+                    queued[1] + str(getattr(stream_event, "delta", "")),
+                )
+            delta_times[delta_key] = now
+        elif stream_kind == "toolcall_end" and delta_key is not None:
+            delta_times.pop(delta_key, None)
+            queued = pending_deltas.pop(delta_key, None)
+            if queued is not None and runtime is self._runtime:
+                self._on_event(
+                    self._replace_toolcall_delta(queued[0], queued[1]),
+                    cancel,
+                )
         if kind == "agent_start":
             self._running_runtimes.add(marker)
         elif kind in ("agent_end", "error"):
             self._running_runtimes.discard(marker)
+            for key in [key for key in delta_times if key[0] == marker]:
+                delta_times.pop(key, None)
+            for key in [key for key in pending_deltas if key[0] == marker]:
+                pending_deltas.pop(key, None)
         if runtime is self._runtime:
             self._agent_running = marker in self._running_runtimes
             self._on_event(event, cancel)
+
+    @staticmethod
+    def _replace_toolcall_delta(event: Any, delta: str) -> Any:
+        """Clone a message update with coalesced tool-argument text."""
+
+        stream_event = getattr(event, "assistant_message_event", None)
+        clone_stream = getattr(stream_event, "model_copy", None)
+        if not callable(clone_stream):
+            return event
+        cloned = copy.copy(event)
+        cloned.assistant_message_event = clone_stream(update={"delta": delta})
+        return cloned
 
     def _on_event(self, event: Any, _cancel: Any = None) -> None:
         """订阅回调：**必须快且不能抛**（抛异常会杀掉整轮，见 agent_loop.py:396）。"""

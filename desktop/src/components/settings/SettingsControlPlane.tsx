@@ -20,7 +20,7 @@ const SCOPE_OPTIONS = [
   { value: 'project', label: '项目级', hint: '只对当前可信项目生效' },
 ]
 
-export function SettingsControlPlane() {
+export function SettingsControlPlane({ surface = 'all' }: { surface?: 'settings' | 'extensions' | 'all' }) {
   const bridge = useSession((state) => state.bridge)
   const refreshHost = useSession((state) => state.refreshHost)
   const [config, setConfig] = useState<ProductConfiguration | null>(null)
@@ -79,11 +79,12 @@ export function SettingsControlPlane() {
 
   return (
     <>
-      <SettingsSection id="runtime-defaults" title="运行默认值" hint="持久化到 settings.json；新会话与重新加载后生效" icon={<SlidersHorizontal size={14} />}>
-        <RuntimeDefaults config={config} saving={saving} onSave={mutate} />
-      </SettingsSection>
+      {surface !== 'extensions' ? <>
+        <SettingsSection id="runtime-defaults" title="运行默认值" hint="持久化到 settings.json；新会话与重新加载后生效" icon={<SlidersHorizontal size={14} />}>
+          <RuntimeDefaults config={config} saving={saving} onSave={mutate} />
+        </SettingsSection>
 
-      <SettingsSection id="providers" title="模型供应商" hint="模型目录与凭据分离保存，密钥不会回显" icon={<KeyRound size={14} />}>
+        <SettingsSection id="providers" title="模型供应商" hint="模型目录与凭据分离保存，密钥不会回显" icon={<KeyRound size={14} />}>
         <SectionToolbar text={`${config.providers.length} 个供应商`} onAdd={() => { setEditing(null); setEditor('provider') }} addLabel="添加供应商" />
         {config.providers.length === 0 ? <Empty text="还没有模型供应商。添加后即可在会话中选择模型。" /> : (
           <div className="grid gap-2">
@@ -106,9 +107,11 @@ export function SettingsControlPlane() {
             ))}
           </div>
         )}
-      </SettingsSection>
+        </SettingsSection>
+      </> : null}
 
-      <SettingsSection id="mcp" title="MCP 服务器" hint="受控启动外部工具服务器；保存后自动启用 MCP 扩展" icon={<ServerCog size={14} />}>
+      {surface !== 'settings' ? <>
+        <SettingsSection id="mcp" title="MCP 服务器" hint="受控启动外部工具服务器；保存后自动启用 MCP 扩展" icon={<ServerCog size={14} />}>
         <SectionToolbar text={`${config.mcpServers.length} 个服务器`} onAdd={() => { setEditing(null); setEditor('mcp') }} addLabel="添加 MCP" />
         {config.mcpServers.length === 0 ? <Empty text="尚未配置 MCP。建议先以只读权限接入。" /> : config.mcpServers.map((server) => (
           <div key={`${server.scope}:${server.name}`} className="flex flex-wrap items-center gap-3 rounded-lg border border-line bg-surface-2 p-3">
@@ -121,9 +124,9 @@ export function SettingsControlPlane() {
             <Button size="xs" variant="danger" iconLeft={<Trash2 size={12} />} onClick={() => setPendingDelete({ kind: 'mcp', id: server.name, scope: server.scope })}>删除</Button>
           </div>
         ))}
-      </SettingsSection>
+        </SettingsSection>
 
-      <SettingsSection id="subagents" title="Subagents" hint="为委派任务定义隔离角色、提示词和最小工具集" icon={<Bot size={14} />}>
+        <SettingsSection id="subagents" title="Subagents" hint="为委派任务定义隔离角色、提示词和最小工具集" icon={<Bot size={14} />}>
         <SectionToolbar text={`${config.subagents.length} 个角色`} onAdd={() => { setEditing(null); setEditor('subagent') }} addLabel="创建 Subagent" />
         <div className="grid gap-2 md:grid-cols-2">
           {config.subagents.map((agent) => (
@@ -135,13 +138,14 @@ export function SettingsControlPlane() {
             </div>
           ))}
         </div>
-      </SettingsSection>
-
-      {config.diagnostics.length > 0 ? (
-        <SettingsSection id="diagnostics" title="配置诊断" hint="无效条目不会进入运行时">
-          {config.diagnostics.map((item, index) => <div key={`${item.path}:${index}`} className="rounded-md border border-warn/40 bg-warn-soft p-3 text-2xs text-warn"><span className="font-medium">{item.area} · {item.code}</span><div className="mt-1">{item.message}</div><div className="mt-1 font-mono opacity-80">{item.path}</div></div>)}
         </SettingsSection>
-      ) : null}
+
+        {config.diagnostics.length > 0 ? (
+          <SettingsSection id="diagnostics" title="配置诊断" hint="无效条目不会进入运行时">
+            {config.diagnostics.map((item, index) => <div key={`${item.path}:${index}`} className="rounded-md border border-warn/40 bg-warn-soft p-3 text-2xs text-warn"><span className="font-medium">{item.area} · {item.code}</span><div className="mt-1">{item.message}</div><div className="mt-1 font-mono opacity-80">{item.path}</div></div>)}
+          </SettingsSection>
+        ) : null}
+      </> : null}
 
       <ProviderDialog open={editor === 'provider'} value={editing as ProviderConfig | null} saving={saving} onClose={() => setEditor(null)} onSave={mutate} />
       <McpDialog open={editor === 'mcp'} value={editing as McpServerSettings | null} trusted={config.projectTrusted} saving={saving} onClose={() => setEditor(null)} onSave={mutate} />
@@ -166,9 +170,21 @@ function RuntimeDefaults({ config, saving, onSave }: { config: ProductConfigurat
   const [turns, setTurns] = useState(String(runtime.max_turns))
   const [retries, setRetries] = useState(String(runtime.model_retry_attempts))
   const [maxTokens, setMaxTokens] = useState(String(runtime.stream_options.max_tokens ?? ''))
+  useEffect(() => {
+    setTurns(String(runtime.max_turns))
+    setRetries(String(runtime.model_retry_attempts))
+    setMaxTokens(String(runtime.stream_options.max_tokens ?? ''))
+  }, [runtime.max_turns, runtime.model_retry_attempts, runtime.stream_options.max_tokens])
   const save = () => {
-    const values: Record<string, unknown> = { max_turns: Number(turns), model_retry_attempts: Number(retries) }
-    if (maxTokens.trim()) values.stream_options = { ...runtime.stream_options, max_tokens: Number(maxTokens) }
+    const parsedTurns = Number(turns)
+    const parsedRetries = Number(retries)
+    const parsedMaxTokens = maxTokens.trim() ? Number(maxTokens) : null
+    if (!Number.isInteger(parsedTurns) || parsedTurns < 1 || !Number.isInteger(parsedRetries) || parsedRetries < 0 || parsedRetries > 5 || (parsedMaxTokens != null && (!Number.isInteger(parsedMaxTokens) || parsedMaxTokens < 1))) {
+      toast.danger({ title: '运行默认值无效', description: '轮次、重试与输出上限必须是有效整数。' })
+      return
+    }
+    const values: Record<string, unknown> = { max_turns: parsedTurns, model_retry_attempts: parsedRetries }
+    if (parsedMaxTokens != null) values.stream_options = { ...runtime.stream_options, max_tokens: parsedMaxTokens }
     void onSave({ method: 'config.runtime.update', params: { values, scope } })
   }
   return <div className="grid gap-3 md:grid-cols-4">
@@ -184,18 +200,74 @@ function ProviderDialog({ open, value, saving, onClose, onSave }: { open: boolea
   const [id, setId] = useState('')
   const [baseUrl, setBaseUrl] = useState('https://api.openai.com/v1')
   const [api, setApi] = useState('openai-completions')
-  const [models, setModels] = useState('')
+  const [models, setModels] = useState<Array<Record<string, unknown>>>([])
   const [key, setKey] = useState('')
-  useEffect(() => { if (!open) return; setId(value?.id ?? ''); setBaseUrl(value?.baseUrl ?? 'https://api.openai.com/v1'); setApi(value?.api ?? 'openai-completions'); setModels(JSON.stringify(value?.models ?? [{ id: '', name: '', reasoning: false, input: ['text'], contextWindow: 128000, maxTokens: 8192 }], null, 2)); setKey('') }, [open, value])
-  const submit = async () => {
-    try {
-      const parsed = JSON.parse(models) as Array<Record<string, unknown>>
-      await onSave({ method: 'config.provider.save', params: { provider: { id, baseUrl, api, models: parsed } } })
-      if (key.trim()) await onSave({ method: 'config.credential.set', params: { providerId: id, apiKey: key } })
-    } catch (error) { if (error instanceof SyntaxError) toast.danger({ title: '模型 JSON 格式错误', description: error.message }) }
+  const blankModel = (): Record<string, unknown> => ({
+    id: '', name: '', reasoning: false, input: ['text'], contextWindow: 128000, maxTokens: 8192,
+  })
+  useEffect(() => {
+    if (!open) return
+    setId(value?.id ?? '')
+    setBaseUrl(value?.baseUrl ?? 'https://api.openai.com/v1')
+    setApi(value?.api ?? 'openai-completions')
+    setModels((value?.models?.length ? value.models : [blankModel()]).map((item) => ({ ...item })))
+    setKey('')
+  }, [open, value])
+  const updateModel = (index: number, patch: Record<string, unknown>) => {
+    setModels((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, ...patch } : item))
   }
-  return <Dialog open={open} onClose={onClose} title={value ? `编辑供应商 · ${value.id}` : '添加模型供应商'} description="连接信息写入 models.json，API Key 单独写入 auth.json 且不会回显。" size="lg" footer={<><Button onClick={onClose}>取消</Button><Button variant="primary" loading={saving} onClick={() => void submit()}>保存并重载</Button></>}>
-    <div className="grid gap-3 md:grid-cols-2"><Labeled label="供应商 ID"><TextInput aria-label="供应商 ID" value={id} disabled={!!value} onChange={(e) => setId(e.target.value)} mono /></Labeled><Labeled label="API 适配器"><TextInput aria-label="API 适配器" value={api} onChange={(e) => setApi(e.target.value)} mono /></Labeled><Labeled label="Base URL"><TextInput aria-label="Base URL" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} mono /></Labeled><Labeled label={value?.credentialConfigured ? '替换 API Key（可留空）' : 'API Key'}><TextInput aria-label="API Key" type="password" autoComplete="new-password" value={key} onChange={(e) => setKey(e.target.value)} mono /></Labeled><div className="md:col-span-2"><FieldLabel>模型数组（JSON）</FieldLabel><TextArea aria-label="模型数组" value={models} onChange={(e) => setModels(e.target.value)} mono minRows={9} maxRows={18} /></div></div>
+  const submit = async () => {
+    const normalized = models.map((model) => ({
+      ...model,
+      id: String(model.id ?? '').trim(),
+      name: String(model.name ?? model.id ?? '').trim(),
+      contextWindow: Number(model.contextWindow),
+      maxTokens: Number(model.maxTokens),
+      input: Array.isArray(model.input) && model.input.includes('image') ? ['text', 'image'] : ['text'],
+      reasoning: Boolean(model.reasoning),
+    }))
+    if (!id.trim() || !baseUrl.trim() || normalized.length === 0 || normalized.some((model) => !model.id || !Number.isInteger(model.contextWindow) || model.contextWindow <= 0 || !Number.isInteger(model.maxTokens) || model.maxTokens <= 0 || model.maxTokens > model.contextWindow)) {
+      toast.danger({ title: '模型配置无效', description: '请填写供应商、URL、模型 ID，并确保输出上限不超过上下文窗口。' })
+      return
+    }
+    await onSave({ method: 'config.provider.save', params: { provider: { id: id.trim(), baseUrl: baseUrl.trim(), api, models: normalized } } })
+    if (key.trim()) await onSave({ method: 'config.credential.set', params: { providerId: id.trim(), apiKey: key } })
+  }
+  return <Dialog open={open} onClose={onClose} title={value ? `编辑供应商 · ${value.id}` : '添加模型供应商'} description="模型元数据使用表单校验；API Key 单独写入 auth.json 且不会回显。" size="lg" footer={<><Button onClick={onClose}>取消</Button><Button variant="primary" loading={saving} onClick={() => void submit()}>保存并重载</Button></>}>
+    <div className="grid gap-4">
+      <div className="grid gap-3 md:grid-cols-2">
+        <Labeled label="供应商 ID"><TextInput aria-label="供应商 ID" value={id} disabled={!!value} onChange={(e) => setId(e.target.value)} mono /></Labeled>
+        <Labeled label="API 适配器"><Select value={api} options={[{ value: 'openai-completions', label: 'OpenAI Chat Completions' }, { value: 'anthropic-messages', label: 'Anthropic Messages' }]} onChange={setApi} size="sm" /></Labeled>
+        <Labeled label="Base URL"><TextInput aria-label="Base URL" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} mono /></Labeled>
+        <Labeled label={value?.credentialConfigured ? '替换 API Key（可留空）' : 'API Key'}><TextInput aria-label="API Key" type="password" autoComplete="new-password" value={key} onChange={(e) => setKey(e.target.value)} mono /></Labeled>
+      </div>
+      <div className="flex items-center justify-between border-t border-line pt-3">
+        <div><div className="text-xs font-medium text-fg">模型</div><div className="mt-0.5 text-2xs text-fg-subtle">上下文与输出上限会直接控制压缩和请求预算</div></div>
+        <Button size="sm" variant="outline" iconLeft={<Plus size={13} />} onClick={() => setModels((current) => [...current, blankModel()])}>添加模型</Button>
+      </div>
+      <div className="grid gap-3">
+        {models.map((model, index) => {
+          const modelId = String(model.id ?? '')
+          const inputs = Array.isArray(model.input) ? model.input : ['text']
+          return <div key={`${index}:${modelId}`} className="rounded-lg border border-line bg-surface-2 p-3">
+            <div className="mb-3 flex items-center justify-between gap-2">
+              <span className="text-xs font-medium text-fg">{modelId || `模型 ${index + 1}`}</span>
+              <Button aria-label={`删除模型 ${index + 1}`} size="xs" variant="ghost" disabled={models.length === 1} onClick={() => setModels((current) => current.filter((_, itemIndex) => itemIndex !== index))}><Trash2 size={12} /></Button>
+            </div>
+            <div className="grid gap-3 md:grid-cols-2">
+              <Labeled label="模型 ID"><TextInput aria-label={`模型 ${index + 1} ID`} value={modelId} onChange={(event) => updateModel(index, { id: event.target.value })} mono /></Labeled>
+              <Labeled label="显示名称"><TextInput aria-label={`模型 ${index + 1} 显示名称`} value={String(model.name ?? '')} onChange={(event) => updateModel(index, { name: event.target.value })} /></Labeled>
+              <Labeled label="上下文窗口"><TextInput aria-label={`模型 ${index + 1} 上下文窗口`} type="number" min={1} value={String(model.contextWindow ?? '')} onChange={(event) => updateModel(index, { contextWindow: event.target.value })} mono /></Labeled>
+              <Labeled label="最大输出"><TextInput aria-label={`模型 ${index + 1} 最大输出`} type="number" min={1} value={String(model.maxTokens ?? '')} onChange={(event) => updateModel(index, { maxTokens: event.target.value })} mono /></Labeled>
+            </div>
+            <div className="mt-3 flex flex-wrap items-center gap-5">
+              <Switch checked={Boolean(model.reasoning)} onChange={(checked) => updateModel(index, { reasoning: checked })} label="支持思考" />
+              <Switch checked={inputs.includes('image')} onChange={(checked) => updateModel(index, { input: checked ? ['text', 'image'] : ['text'] })} label="支持图片" />
+            </div>
+          </div>
+        })}
+      </div>
+    </div>
   </Dialog>
 }
 
@@ -217,7 +289,7 @@ function SubagentDialog({ open, value, trusted, saving, onClose, onSave }: { ope
   </Dialog>
 }
 
-function SettingsSection({ id, title, hint, icon, children }: { id: string; title: string; hint?: string; icon?: ReactNode; children: ReactNode }) { return <section id={`settings-${id}`} data-section={id} className="scroll-mt-4 flex flex-col gap-3"><div className="flex flex-wrap items-center gap-2">{icon}<h2 className="text-xs font-semibold tracking-wide text-fg">{title}</h2>{hint ? <span className="text-2xs text-fg-subtle">{hint}</span> : null}</div><div className="surface-card flex flex-col gap-3 p-4">{children}</div></section> }
+function SettingsSection({ id, title, hint, icon, children }: { id: string; title: string; hint?: string; icon?: ReactNode; children: ReactNode }) { return <section id={`settings-${id}`} data-section={id} className="scroll-mt-4 flex flex-col gap-3"><div className="flex flex-wrap items-center gap-2">{icon}<h2 className="text-[13px] font-semibold tracking-wide text-fg">{title}</h2>{hint ? <span className="text-2xs text-fg-subtle">{hint}</span> : null}</div><div className="surface-card flex flex-col gap-4 rounded-xl p-5 shadow-soft">{children}</div></section> }
 function SectionToolbar({ text, onAdd, addLabel }: { text: string; onAdd: () => void; addLabel: string }) { return <div className="flex items-center justify-between gap-3"><span className="text-2xs text-fg-subtle">{text}</span><Button size="sm" variant="primary" iconLeft={<Plus size={13} />} onClick={onAdd}>{addLabel}</Button></div> }
 function Labeled({ label, children }: { label: string; children: ReactNode }) { return <div><FieldLabel>{label}</FieldLabel>{children}</div> }
 function Empty({ text }: { text: string }) { return <div className="rounded-lg border border-dashed border-line p-5 text-center text-xs text-fg-subtle">{text}</div> }

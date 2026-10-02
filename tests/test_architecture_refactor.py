@@ -110,6 +110,17 @@ class ModelBoundaryTests(unittest.TestCase):
         canonical_messages, _ = _convert_messages(canonical_context)
         self.assertEqual(canonical_messages[0]["reasoning_details"], [encrypted])
 
+        raw_context = Context(messages=[AssistantMessage(content=[
+            ThinkingContent(thinking="private reasoning"),
+            ToolCall(id="call", name="tool", arguments={}),
+        ])])
+        ordinary_messages, _ = _convert_messages(raw_context)
+        self.assertNotIn("reasoning_content", ordinary_messages[0])
+        deepseek_messages, _ = _convert_messages(
+            raw_context, requires_reasoning_content=True
+        )
+        self.assertEqual(deepseek_messages[0]["reasoning_content"], "private reasoning")
+
 
 class TrustAndExtensionTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):

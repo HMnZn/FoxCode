@@ -51,8 +51,20 @@ export function TitleBar() {
         isMac && 'pl-[76px]',
       )}
     >
-      <Tooltip content={sidebarCollapsed ? '展开侧栏 (Ctrl+B)' : '收起侧栏 (Ctrl+B)'} side="bottom">
-        <IconButton label="切换侧栏" variant="ghost" size="sm" onClick={() => toggleSidebar()}>
+      <Tooltip
+        content={sidebarCollapsed ? '展开侧栏 (Ctrl+B)' : '收起侧栏 (Ctrl+B)'}
+        side="bottom"
+        className="no-drag"
+      >
+        <IconButton
+          label="切换侧栏"
+          variant="ghost"
+          size="sm"
+          active={!sidebarCollapsed}
+          aria-controls="primary-sidebar"
+          aria-expanded={!sidebarCollapsed}
+          onClick={() => toggleSidebar()}
+        >
           <PanelLeft size={15} />
         </IconButton>
       </Tooltip>

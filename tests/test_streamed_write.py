@@ -36,6 +36,15 @@ class PartialJsonTests(unittest.TestCase):
             with self.subTest(raw=raw), self.assertRaises(ValueError):
                 parse_tool_arguments(raw)
 
+    def test_provider_raw_control_characters_inside_strings_are_preserved(self):
+        raw = '{"summary":"first line\nsecond line","steps":["inspect\tthen write"]}'
+        expected = {
+            "summary": "first line\nsecond line",
+            "steps": ["inspect\tthen write"],
+        }
+        self.assertEqual(parse_partial_json(raw), expected)
+        self.assertEqual(parse_tool_arguments(raw), expected)
+
 
 def chunk(arguments=None, *, first=False, finish=None, text=None):
     tool = None if arguments is None else [NS(

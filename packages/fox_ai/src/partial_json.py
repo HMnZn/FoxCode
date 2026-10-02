@@ -12,9 +12,27 @@ import json
 from typing import Any
 
 
+def _loads_provider_json(text: str) -> Any:
+    """Decode JSON, tolerating only raw control characters inside strings.
+
+    Some OpenAI-compatible providers occasionally stream a literal newline or
+    tab inside a tool argument string instead of its JSON escape. Python's
+    strict decoder rejects that otherwise complete object. Retrying with
+    ``strict=False`` for this one decoder error preserves the provider's text
+    without turning this into a general JSON-repair path.
+    """
+
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as exc:
+        if not exc.msg.startswith("Invalid control character"):
+            raise
+        return json.loads(text, strict=False)
+
+
 def parse_partial_json(text: str) -> dict[str, Any]:
     try:
-        value = json.loads(text)
+        value = _loads_provider_json(text)
         return value if isinstance(value, dict) else {}
     except (ValueError, RecursionError):
         pass
@@ -58,14 +76,14 @@ def parse_partial_json(text: str) -> dict[str, Any]:
     elif candidate.endswith(","):
         candidate = candidate[:-1]
     try:
-        value = json.loads(candidate + suffix)
+        value = _loads_provider_json(candidate + suffix)
         return value if isinstance(value, dict) else {}
     except (ValueError, RecursionError):
         # An unfinished object key is not a value yet. Preserve prior members.
         if in_string:
             prefix = text[:string_start].rstrip().rstrip(",")
             try:
-                value = json.loads(prefix + suffix)
+                value = _loads_provider_json(prefix + suffix)
                 return value if isinstance(value, dict) else {}
             except (ValueError, RecursionError):
                 pass
@@ -74,7 +92,7 @@ def parse_partial_json(text: str) -> dict[str, Any]:
 
 def parse_tool_arguments(text: str) -> dict[str, Any]:
     """Complete tool input must be an exact JSON object; never repair writes."""
-    value = json.loads(text)
+    value = _loads_provider_json(text)
     if not isinstance(value, dict):
         raise ValueError("Tool arguments must be a JSON object")
     return value

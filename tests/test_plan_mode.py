@@ -46,6 +46,10 @@ class PlanModeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(infer_interaction_mode("设计并实现这个缓存模块"), "default")
         self.assertEqual(infer_interaction_mode("给我完成 plan 模式，支持自动切换"), "default")
         self.assertEqual(infer_interaction_mode("修复登录失败问题"), "default")
+        self.assertEqual(
+            infer_interaction_mode("补进回归测试，不要降低断言；如测试失败则修实现"),
+            "default",
+        )
 
     def test_legacy_system_prompt_builder_still_gets_plan_policy(self) -> None:
         session = AgentSession(AgentSessionConfig(

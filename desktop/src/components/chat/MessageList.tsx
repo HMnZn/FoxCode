@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
-import { ArrowDown, Check, ChevronDown, ChevronRight, CornerDownLeft, FileCheck2, Slash, Sparkles, Wrench, X } from 'lucide-react'
+import { ArrowDown, Check, ChevronDown, ChevronRight, CornerDownLeft, FileCheck2, RefreshCw, Slash, Sparkles, Wrench, X } from 'lucide-react'
 import { Button, Chip } from '@/components/ui'
 import { FoxMascot } from '@/components/brand/Fox'
 import { Markdown, NoticePart, StreamingMarkdown, ThinkingPart } from '@/components/content'
 import { ToolCallCard } from '@/components/chat/ToolCallCard'
-import type { AssistantBlock, Block, PlanBlock, RunStatus, ToolsBlock, UserBlock } from '@/store/timeline'
+import type { AssistantBlock, Block, PlanBlock, RecoveryBlock, RunStatus, ToolsBlock, UserBlock } from '@/store/timeline'
 import { useSession } from '@/store/sessionStore'
 import { TOOL_STATUS_LABEL } from '@/types/protocol'
 import { displayUserText, formatCost, formatTokens } from '@/lib/format'
@@ -146,14 +146,14 @@ function AssistantBlockView({ block }: { block: AssistantBlock }) {
       ) : null}
 
       {block.error && block.stopReason !== 'aborted' ? (
-        <NoticePart tone="danger" title="本轮出错" description={block.error} />
+        <NoticePart tone="danger" title="模型调用失败" description={block.error} />
       ) : null}
 
       {TRUNCATED_REASONS.has(block.stopReason ?? '') ? (
         <NoticePart
           tone="warn"
           title="达到输出上限"
-          description="这次回答被 max_tokens 截断了。思考与正文共享同一个上限，可在 ~/.foxcode/settings.json 的 stream_options.max_tokens 调大它（比如 65536）。"
+          description="这次回答被 max_tokens 截断了。思考与正文共享同一个上限，可在模型设置中提高最大输出。"
         />
       ) : null}
 
@@ -261,6 +261,43 @@ function ToolsBlockView({ block }: { block: ToolsBlock }) {
   )
 }
 
+function RecoveryCard({ block }: { block: RecoveryBlock }) {
+  const retrying = block.status === 'retrying'
+  const recovered = block.status === 'recovered'
+  const title = block.recovery === 'context'
+    ? retrying ? '正在恢复上下文窗口' : recovered ? '上下文恢复完成' : '上下文恢复失败'
+    : retrying ? '正在恢复模型连接' : recovered ? '模型连接已恢复' : '模型调用失败'
+  return (
+    <section className={cn(
+      'my-2 overflow-hidden rounded-lg border bg-surface shadow-soft',
+      retrying ? 'border-warn/30' : recovered ? 'border-success/30' : 'border-danger/30',
+    )} aria-label={title}>
+      <div className="flex items-center gap-2 border-b border-line px-3 py-2.5">
+        <RefreshCw
+          size={14}
+          aria-hidden="true"
+          className={cn(retrying && 'animate-spin text-warn', recovered && 'text-success', block.status === 'failed' && 'text-danger')}
+        />
+        <span className="text-[12.5px] font-medium text-fg">{title}</span>
+        <Chip size="xs" tone={retrying ? 'warn' : recovered ? 'success' : 'danger'}>
+          {block.attempts.length} 次重试
+        </Chip>
+      </div>
+      <div className="flex flex-col gap-1.5 px-3 py-2.5 text-2xs text-fg-muted">
+        {block.attempts.map((item) => (
+          <div key={`${item.attempt}:${item.ts}`} className="grid min-w-0 grid-cols-[48px_minmax(0,1fr)] gap-2">
+            <span className="font-medium text-fg-subtle">第 {item.attempt} 次</span>
+            <span className="min-w-0 break-words font-mono">{item.message}</span>
+          </div>
+        ))}
+        {block.finalError ? (
+          <div className="mt-1 border-t border-line pt-2 text-danger">最终错误：{block.finalError}</div>
+        ) : null}
+      </div>
+    </section>
+  )
+}
+
 function BlockView({ block }: { block: Block }) {
   switch (block.kind) {
     case 'user':
@@ -280,6 +317,8 @@ function BlockView({ block }: { block: Block }) {
           collapsible={Boolean(block.description && block.description.length > 240)}
         />
       )
+    case 'recovery':
+      return <RecoveryCard block={block} />
     default:
       return null
   }

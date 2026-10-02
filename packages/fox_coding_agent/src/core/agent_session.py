@@ -210,7 +210,9 @@ class AgentSession(CoreAgentHarness):
             messages = [*self.state.messages, event.message]
             event.context_usage = ContextUsageSnapshot(
                 context_tokens=self._estimate_context_tokens(messages),
-                output_tokens=estimate_tokens(event.message),
+                # Output activity includes visible reasoning even when that
+                # reasoning is intentionally omitted from the next request.
+                output_tokens=estimate_tokens(event.message, include_thinking=True),
                 estimated=True,
             )
         await super()._on_agent_event(event, cancel_event)
@@ -365,7 +367,20 @@ class AgentSession(CoreAgentHarness):
                 )
             )
         )
-        return estimate_context_tokens(list(messages)) + overhead
+        return estimate_context_tokens(
+            list(messages),
+            include_thinking=self._replays_thinking(),
+        ) + overhead
+
+    def _replays_thinking(self, model: Model | None = None) -> bool:
+        """Whether this provider sends raw reasoning back on later requests."""
+
+        selected = model or self.state.model
+        return bool(
+            (selected.compat or {}).get(
+                "requiresReasoningContentOnAssistantMessages", False
+            )
+        )
 
     def context_tokens(self) -> int:
         """Current backend estimate used by hosts before the first model usage."""
@@ -392,7 +407,16 @@ class AgentSession(CoreAgentHarness):
                 key = await maybe_await(self.session_config.get_api_key(model.provider))
                 if key:
                     summary_options["api_key"] = key
+            last_summary_update = 0.0
             async def on_summary_update(message) -> None:
+                nonlocal last_summary_update
+                now = time.monotonic()
+                # Providers can split output into hundreds of tiny chunks.  A
+                # progress frame per chunk floods Electron IPC without making
+                # the compacting indicator more informative.
+                if now - last_summary_update < 0.1:
+                    return
+                last_summary_update = now
                 await self._emit(
                     CompactionEvent(
                         "compaction_update",
@@ -408,6 +432,7 @@ class AgentSession(CoreAgentHarness):
                 self.session_config.compaction,
                 **{
                     **summary_options,
+                    "include_thinking": self._replays_thinking(model),
                     "stream_fn": self.session_config.stream_fn,
                     "summary_fn": self.session_config.summary_fn,
                     "cancel_event": cancel_event,

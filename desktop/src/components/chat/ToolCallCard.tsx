@@ -178,7 +178,7 @@ export function ToolCallCard({ call, defaultExpanded }: ToolCallCardProps) {
         ) : null}
         {call.name === 'agent' && call.childContext ? (
           <span className="shrink-0 font-mono text-2xs tabular-nums text-info">
-            {formatTokens(call.childContext.contextTokens)} tokens
+            子上下文 {formatTokens(call.childContext.contextTokens)}
           </span>
         ) : null}
         <span className="shrink-0 font-mono text-2xs tabular-nums text-fg-subtle">
@@ -197,6 +197,14 @@ export function ToolCallCard({ call, defaultExpanded }: ToolCallCardProps) {
         <div className="flex flex-col gap-2 px-1.5 pt-1 pb-2 pl-[26px]">
           {call.status === 'awaiting-approval' ? (
             <p className="text-2xs text-warn">等待你在下方授权面板中确认后才会执行。</p>
+          ) : null}
+
+          {call.name === 'agent' && call.childContext ? (
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-sm bg-info-soft/50 px-2 py-1.5 text-2xs text-info">
+              <span>隔离上下文 {formatTokens(call.childContext.contextTokens)}</span>
+              <span>子输出 {formatTokens(call.childContext.outputTokens)}</span>
+              {call.childContext.estimated ? <span className="text-fg-subtle">实时估算</span> : null}
+            </div>
           ) : null}
 
           {call.updates.length > 0 ? (

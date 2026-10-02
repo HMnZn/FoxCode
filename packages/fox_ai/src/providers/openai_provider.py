@@ -410,6 +410,8 @@ def _convert_tools(
 def _convert_messages(
     context: Context,
     grammar_tool_input_properties: dict[str, str] | None = None,
+    *,
+    requires_reasoning_content: bool = False,
 ) -> tuple[list[dict[str, Any]], dict[str, str] | None]:
     """Context.messages -> OpenAI messages。返回 (messages, dev_headers)。"""
     out: list[dict[str, Any]] = []
@@ -485,6 +487,16 @@ def _convert_messages(
                 entry["content"] = "\n".join(text_parts)
             if tool_calls:
                 entry["tool_calls"] = tool_calls
+            # DeepSeek-compatible endpoints may require the original
+            # reasoning_content on the assistant tool-call message.  Most
+            # providers should not receive hidden chain-of-thought again, so
+            # this is strictly capability-gated instead of always replayed.
+            if requires_reasoning_content and thinking_blocks:
+                reasoning_content = "\n".join(
+                    block.thinking for block in thinking_blocks if block.thinking
+                )
+                if reasoning_content:
+                    entry["reasoning_content"] = reasoning_content
             if preserved_reasoning_details:
                 entry["reasoning_details"] = preserved_reasoning_details
             out.append(entry)
@@ -531,7 +543,13 @@ def _run_openai_stream(
             context.tools,
             compat.get("supportsOpenAIGrammarTools", False),
         )
-        messages, _ = _convert_messages(context, grammar_tool_input_properties)
+        messages, _ = _convert_messages(
+            context,
+            grammar_tool_input_properties,
+            requires_reasoning_content=bool(
+                compat.get("requiresReasoningContentOnAssistantMessages", False)
+            ),
+        )
         params: dict[str, Any] = {
             "model": model.id,
             "messages": messages,

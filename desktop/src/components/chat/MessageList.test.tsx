@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen } from '@testing-library/react'
 import { MessageList } from './MessageList'
-import type { Block, PlanBlock, ToolCallState, ToolsBlock } from '@/store/timeline'
+import type { Block, PlanBlock, RecoveryBlock, ToolCallState, ToolsBlock } from '@/store/timeline'
 import { useSession } from '@/store/sessionStore'
 import { useFiles } from '@/store/filesStore'
 
@@ -113,5 +113,23 @@ describe('MessageList tool group', () => {
     }])
     expect(screen.getByText('使用技能 · api-request-planner')).toBeTruthy()
     expect(screen.queryByText(/secret body/)).toBeNull()
+  })
+
+  it('renders all model retry attempts in one recovery card', () => {
+    const recovery: RecoveryBlock = {
+      kind: 'recovery', id: 'r1', ts: 1, recovery: 'model', status: 'recovered',
+      attempts: [
+        { attempt: 1, message: 'connection error', ts: 1 },
+        { attempt: 2, message: 'stream timeout', ts: 2 },
+        { attempt: 3, message: 'connection error', ts: 3 },
+      ],
+    }
+    renderBlocks([recovery])
+
+    expect(screen.getAllByRole('region', { name: '模型连接已恢复' })).toHaveLength(1)
+    expect(screen.getByText('3 次重试')).toBeTruthy()
+    expect(screen.getByText('第 1 次')).toBeTruthy()
+    expect(screen.getByText('第 3 次')).toBeTruthy()
+    expect(screen.queryByText('本轮出错')).toBeNull()
   })
 })

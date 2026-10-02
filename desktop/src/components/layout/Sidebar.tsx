@@ -153,7 +153,7 @@ export function Sidebar() {
 
   if (collapsed) {
     return (
-      <nav aria-label="主导航" className="flex w-14 shrink-0 flex-col items-center border-r border-line bg-surface py-2">
+      <nav id="primary-sidebar" aria-label="主导航" className="flex w-14 shrink-0 flex-col items-center border-r border-line bg-surface py-2">
         <span className="mb-3 grid size-9 place-items-center"><FoxMark size={24} tone="outline" /></span>
         <Tooltip content="新会话" side="right">
           <IconButton label="新建会话" variant="outline" size="md" onClick={startNew}>
@@ -166,15 +166,24 @@ export function Sidebar() {
           </IconButton>
         </Tooltip>
         <span className="flex-1" />
-        <IconButton label="设置" variant="ghost" size="md" onClick={() => setView('settings')}>
-          <Settings size={16} />
-        </IconButton>
+        <Tooltip content="设置" side="right">
+          <IconButton
+            label="设置"
+            variant="ghost"
+            size="md"
+            active={view === 'settings'}
+            onClick={() => setView('settings')}
+          >
+            <Settings size={16} />
+          </IconButton>
+        </Tooltip>
       </nav>
     )
   }
 
   return (
     <nav
+      id="primary-sidebar"
       aria-label="主导航"
       className="relative flex shrink-0 flex-col border-r border-line bg-surface"
       style={{ width: sidebarWidth }}

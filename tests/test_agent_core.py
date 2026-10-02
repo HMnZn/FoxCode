@@ -16,6 +16,7 @@ from fox_agent_core.src import (
 from fox_coding_agent.src import (
     AgentSession, AgentSessionConfig, CompactionSettings, SessionManager, JsonlSessionStorage, compact, find_cut_point
 )
+from fox_agent_core.src.harness import estimate_tokens
 
 
 def scripted(*scripts):
@@ -59,6 +60,15 @@ def call(id="a", value="hello"):
 class AgentTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         clear_scripts()
+
+    def test_hidden_thinking_is_not_counted_as_replayed_context(self):
+        message = AssistantMessage(content=[
+            ThinkingContent(thinking="x" * 400),
+            TextContent(text="answer"),
+        ])
+        without_thinking = estimate_tokens(message)
+        with_thinking = estimate_tokens(message, include_thinking=True)
+        self.assertGreater(with_thinking, without_thinking + 90)
 
     async def test_tool_round_trip_and_progress_order(self):
         async def execute(id, args, cancel, update):

@@ -14,6 +14,7 @@ from fox_coding_agent.src import AgentSessionRuntime
 from fox_coding_agent.src.extensions.mcp import McpConnection, McpServerConfig, load_mcp_config
 from fox_coding_agent.src.extensions.mcp.client import _portable_command, _subprocess_environment
 from fox_coding_agent.src.extensions.subagent import discover_subagents
+from fox_coding_agent.src.extensions.subagent.extension import SubAgentExtensionConfig
 
 from test_agent_core import scripted
 
@@ -103,6 +104,9 @@ class ExtensionWorkspace(unittest.IsolatedAsyncioTestCase):
         self.addAsyncCleanup(runtime.close)
         return runtime
 
+    def test_subagent_default_turn_budget_uses_harness_maximum(self):
+        self.assertEqual(SubAgentExtensionConfig().max_turns, 100)
+
     async def test_subagent_runs_with_isolated_history_and_custom_profiles(self):
         write(self.user / "settings.json", {"extensions": [
             "module:fox_coding_agent.src.extensions.subagent:setup",
@@ -150,6 +154,36 @@ You are the project reviewer. Inspect evidence and report only findings.
             if event.partial_result.details
         ]
         self.assertTrue(any(item.get("context_tokens", 0) > 0 for item in live_usage))
+
+    async def test_plan_subagent_returns_text_without_interactive_submit_plan(self):
+        write(self.user / "settings.json", {"extensions": [
+            "module:fox_coding_agent.src.extensions.subagent:setup",
+        ]})
+        stream = scripted(
+            FauxScript(tool_calls=[ToolCall(id="delegate", name="agent", arguments={
+                "description": "design module",
+                "prompt": "Design a detailed implementation plan for module.py",
+                "type": "plan",
+            })]),
+            FauxScript(text="ordered implementation plan"),
+            FauxScript(text="parent received the plan"),
+        )
+        runtime = self.runtime(stream)
+
+        await runtime.prompt("delegate this task to a specialist")
+
+        child_context = stream.contexts[1]
+        self.assertIn("planning sub-agent", child_context.system_prompt)
+        self.assertNotIn("Mode: plan", child_context.system_prompt)
+        self.assertEqual(
+            [tool.name for tool in child_context.tools],
+            ["read", "grep", "find", "ls"],
+        )
+        result = next(
+            message for message in runtime.state.messages
+            if message.role == "toolResult" and message.tool_name == "agent"
+        )
+        self.assertEqual(result.content[0].text, "ordered implementation plan")
 
     async def test_subagent_child_tools_use_parent_approval_hook(self):
         write(self.user / "settings.json", {"extensions": [

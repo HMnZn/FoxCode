@@ -12,9 +12,23 @@ const sidecarConfigured = sidecarArg?.split('=')[1] === '1'
 
 /** Wrap an ipcRenderer listener so the renderer only gets the payload. */
 function subscribe(channel, listener) {
+  let active = true
   const handler = (_event, payload) => listener(payload)
   ipcRenderer.on(channel, handler)
-  return () => ipcRenderer.removeListener(channel, handler)
+  // The Python child can become ready before React mounts. IPC events are not
+  // buffered, so replay the main process' current state after subscribing.
+  if (channel === 'host:transport') {
+    void ipcRenderer.invoke('host:transport-status').then(
+      (payload) => {
+        if (active) listener(payload)
+      },
+      () => {},
+    )
+  }
+  return () => {
+    active = false
+    ipcRenderer.removeListener(channel, handler)
+  }
 }
 
 contextBridge.exposeInMainWorld('foxcode', {

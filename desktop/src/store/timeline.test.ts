@@ -8,7 +8,7 @@ import {
   applyPermissionRequest,
   markStalled,
 } from '@/store/timeline'
-import type { AssistantBlock, Block, ToolCallState, TimelineState } from '@/store/timeline'
+import type { AssistantBlock, Block, RecoveryBlock, ToolCallState, TimelineState } from '@/store/timeline'
 import { EMPTY_USAGE, PROTOCOL_VERSION } from '@/types/protocol'
 import type { HostEvent, HostFrame, PermissionRequest } from '@/types/protocol'
 
@@ -31,6 +31,14 @@ function onlyAssistant(blocks: Block[]): AssistantBlock {
 
 function toolCalls(blocks: Block[]): ToolCallState[] {
   return blocks.flatMap((block) => (block.kind === 'tools' ? block.calls : []))
+}
+
+function recoveryBlocks(blocks: Block[]): RecoveryBlock[] {
+  return blocks.filter((block): block is RecoveryBlock => block.kind === 'recovery')
+}
+
+function isEmptyAssistantError(block: Block): boolean {
+  return block.kind === 'assistant' && block.stopReason === 'error' && !block.text && !block.thinking
 }
 
 const userMessage = (text: string): HostEvent => ({
@@ -217,7 +225,7 @@ describe('timeline reducer', () => {
     expect(state.totals.toolCalls).toBe(1)
   })
 
-  it('tracks a sub-agent context live and clears it when the tool ends', () => {
+  it('keeps sub-agent context on its tool card without polluting parent context', () => {
     const running = run([
       {
         type: 'tool_execution_start',
@@ -239,7 +247,7 @@ describe('timeline reducer', () => {
       },
     ])
 
-    expect(running.context.live).toBe(12_345)
+    expect(running.context.used).toBe(0)
     expect(toolCalls(running.blocks)[0].childContext).toEqual({
       contextTokens: 12_345,
       outputTokens: 678,
@@ -253,8 +261,60 @@ describe('timeline reducer', () => {
       result: '验证完成',
       is_error: false,
     }))
-    expect(ended.context.live).toBe(0)
+    expect(ended.context.used).toBe(0)
     expect(toolCalls(ended.blocks)[0].childContext?.contextTokens).toBe(12_345)
+  })
+
+  it('groups retry attempts into one recovery card and removes transient error replies', () => {
+    const state = run([
+      { type: 'agent_start' },
+      { type: 'message_end', message: {
+        role: 'assistant', content: [], stopReason: 'error', errorMessage: 'connection error: Connection error.',
+      } },
+      { type: 'model_retry', attempt: 1, message: 'connection error: Connection error.' },
+      { type: 'message_end', message: {
+        role: 'assistant', content: [], stopReason: 'error', errorMessage: 'Model stream timeout: produced no event for 60s',
+      } },
+      { type: 'model_retry', attempt: 2, message: 'Model stream timeout: produced no event for 60s' },
+      { type: 'message_end', message: {
+        role: 'assistant', content: [{ type: 'text', text: '恢复完成' }], stopReason: 'stop',
+      } },
+      { type: 'agent_end' },
+    ])
+
+    expect(recoveryBlocks(state.blocks)).toEqual([
+      expect.objectContaining({
+        recovery: 'model',
+        status: 'recovered',
+        attempts: [
+          expect.objectContaining({ attempt: 1, message: 'connection error: Connection error.' }),
+          expect.objectContaining({ attempt: 2, message: 'Model stream timeout: produced no event for 60s' }),
+        ],
+      }),
+    ])
+    expect(state.blocks.filter(isEmptyAssistantError)).toHaveLength(0)
+    expect(state.blocks.filter((block) => block.kind === 'notice')).toHaveLength(0)
+    expect(state.status).toBe('idle')
+  })
+
+  it('settles an exhausted retry sequence as one failed recovery card', () => {
+    const state = run([
+      { type: 'agent_start' },
+      { type: 'message_end', message: {
+        role: 'assistant', content: [], stopReason: 'error', errorMessage: 'connection error',
+      } },
+      { type: 'model_retry', attempt: 1, message: 'connection error' },
+      { type: 'message_end', message: {
+        role: 'assistant', content: [], stopReason: 'error', errorMessage: 'service unavailable',
+      } },
+      { type: 'agent_end' },
+    ])
+
+    expect(recoveryBlocks(state.blocks)).toEqual([
+      expect.objectContaining({ status: 'failed', finalError: 'service unavailable' }),
+    ])
+    expect(state.blocks.filter(isEmptyAssistantError)).toHaveLength(0)
+    expect(state.status).toBe('error')
   })
 
   it('adds usage from the settled assistant message to the totals', () => {
@@ -484,7 +544,6 @@ describe('timeline reducer', () => {
       ),
     ])
 
-    expect(streaming.context.live).toBe(0)
     expect(streaming.context.used).toBe(1_016)
     expect(streaming.context.output).toBe(8)
     expect(streaming.context.source).toBe('host')
@@ -498,8 +557,7 @@ describe('timeline reducer', () => {
       },
     }))
 
-    // 权威 usage 到手后 live 归零，避免 used + live 重复计算。
-    expect(settled.context.live).toBe(0)
+    // 权威 usage 到手后替换流式快照，避免重复计算。
     expect(settled.context.used).toBe(1_200)
     expect(settled.context.source).toBe('usage')
   })

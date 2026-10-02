@@ -52,6 +52,24 @@ describe('FoxCode Studio shell', () => {
     })
   })
 
+  it('lets the title-bar control collapse and expand the sidebar', () => {
+    useUi.setState({ sidebarCollapsed: false })
+    render(<App />)
+
+    const toggle = screen.getByRole('button', { name: '切换侧栏' })
+    expect(toggle.closest('.no-drag')).toBeTruthy()
+    expect(toggle.getAttribute('aria-expanded')).toBe('true')
+
+    fireEvent.click(toggle)
+    expect(useUi.getState().sidebarCollapsed).toBe(true)
+    expect(toggle.getAttribute('aria-expanded')).toBe('false')
+    expect(screen.getByRole('navigation', { name: '主导航' }).className).toContain('w-14')
+
+    fireEvent.click(toggle)
+    expect(useUi.getState().sidebarCollapsed).toBe(false)
+    expect(toggle.getAttribute('aria-expanded')).toBe('true')
+  })
+
   it('asks for a workspace before anything else can happen', async () => {
     useWorkspace.setState({ current: null, recent: [WORKSPACE], applying: null, syncedFor: null })
 

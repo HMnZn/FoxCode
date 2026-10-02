@@ -21,12 +21,13 @@ class PathLayoutTests(unittest.TestCase):
     def test_user_inputs_and_project_outputs_have_one_layout(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
+            canonical_root = root.resolve()
             user = UserPaths.from_root(root / "user")
             project = ProjectPaths.from_root(root / "project")
-            self.assertEqual(user.mcp, root / "user" / "mcp.json")
-            self.assertEqual(user.skills, root / "user" / "skills")
-            self.assertEqual(project.tests, root / "project" / ".foxcode" / "artifacts" / "tests")
-            self.assertEqual(project.temp, root / "project" / ".foxcode" / "artifacts" / "tmp")
+            self.assertEqual(user.mcp, canonical_root / "user" / "mcp.json")
+            self.assertEqual(user.skills, canonical_root / "user" / "skills")
+            self.assertEqual(project.tests, canonical_root / "project" / ".foxcode" / "artifacts" / "tests")
+            self.assertEqual(project.temp, canonical_root / "project" / ".foxcode" / "artifacts" / "tmp")
 
 
 class SandboxToolTests(unittest.IsolatedAsyncioTestCase):

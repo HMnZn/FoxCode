@@ -7,7 +7,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
   AlertTriangle,
-  Bot,
   Check,
   Cpu,
   Download,
@@ -20,7 +19,6 @@ import {
   ShieldAlert,
   ShieldCheck,
   Sparkles,
-  ServerCog,
   SlidersHorizontal,
 } from 'lucide-react'
 import { Button, Chip, SegmentedControl, Select, Switch, toast } from '@/components/ui'
@@ -56,15 +54,13 @@ const THEME_OPTIONS: ReadonlyArray<{ value: 'dark' | 'light'; label: string }> =
   { value: 'light', label: '浅色' },
 ]
 
-type SectionId = 'session' | 'model' | 'runtime-defaults' | 'providers' | 'mcp' | 'subagents' | 'execution' | 'permission' | 'appearance' | 'demo'
+type SectionId = 'session' | 'model' | 'runtime-defaults' | 'providers' | 'execution' | 'permission' | 'appearance' | 'demo'
 
 const SECTION_NAV: ReadonlyArray<{ id: SectionId; label: string; icon: typeof Cpu }> = [
   { id: 'session', label: '会话', icon: FolderOpen },
   { id: 'model', label: '模型', icon: Cpu },
   { id: 'runtime-defaults', label: '运行默认值', icon: SlidersHorizontal },
   { id: 'providers', label: '模型供应商', icon: KeyRound },
-  { id: 'mcp', label: 'MCP', icon: ServerCog },
-  { id: 'subagents', label: 'Subagents', icon: Bot },
   { id: 'execution', label: '执行环境', icon: ShieldCheck },
   { id: 'permission', label: '权限', icon: ShieldAlert },
   { id: 'appearance', label: '外观', icon: Sparkles },
@@ -162,17 +158,24 @@ export function SettingsPage() {
 
   return (
     <div ref={scrollRef} className="scroll-quiet flex h-full flex-col overflow-y-auto bg-canvas">
-      <div className="mx-auto flex w-full max-w-[960px] flex-col gap-6 px-8 py-9 lg:px-12">
-        <header className="flex flex-wrap items-center gap-2">
-          <h1 className="text-[26px] leading-8 font-medium tracking-[-0.02em] text-fg">设置</h1>
-          <Chip size="sm" mono>
-            {host?.transport ?? '未连接'}
-          </Chip>
+      <div className="mx-auto flex w-full max-w-[1080px] min-w-0 flex-col gap-7 px-4 py-6 sm:px-7 sm:py-8 lg:px-11 lg:py-10">
+        <header className="flex flex-wrap items-end gap-4 border-b border-line pb-6">
+          <div className="min-w-0 flex-1">
+            <h1 className="text-[28px] leading-9 font-medium tracking-[-0.025em] text-fg">设置</h1>
+            <p className="mt-1.5 max-w-[68ch] text-xs leading-relaxed text-fg-muted">
+              配置当前会话、模型与执行边界。MCP 和 Subagent 已归到插件页，避免运行设置与扩展配置混在一起。
+            </p>
+          </div>
+          <div className="flex min-w-0 max-w-full items-center gap-2 rounded-lg border border-line bg-surface px-3 py-2 shadow-soft">
+            <span className="size-1.5 rounded-full bg-success" aria-hidden="true" />
+            <span className="max-w-[220px] truncate text-xs text-fg-muted">{host?.model.displayName ?? '尚未选择模型'}</span>
+            <Chip size="xs" mono>{host?.transport ?? '未连接'}</Chip>
+          </div>
         </header>
 
-        <div className="grid gap-8 min-[880px]:grid-cols-[172px_minmax(0,1fr)]">
+        <div className="grid min-w-0 gap-9 min-[880px]:grid-cols-[184px_minmax(0,1fr)]">
           <nav aria-label="设置分节" className="hidden min-[880px]:block">
-            <div className="sticky top-0 flex flex-col gap-0.5">
+            <div className="sticky top-0 flex flex-col gap-0.5 rounded-xl border border-line bg-surface p-2 shadow-soft">
               {nav.map((item) => {
                 const Icon = item.icon
                 const current = active === item.id
@@ -206,7 +209,7 @@ export function SettingsPage() {
           <div className="flex min-w-0 flex-col gap-6">
             <Section id="session" title="会话" hint="工作目录、落盘文件与会话级操作">
           <Row label="当前工作目录" hint="模型的相对路径、读写范围与信任判定都以它为基准">
-            <span className="font-mono text-xs text-fg-muted">
+            <span className="min-w-0 flex-1 truncate text-right font-mono text-xs text-fg-muted" title={host?.cwd ?? ''}>
               {host?.cwd ? shortPath(host.cwd) : '—'}
             </span>
             <Button
@@ -222,8 +225,8 @@ export function SettingsPage() {
 
           {failedWorkspace ? (
             <Row label="工作区未生效" hint="宿主拒绝了这次切换：它仍停在上面那个目录">
-              <div className="flex max-w-[520px] flex-col items-end gap-1.5">
-                <span className="font-mono text-xs text-warn">{shortPath(failedWorkspace, 48)}</span>
+              <div className="flex min-w-0 max-w-full flex-1 flex-col items-end gap-1.5">
+                <span className="max-w-full truncate font-mono text-xs text-warn" title={failedWorkspace}>{shortPath(failedWorkspace, 48)}</span>
                 {workspaceError ? (
                   <span className="max-w-[460px] text-right text-2xs text-fg-subtle">
                     {workspaceError}
@@ -243,7 +246,7 @@ export function SettingsPage() {
 
           {recentWorkspaces.length > 0 ? (
             <Row label="最近工作区" hint="换过的文件夹会记在这里，点击即可切回">
-              <div className="flex max-w-[520px] flex-wrap items-center justify-end gap-1.5">
+              <div className="flex w-full min-w-0 max-w-[520px] flex-wrap items-center justify-end gap-1.5">
                 {recentWorkspaces.map((path) => {
                   const active = samePath(host?.cwd, path)
                   return (
@@ -254,7 +257,7 @@ export function SettingsPage() {
                       title={path}
                       onClick={() => void openWorkspace(path)}
                       className={cn(
-                        'flex max-w-[240px] items-center gap-1.5 rounded-md px-2 py-1 text-[12px] transition-colors',
+                        'flex min-w-0 max-w-full items-center gap-1.5 overflow-hidden rounded-md px-2 py-1 text-[12px] transition-colors sm:max-w-[320px]',
                         active
                           ? 'bg-accent-soft text-accent'
                           : 'bg-surface-2 text-fg-muted hover:bg-surface-3 hover:text-fg',
@@ -262,9 +265,9 @@ export function SettingsPage() {
                       )}
                     >
                       <FolderTree size={12} aria-hidden="true" className="shrink-0" />
-                      <span className="truncate">{workspaceName(path)}</span>
-                      <span className="shrink-0 font-mono text-2xs opacity-70">
-                        {shortPath(path, 22)}
+                      <span className="max-w-[110px] shrink-0 truncate">{workspaceName(path)}</span>
+                      <span className="min-w-0 truncate font-mono text-2xs opacity-70">
+                        {shortPath(path, 34)}
                       </span>
                     </button>
                   )
@@ -274,7 +277,7 @@ export function SettingsPage() {
           ) : null}
 
           <Row label="会话文件" hint="当前会话以 JSONL 追加写入；文件即会话本身">
-            <span className="max-w-[420px] select-all truncate font-mono text-xs text-fg-muted" title={host?.sessionFile ?? ''}>
+            <span className="min-w-0 max-w-full flex-1 select-all truncate text-right font-mono text-xs text-fg-muted" title={host?.sessionFile ?? ''}>
               {host?.sessionFile || '（尚未创建）'}
             </span>
           </Row>
@@ -332,7 +335,7 @@ export function SettingsPage() {
 
         <Section id="model" title="模型" hint="模型与推理强度都由宿主执行，切换后立即生效">
           <Row label="模型" hint="上下文窗口决定单次请求可容纳的历史长度">
-            <div className="w-[320px]">
+            <div className="w-full max-w-[320px]">
               <Select
                 value={host?.model.id ?? null}
                 options={modelOptions}
@@ -356,7 +359,7 @@ export function SettingsPage() {
           </Row>
         </Section>
 
-        <SettingsControlPlane />
+        <SettingsControlPlane surface="settings" />
 
         <Section
           id="execution"
@@ -388,12 +391,12 @@ export function SettingsPage() {
             </div>
           ) : null}
           <Row label="用户配置根目录" hint="设置、模型、凭据、MCP、技能、扩展与会话">
-            <span className="max-w-[480px] truncate font-mono text-2xs text-fg-muted">
+            <span className="min-w-0 max-w-full flex-1 truncate text-right font-mono text-2xs text-fg-muted" title={host?.paths?.user.root ?? ''}>
               {host?.paths?.user.root ?? '—'}
             </span>
           </Row>
           <Row label="项目产物目录" hint="测试报告、覆盖率、截图、日志与临时文件">
-            <span className="max-w-[480px] truncate font-mono text-2xs text-fg-muted">
+            <span className="min-w-0 max-w-full flex-1 truncate text-right font-mono text-2xs text-fg-muted" title={host?.paths?.project.artifacts ?? '.foxcode/artifacts'}>
               {host?.paths?.project.artifacts ?? '.foxcode/artifacts'}
             </span>
           </Row>
@@ -502,12 +505,12 @@ function Section({
 
 function Row({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
   return (
-    <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-line pb-3 last:border-b-0 last:pb-0">
-      <div className="min-w-[170px]">
+    <div className="grid min-w-0 grid-cols-[minmax(150px,0.75fr)_minmax(0,1.25fr)] items-center gap-x-4 gap-y-2 border-b border-line pb-3 max-sm:grid-cols-1 last:border-b-0 last:pb-0">
+      <div className="min-w-0">
         <div className="text-xs text-fg">{label}</div>
         {hint && <div className="mt-0.5 text-2xs leading-relaxed text-fg-subtle">{hint}</div>}
       </div>
-      <div className="ml-auto flex flex-wrap items-center justify-end gap-2">{children}</div>
+      <div className="flex min-w-0 max-w-full flex-wrap items-center justify-end gap-2 max-sm:justify-start">{children}</div>
     </div>
   )
 }

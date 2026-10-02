@@ -38,7 +38,7 @@ runtime = AgentSessionRuntime(
 
 | 字段 | 默认 | 约束 | 作用 |
 |---|---:|---|---|
-| `max_turns` | `30` | `1..100` | 子会话最大模型轮次，超出后子会话结束 |
+| `max_turns` | `100` | `1..100` | 子会话最大模型轮次，超出后子会话结束 |
 | `auto_activate_tool` | `True` | — | `session_start` 时把 `agent` 幂等合并进当前激活工具列表 |
 
 `auto_activate_tool=False` 时，宿主 allowlist 或会话的人工工具选择保持最终决定权。

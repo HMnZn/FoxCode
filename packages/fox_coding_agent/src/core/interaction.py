@@ -21,7 +21,10 @@ _IMPLEMENT_RE = re.compile(
 _PLAN_RE = re.compile(
     r"(?:先|只|帮我|给我)?\s*(?:规划|计划|设计思路|设计方案|实施方案|技术方案|架构方案)"
     r"|(?:怎么|如何).{0,24}(?:设计|规划|实现)"
-    r"|(?:不要|无需|先不).{0,12}(?:修改|实现|动代码|写代码)"
+    # Keep the negation tied to the coding verb. A wider wildcard turned
+    # ordinary constraints such as "不要降低断言；失败则修实现" into a
+    # planning request and silently removed every write/shell tool.
+    r"|(?:不要|无需|先不).{0,6}(?:修改|实现|动代码|写代码)"
     r"|\b(?:plan|planning|proposal|approach|roadmap)\b"
     r"|\b(?:how (?:would|should|can) (?:we|i|you)|design)\b",
     re.IGNORECASE,

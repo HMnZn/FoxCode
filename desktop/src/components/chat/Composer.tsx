@@ -26,6 +26,7 @@ import {
 import { useSession } from '@/store/sessionStore'
 import { QueuedMessages } from '@/components/chat/QueuedMessages'
 import { useUi } from '@/store/uiStore'
+import { samePath, useWorkspace } from '@/store/workspaceStore'
 import { formatBytes } from '@/lib/format'
 import {
   INTERACTION_LABEL,
@@ -130,8 +131,16 @@ export function Composer({ draftKey, className, hero = false }: ComposerProps) {
   const implementPlan = useSession((s) => s.implementPlan)
   const selectModel = useSession((s) => s.selectModel)
   const bridge = useSession((s) => s.bridge)
+  const workspace = useWorkspace((s) => s.current)
+  const workspaceApplying = useWorkspace((s) => s.applying)
 
   const busy = timeline.status === 'streaming' || timeline.status === 'compacting'
+  // The remembered folder is available before the sidecar has necessarily
+  // finished `cwd.change`. Keep the draft editable, but do not let Enter send
+  // into the old session and then disappear when that switch completes.
+  const workspaceSwitching = Boolean(
+    workspace && (!host || workspaceApplying || !samePath(host.cwd, workspace)),
+  )
   const hasPendingPlan = timeline.blocks.some((block) => block.kind === 'plan' && !block.decision)
   const [picker, setPicker] = useState<number | null>(null)
   const [dir, setDir] = useState<WorkspaceDirectory | null>(null)
@@ -250,6 +259,10 @@ export function Composer({ draftKey, className, hero = false }: ComposerProps) {
   const submit = (interrupt = false) => {
     const text = value.trim()
     if (!text && images.length === 0) return
+    if (workspaceSwitching) {
+      toast.info({ title: '正在同步工作区', description: '任务已保留，工作区就绪后再发送。' })
+      return
+    }
     if (selectedSkill) {
       if (!text) {
         toast.info({ title: '请先描述要交给技能完成的任务' })
@@ -738,9 +751,9 @@ export function Composer({ draftKey, className, hero = false }: ComposerProps) {
             size="sm"
             aria-label="发送"
             className="size-8 rounded-full px-0"
-            disabled={!value.trim() && images.length === 0}
+            disabled={workspaceSwitching || (!value.trim() && images.length === 0)}
             iconLeft={<ArrowUp size={15} />}
-            title={busy ? '加入排队（这一轮结束后自动发送）· Ctrl/Cmd+Enter 立即插队' : '发送'}
+            title={workspaceSwitching ? '工作区同步完成后可发送' : busy ? '加入排队（这一轮结束后自动发送）· Ctrl/Cmd+Enter 立即插队' : '发送'}
             onClick={() => submit(false)}
           />
         </div>

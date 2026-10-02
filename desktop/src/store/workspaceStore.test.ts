@@ -16,6 +16,7 @@ const OTHER = 'D:\\work\\demo'
 const KEY = 'foxcode.workspace.v1'
 
 const originalChangeCwd = useSession.getState().changeCwd
+const originalRefreshSessions = useSession.getState().refreshSessions
 let calls: string[] = []
 
 function hostAt(cwd: string): HostInfo {
@@ -40,6 +41,7 @@ describe('workspaceStore', () => {
     window.localStorage.clear()
     useSession.setState({
       host: null,
+      refreshSessions: originalRefreshSessions,
       changeCwd: async (cwd: string) => {
         calls.push(cwd)
       },
@@ -58,7 +60,11 @@ describe('workspaceStore', () => {
   })
 
   afterEach(() => {
-    useSession.setState({ changeCwd: originalChangeCwd, host: null })
+    useSession.setState({
+      changeCwd: originalChangeCwd,
+      refreshSessions: originalRefreshSessions,
+      host: null,
+    })
     useWorkspace.setState({
       current: null,
       recent: [],
@@ -97,6 +103,24 @@ describe('workspaceStore', () => {
     expect(state.recent).toEqual([ROOT])
     expect(state.applying).toBeNull()
     expect(persisted()).toEqual({ current: ROOT, recent: [ROOT] })
+  })
+
+  it('rechecks a stale background-running row before blocking a workspace switch', async () => {
+    let refreshes = 0
+    useSession.setState({
+      host: hostAt(ROOT),
+      timeline: { ...useSession.getState().timeline, status: 'idle' },
+      sessions: [{ running: true } as never],
+      refreshSessions: async () => {
+        refreshes += 1
+        useSession.setState({ sessions: [{ running: false } as never] })
+      },
+    })
+
+    await useWorkspace.getState().open(OTHER)
+
+    expect(refreshes).toBe(1)
+    expect(calls).toEqual([OTHER])
   })
 
   it('adopts a workspace opened through a session without changing cwd', () => {

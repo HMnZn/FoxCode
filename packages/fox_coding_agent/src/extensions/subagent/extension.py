@@ -23,7 +23,10 @@ def _result(text: str, **details) -> AgentToolResult:
 
 @dataclass(frozen=True)
 class SubAgentExtensionConfig:
-    max_turns: int = 30
+    # Delegated coding tasks commonly need several inspect/edit/test cycles.
+    # Match the main harness ceiling so a child does not die after doing the
+    # work but before it has one final turn left to report the result.
+    max_turns: int = 100
     auto_activate_tool: bool = True
 
     def __post_init__(self) -> None:
@@ -150,6 +153,13 @@ class SubAgentService:
             thinking_level=parent.state.thinking_level,
             max_turns=self.config.max_turns,
             tool_execution=parent.session_config.tool_execution,
+            # A sub-agent returns its report directly to the parent tool call;
+            # it has no interactive host where somebody can accept a submitted
+            # plan. Its profile and allowed_tools already define the intended
+            # role. Auto-routing a prompt containing "design" or "plan" into
+            # interactive Plan mode exposes submit_plan, which is outside the
+            # child's capability set and leaves the delegation without text.
+            interaction_mode="default",
             before_tool_call=before_tool,
             model_retry_attempts=parent.session_config.model_retry_attempts,
         ))
@@ -199,7 +209,12 @@ class SubAgentService:
                 progress["phase"] = f"正在调用 {getattr(event, 'tool_name', '工具')}"
                 report_progress(force=True)
             elif kind == "tool_execution_end":
-                progress["phase"] = f"已完成 {getattr(event, 'tool_name', '工具')}，继续处理"
+                name = getattr(event, "tool_name", "工具")
+                progress["phase"] = (
+                    f"{name} 调用失败，正在恢复"
+                    if bool(getattr(event, "is_error", False))
+                    else f"已完成 {name}，继续处理"
+                )
                 report_progress(force=True)
             elif kind == "message_update":
                 usage = getattr(event, "context_usage", None)

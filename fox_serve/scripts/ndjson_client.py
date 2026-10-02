@@ -255,7 +255,9 @@ def main(argv: list[str] | None = None) -> int:
                         )
                         answered.add(request_id)
                 if any(frame.get("type") == "agent_end" for frame in client.file_frames):
-                    break
+                    info = client.request("host.info", timeout=10)
+                    if not bool(info.get("busy")):
+                        break
                 time.sleep(0.2)
             else:
                 print("（等待 agent_end 超时）")

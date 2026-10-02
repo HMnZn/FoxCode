@@ -65,6 +65,10 @@ const WINDOW_ICON =
 let win = null
 /** @type {Sidecar | null} */
 let sidecar = null
+/** Last sidecar state, replayed to renderers that subscribe after startup. */
+let transportStatus = SERVE
+  ? { state: 'connecting', detail: '正在启动 fox serve', since: Date.now() }
+  : { state: 'offline', detail: '未配置 fox serve', since: Date.now() }
 /** Embedded native PTYs owned by this process. */
 const terminals = new TerminalSessions()
 /** @type {Promise<void> | null} resolved when the FOXCODE_SHOT_CLICK sequence is done */
@@ -86,7 +90,10 @@ function createSidecar() {
   console.error(`[fox serve] spawn ${SERVE.command} ${SERVE.args.join(' ')} (cwd ${process.cwd()}, PYTHONPATH ${process.env.PYTHONPATH ?? REPO_ROOT})`)
   child.on('frame', (frame) => send('host:frame', frame))
   child.on('permission', (request) => send('host:permission', request))
-  child.on('transport', (status) => send('host:transport', status))
+  child.on('transport', (status) => {
+    transportStatus = status
+    send('host:transport', status)
+  })
   child.on('stderr', (text) => {
     // Keep the sidecar's stderr visible in the main-process log.
     console.error(`[fox serve] ${text}`)
@@ -428,6 +435,8 @@ ipcMain.handle('host:mode', () => ({
   platform: process.platform,
   theme: nativeTheme.shouldUseDarkColors ? 'dark' : 'light',
 }))
+
+ipcMain.handle('host:transport-status', () => transportStatus)
 
 ipcMain.handle('host:info', async () => {
   if (!sidecar) throw new Error('没有可用的 fox serve 宿主；当前运行在内置演示模式')

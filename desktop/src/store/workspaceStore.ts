@@ -218,7 +218,15 @@ export const useWorkspace = create<WorkspaceStore>((set, get) => {
       const busy = ['streaming', 'awaiting-approval', 'compacting'].includes(
         session.timeline.status,
       )
-      const backgroundBusy = session.sessions.some((item) => item.running)
+      let backgroundBusy = session.sessions.some((item) => item.running)
+      // `agent_end` reaches the renderer just before the host clears its
+      // runtime marker. A sessions refresh at that instant can therefore leave
+      // a stale `running: true` row. Recheck the authoritative list when that
+      // cached bit is the only reason a user action would be refused.
+      if (!busy && backgroundBusy && session.host?.cwd && !samePath(session.host.cwd, path)) {
+        await session.refreshSessions()
+        backgroundBusy = useSession.getState().sessions.some((item) => item.running)
+      }
       if ((busy || backgroundBusy) && session.host?.cwd && !samePath(session.host.cwd, path)) {
         remember(path.replace(/[\\/]+$/, ''))
         toast.info({

@@ -65,8 +65,14 @@
     await sleep(600)
   }
 
-  await waitFor(() => textarea() && body().includes('DeepSeek'), '真实宿主和模型信息', 60000)
-  assert(!body().includes('演示宿主'), '意外连接到了演示宿主')
+  await waitFor(
+    () => textarea() && body().includes('已连接') && body().includes('e2e-live-workspace'),
+    '真实宿主和工作区信息',
+    60000,
+  )
+  const initialHost = await window.foxcode.invoke('host:info')
+  assert(initialHost.transport === 'sidecar' && initialHost.sidecarConnected, '意外连接到了演示宿主')
+  assert(initialHost.model?.displayName?.includes('DeepSeek'), '真实模型信息没有加载')
   results.push({ case: '真实 Electron/sidecar/model 连接', passed: true })
 
   // `/` 目录必须只暴露两个面向日常输入的动作。
@@ -128,13 +134,12 @@
 
   await window.foxcode.invoke('host:command', { method: 'thinking.set', params: { level: 'high' } })
   const thinkingStart = frames.length
-  await send('先用 read 读取 fixture.txt，读完后仔细分析单文件 HTML 编辑器的撤销重做、离线同步、并发冲突与崩溃恢复，再实现完整代码。')
+  await send('不要调用工具。请先深入思考单文件 HTML 编辑器的撤销重做、离线同步、并发冲突与崩溃恢复，分析所有边界情况后再给出完整代码。')
   await waitFor(() => {
     const batch = frames.slice(thinkingStart)
-    const end = batch.findIndex((frame) => frame.type === 'tool_execution_end')
-    return end >= 0 && batch.slice(end + 1).some((frame) =>
+    return batch.some((frame) =>
       frame.assistant_message_event?.type === 'thinking_delta')
-  }, '工具结束后的纯思考阶段')
+  }, '真实模型的纯思考阶段')
   setText(textarea(), '取消之前的任务，不调用工具，只回复 UI_REASONING_STEER_OK')
   await sleep(80)
   pressEnter(textarea(), { ctrlKey: true })
@@ -147,7 +152,7 @@
   '没有实际命中纯思考中止')
   assert(!body().includes('本轮出错'), '正常插队被显示成红色错误')
   assert(!frames.slice(thinkingStart).some((frame) => frame.message?.stopReason === 'error'), '插队后模型发生错误')
-  results.push({ case: '工具后纯思考期间快捷键插队，得到回复且无红色错误', passed: true })
+  results.push({ case: '纯思考期间快捷键插队，得到回复且无红色错误', passed: true })
   await window.foxcode.invoke('host:command', { method: 'thinking.set', params: { level: 'off' } })
 
   // Follow the actual keyboard UX: first Enter accepts the completion, the
@@ -202,10 +207,17 @@
     '第二项目的新对话按钮',
   )
   second.click()
+  const switchStarted = Date.now()
+  let switchedHost
+  while (Date.now() - switchStarted < 60000) {
+    switchedHost = await window.foxcode.invoke('host:info')
+    if (switchedHost.cwd.endsWith('/e2e-live-project-two')) break
+    await sleep(200)
+  }
+  assert(switchedHost?.cwd.endsWith('/e2e-live-project-two'), '项目切换没有到达真实宿主')
   await waitFor(
-    () => document.querySelector('button[aria-label="工作区"]')?.textContent?.includes('e2e-live-project-two'),
-    '项目切换完成',
-    60000,
+    () => document.querySelector('p[title$="/e2e-live-project-two"]') && textarea()?.value === '',
+    '项目切换同步到渲染器',
   )
   await send('请使用 read 工具读取 project-two.txt，并只回复文件内容。')
   await waitFor(

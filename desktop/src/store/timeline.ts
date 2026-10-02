@@ -88,7 +88,17 @@ export interface NoticeBlock {
   description?: string
 }
 
-export type Block = UserBlock | AssistantBlock | ToolsBlock | NoticeBlock | PlanBlock
+export interface RecoveryBlock {
+  kind: 'recovery'
+  id: string
+  ts: number
+  recovery: 'model' | 'context'
+  status: 'retrying' | 'recovered' | 'failed'
+  attempts: Array<{ attempt: number; message: string; ts: number }>
+  finalError?: string
+}
+
+export type Block = UserBlock | AssistantBlock | ToolsBlock | NoticeBlock | PlanBlock | RecoveryBlock
 
 export type RunStatus =
   | 'idle'
@@ -115,13 +125,6 @@ export interface ContextUsage {
   /** 上下文窗口大小；未知时为 0，UI 用默认值兜底。 */
   limit: number
   source: 'none' | 'usage' | 'compaction' | 'host'
-  /**
-   * 当前运行中的隔离子 agent 上下文。它不属于父 agent 的模型上下文，
-   * 状态栏会单独标注，子 agent 结束后归零。
-   *
-   * token 估算由 Python coding backend 负责，前端不再重复分词/按字符计数。
-   */
-  live?: number
   updatedAt?: number
 }
 
@@ -133,7 +136,6 @@ export const EMPTY_CONTEXT: ContextUsage = {
   output: 0,
   limit: 0,
   source: 'none',
-  live: 0,
 }
 
 export interface TimelineState {
@@ -216,8 +218,6 @@ function contextFromUsage(usage: Usage, limit: number, ts: number): ContextUsage
     output: usage.output,
     limit,
     source: 'usage',
-    // 权威数字到手 → 「实时估算」归零，否则进度条会在 used 与 used+live 之间反复横跳。
-    live: 0,
     updatedAt: ts,
   }
 }
@@ -239,7 +239,6 @@ function contextFromCompaction(
     output: context.output,
     limit: context.limit,
     source: 'compaction',
-    live: 0,
     updatedAt: ts,
   }
 }
@@ -281,7 +280,6 @@ function contextFromBackend(
     used: Math.max(0, snapshot.context_tokens),
     output: Math.max(0, snapshot.output_tokens),
     source: 'host',
-    live: 0,
     updatedAt: ts,
   }
 }
@@ -349,16 +347,6 @@ function findTool(blocks: Block[], toolCallId: string): ToolCallState | undefine
   return undefined
 }
 
-function activeChildContextTokens(blocks: Block[]): number {
-  return blocks.reduce((total, block) => {
-    if (block.kind !== 'tools') return total
-    return total + block.calls.reduce((sum, call) => {
-      if (call.status !== 'running' && call.status !== 'approved') return sum
-      return sum + (call.childContext?.contextTokens ?? 0)
-    }, 0)
-  }, 0)
-}
-
 function childContextFromDetails(details: Record<string, unknown> | undefined) {
   const value = details?.context_usage
   if (!value || typeof value !== 'object') return undefined
@@ -369,6 +357,83 @@ function childContextFromDetails(details: Record<string, unknown> | undefined) {
     outputTokens: typeof usage.output_tokens === 'number' ? Math.max(0, usage.output_tokens) : 0,
     estimated: usage.estimated !== false,
   }
+}
+
+function isTransientAssistantError(block: Block): boolean {
+  return block.kind === 'assistant' && block.stopReason === 'error' && !block.text && !block.thinking
+}
+
+/** One recovery sequence owns one card; failed attempts never leak out as assistant errors. */
+function upsertRecovery(
+  blocks: Block[],
+  recovery: RecoveryBlock['recovery'],
+  attempt: number | undefined,
+  message: string | undefined,
+  ts: number,
+): Block[] {
+  const cleaned = blocks.filter((block) => !isTransientAssistantError(block))
+  let index = -1
+  for (let i = cleaned.length - 1; i >= 0; i -= 1) {
+    const block = cleaned[i]
+    if (block.kind === 'user') break
+    if (block.kind === 'recovery' && block.recovery === recovery) {
+      index = i
+      break
+    }
+  }
+  const previous = index >= 0 ? cleaned[index] as RecoveryBlock : undefined
+  const number = attempt ?? (previous?.attempts.length ?? 0) + 1
+  const entry = { attempt: number, message: message?.trim() || '模型连接暂时不可用', ts }
+  const attempts = previous?.attempts.some((item) => item.attempt === number)
+    ? previous.attempts.map((item) => item.attempt === number ? entry : item)
+    : [...(previous?.attempts ?? []), entry]
+  const block: RecoveryBlock = previous
+    ? { ...previous, status: 'retrying', attempts, finalError: undefined }
+    : { kind: 'recovery', id: uid('recovery'), ts, recovery, status: 'retrying', attempts }
+  return index >= 0
+    ? cleaned.map((item, itemIndex) => itemIndex === index ? block : item)
+    : [...cleaned, block]
+}
+
+function settleLatestRecovery(
+  blocks: Block[],
+  status: 'recovered' | 'failed',
+  finalError?: string,
+): Block[] {
+  let index = -1
+  for (let i = blocks.length - 1; i >= 0; i -= 1) {
+    if (blocks[i].kind === 'user') break
+    if (blocks[i].kind === 'recovery') {
+      index = i
+      break
+    }
+  }
+  if (index < 0) return blocks
+  return blocks.map((block, itemIndex) =>
+    itemIndex === index && block.kind === 'recovery'
+      ? { ...block, status, finalError }
+      : block,
+  )
+}
+
+function failActiveRecovery(blocks: Block[], finalError?: string): Block[] {
+  let recoveryIndex = -1
+  for (let i = blocks.length - 1; i >= 0; i -= 1) {
+    const block = blocks[i]
+    if (block.kind === 'user') break
+    if (block.kind === 'recovery' && block.status === 'retrying') {
+      recoveryIndex = i
+      break
+    }
+  }
+  if (recoveryIndex < 0) return blocks
+  const errorIndex = blocks.findIndex(
+    (block, index) => index > recoveryIndex && isTransientAssistantError(block),
+  )
+  const cleaned = errorIndex >= 0
+    ? blocks.filter((_, index) => index !== errorIndex)
+    : blocks
+  return settleLatestRecovery(cleaned, 'failed', finalError)
 }
 
 function usageToTotals(totals: UsageTotals, usage: Usage | undefined, toolCalls = 0): UsageTotals {
@@ -493,11 +558,34 @@ function foldFrame(state: TimelineState, frame: HostFrame): TimelineState {
       return { ...state, status: 'streaming', activity: '模型生成中', lastError: undefined }
 
     case 'agent_end': {
-      const blocks = state.blocks.map((block) =>
+      let blocks = state.blocks.map((block) =>
         block.kind === 'assistant' && (block.textStreaming || block.thinkingStreaming)
           ? { ...block, textStreaming: false, thinkingStreaming: false }
           : block,
       )
+      let activeRecoveryIndex = -1
+      for (let i = blocks.length - 1; i >= 0; i -= 1) {
+        const block = blocks[i]
+        if (block.kind === 'user') break
+        if (block.kind === 'recovery' && block.status === 'retrying') {
+          activeRecoveryIndex = i
+          break
+        }
+      }
+      const finalError = blocks.find(
+        (block, index) => index > activeRecoveryIndex && isTransientAssistantError(block),
+      )
+      if (activeRecoveryIndex >= 0 && finalError?.kind === 'assistant') {
+        blocks = failActiveRecovery(blocks, finalError.error)
+        return {
+          ...state,
+          status: 'error',
+          activity: '模型调用失败',
+          lastError: finalError.error,
+          blocks,
+          streaming: undefined,
+        }
+      }
       return { ...state, status: 'idle', activity: '空闲', blocks, streaming: undefined }
     }
 
@@ -632,17 +720,16 @@ function foldFrame(state: TimelineState, frame: HostFrame): TimelineState {
             status: 'error',
             lastError: event.message ?? event.reason,
             activity: event.reason === 'aborted' ? '已中止' : '生成失败',
-            blocks: [
-              ...state.blocks,
-              {
-                kind: 'notice',
-                id: uid('notice'),
-                ts,
-                tone: event.reason === 'aborted' ? 'warn' : 'danger',
-                title: event.reason === 'aborted' ? '已中止当前生成' : '模型返回错误',
-                description: event.message ?? undefined,
-              },
-            ],
+            blocks: event.reason === 'aborted'
+              ? [...state.blocks, {
+                  kind: 'notice',
+                  id: uid('notice'),
+                  ts,
+                  tone: 'warn',
+                  title: '已中止当前生成',
+                  description: event.message ?? undefined,
+                }]
+              : state.blocks,
           }
         default:
           return state
@@ -676,8 +763,11 @@ function foldFrame(state: TimelineState, frame: HostFrame): TimelineState {
       }
       if (message.role === 'assistant') {
         const text = messageText(message)
+        const recoveredBlocks = message.stopReason !== 'error' && message.stopReason !== 'aborted'
+          ? settleLatestRecovery(state.blocks, 'recovered')
+          : state.blocks
         const existing = state.streaming
-          ? state.blocks.find(
+          ? recoveredBlocks.find(
               (block): block is AssistantBlock =>
                 block.kind === 'assistant' && block.id === state.streaming,
             )
@@ -701,7 +791,7 @@ function foldFrame(state: TimelineState, frame: HostFrame): TimelineState {
           }
           return {
             ...state,
-            blocks: replaceBlock(state.blocks, existing.id, settled),
+            blocks: replaceBlock(recoveredBlocks, existing.id, settled),
             totals,
             context,
             streaming: undefined,
@@ -724,7 +814,7 @@ function foldFrame(state: TimelineState, frame: HostFrame): TimelineState {
         }
         return {
           ...state,
-          blocks: [...state.blocks, block],
+          blocks: [...recoveredBlocks, block],
           totals,
           context,
           streaming: undefined,
@@ -809,9 +899,6 @@ function foldFrame(state: TimelineState, frame: HostFrame): TimelineState {
       return {
         ...state,
         blocks,
-        context: childContext
-          ? { ...state.context, live: activeChildContextTokens(blocks), updatedAt: ts }
-          : state.context,
       }
     }
 
@@ -854,7 +941,6 @@ function foldFrame(state: TimelineState, frame: HostFrame): TimelineState {
         ...state,
         activity: '空闲',
         blocks,
-        context: { ...state.context, live: activeChildContextTokens(blocks), updatedAt: ts },
         totals:
           existing && existing.status !== 'success' && status === 'success'
             ? state.totals
@@ -869,7 +955,7 @@ function foldFrame(state: TimelineState, frame: HostFrame): TimelineState {
         activity: '压缩上下文中',
         context:
           typeof frame.preTokens === 'number'
-            ? { ...state.context, used: frame.preTokens, live: 0, source: 'host', updatedAt: ts }
+            ? { ...state.context, used: frame.preTokens, source: 'host', updatedAt: ts }
             : state.context,
         blocks: [
           ...state.blocks,
@@ -944,18 +1030,16 @@ function foldFrame(state: TimelineState, frame: HostFrame): TimelineState {
     case 'model_retry':
       return {
         ...state,
+        status: 'streaming',
+        lastError: undefined,
         activity: frame.type === 'model_retry' ? '模型重试中' : '上下文溢出，重试中',
-        blocks: [
-          ...state.blocks,
-          {
-            kind: 'notice',
-            id: uid('notice'),
-            ts,
-            tone: 'warn',
-            title: frame.type === 'model_retry' ? '模型调用重试' : '上下文溢出自动重试',
-            description: frame.message ?? (frame.attempt ? `第 ${frame.attempt} 次` : undefined),
-          },
-        ],
+        blocks: upsertRecovery(
+          state.blocks,
+          frame.type === 'model_retry' ? 'model' : 'context',
+          frame.attempt,
+          frame.message,
+          ts,
+        ),
       }
 
     case 'error':

@@ -16,7 +16,16 @@ from typing import Any
 
 from fox_serve.approvals import PermissionPolicy
 from fox_serve.host import HostError, ServeHost, prompt_message
-from fox_ai.src import ImageContent, TextContent, ToolResultMessage, UserMessage
+from fox_ai.src import (
+    AssistantMessage,
+    ImageContent,
+    TextContent,
+    ToolCall,
+    ToolResultMessage,
+    UserMessage,
+)
+from fox_ai.src.events import ToolCallDeltaEvent, ToolCallEndEvent, ToolCallStartEvent
+from fox_agent_core.src.types import MessageUpdateEvent
 from fox_coding_agent.src.core.session_manager import SessionManager
 
 
@@ -92,6 +101,8 @@ def _bare_host(runtime: Any | None = None) -> ServeHost:
     host._tasks = set()
     host._runtime_tasks = {}
     host._running_runtimes = set()
+    host._toolcall_delta_at = {}
+    host._toolcall_delta_pending = {}
     host._tools = {}
     host._last_frame_at = time.time()
     host._log_line = lambda message: None
@@ -114,6 +125,102 @@ class AgentRunningFlagTests(unittest.TestCase):
         host._emit_frame({"type": "agent_start"})
         host._emit_frame({"type": "error", "error": "boom"})
         self.assertFalse(host._agent_running)
+
+    def test_tool_call_deltas_are_rate_limited_but_terminal_call_is_forwarded(self) -> None:
+        runtime = _StubRuntime()
+        host = _bare_host(runtime)
+        partial = AssistantMessage(
+            content=[ToolCall(id="write-1", name="write", arguments={})]
+        )
+
+        def update(stream_event: object) -> MessageUpdateEvent:
+            return MessageUpdateEvent(
+                message=partial,
+                assistant_message_event=stream_event,  # type: ignore[arg-type]
+            )
+
+        host._on_runtime_event(
+            runtime,
+            update(ToolCallStartEvent(content_index=0, partial=partial)),
+        )
+        host._on_runtime_event(
+            runtime,
+            update(ToolCallDeltaEvent(content_index=0, delta="a", partial=partial)),
+        )
+        host._on_runtime_event(
+            runtime,
+            update(ToolCallDeltaEvent(content_index=0, delta="b", partial=partial)),
+        )
+        # Simulate enough elapsed time without making the test sleep.
+        host._toolcall_delta_at[(id(runtime), 0)] -= 1
+        host._on_runtime_event(
+            runtime,
+            update(ToolCallDeltaEvent(content_index=0, delta="c", partial=partial)),
+        )
+        final_call = ToolCall(id="write-1", name="write", arguments={"content": "abc"})
+        host._on_runtime_event(
+            runtime,
+            update(
+                ToolCallEndEvent(
+                    content_index=0,
+                    tool_call=final_call,
+                    partial=AssistantMessage(content=[final_call]),
+                )
+            ),
+        )
+
+        stream_types = [
+            envelope["frame"]["assistant_message_event"]["type"]
+            for envelope in host.frames
+        ]
+        self.assertEqual(
+            stream_types,
+            ["toolcall_start", "toolcall_delta", "toolcall_delta", "toolcall_end"],
+        )
+        streamed_arguments = "".join(
+            envelope["frame"]["assistant_message_event"].get("delta", "")
+            for envelope in host.frames
+        )
+        self.assertEqual(streamed_arguments, "abc")
+        final_event = host.frames[-1]["frame"]["assistant_message_event"]
+        self.assertEqual(final_event["tool_call"]["arguments"], {"content": "abc"})
+        self.assertNotIn((id(runtime), 0), host._toolcall_delta_at)
+
+        # A call can finish before the throttle window elapses. Its queued
+        # fragment must be flushed immediately before the terminal event.
+        host.frames.clear()
+        host._on_runtime_event(
+            runtime,
+            update(ToolCallStartEvent(content_index=1, partial=partial)),
+        )
+        host._on_runtime_event(
+            runtime,
+            update(ToolCallDeltaEvent(content_index=1, delta="x", partial=partial)),
+        )
+        host._on_runtime_event(
+            runtime,
+            update(ToolCallDeltaEvent(content_index=1, delta="y", partial=partial)),
+        )
+        host._on_runtime_event(
+            runtime,
+            update(
+                ToolCallEndEvent(
+                    content_index=1,
+                    tool_call=final_call,
+                    partial=AssistantMessage(content=[final_call]),
+                )
+            ),
+        )
+        flushed = [envelope["frame"] for envelope in host.frames]
+        self.assertEqual(
+            "".join(item["assistant_message_event"].get("delta", "") for item in flushed),
+            "xy",
+        )
+        self.assertEqual(
+            [item["assistant_message_event"]["type"] for item in flushed],
+            ["toolcall_start", "toolcall_delta", "toolcall_delta", "toolcall_end"],
+        )
+        self.assertNotIn((id(runtime), 1), host._toolcall_delta_pending)
 
     def test_every_frame_moves_the_heartbeat(self) -> None:
         host = _bare_host()

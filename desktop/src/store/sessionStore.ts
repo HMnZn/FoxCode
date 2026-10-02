@@ -238,6 +238,13 @@ export const useSession = create<SessionStore>((set, get) => {
         if (status.state === 'ready' && previous === 'degraded') {
           toast.success({ title: '宿主连接已恢复' })
         }
+        // The renderer often mounts while the Python child is still importing.
+        // Its eager host.info then fails once; the authoritative ready event is
+        // the retry signal.  Without this, the bridge works but the whole UI
+        // remains stuck on "offline" until a full reload or manual action.
+        if (status.state === 'ready' && previous !== 'ready') {
+          void Promise.allSettled([get().refreshHost(), get().refreshSessions()])
+        }
       })
 
       BRIDGE.onFrame((frame) => {
@@ -266,6 +273,10 @@ export const useSession = create<SessionStore>((set, get) => {
         syncPermissionToasts(timeline.permissions.map((request) => request.id))
         if (frame.type === 'agent_end') {
           void get().refreshHost()
+          // Session rows carry their own `running` bit. Keeping a stale true
+          // value until the next polling tick can wrongly block an immediate
+          // workspace switch after a run finishes.
+          void get().refreshSessions()
           void useFiles.getState().refresh()
         }
       })

@@ -74,7 +74,7 @@ class CompactionResult:
 # ============================================================
 
 
-def estimate_tokens(message: Message) -> int:
+def estimate_tokens(message: Message, *, include_thinking: bool = False) -> int:
     """粗估单条消息的 token 数。
 
     启发式：提取所有文本内容，字符数 / 4。工具调用的参数 JSON 也计入。
@@ -91,7 +91,7 @@ def estimate_tokens(message: Message) -> int:
             if isinstance(block, TextContent):
                 total_chars += len(block.text)
                 non_ascii += sum(ord(ch) > 127 for ch in block.text)
-            elif isinstance(block, ThinkingContent):
+            elif isinstance(block, ThinkingContent) and include_thinking:
                 total_chars += len(block.thinking)
                 non_ascii += sum(ord(ch) > 127 for ch in block.thinking)
             elif isinstance(block, ToolCall):
@@ -105,9 +105,9 @@ def estimate_tokens(message: Message) -> int:
     return max(1, (total_chars - non_ascii + 3) // _CHARS_PER_TOKEN + non_ascii + image_tokens)
 
 
-def estimate_context_tokens(messages: list[Message]) -> int:
+def estimate_context_tokens(messages: list[Message], *, include_thinking: bool = False) -> int:
     """估算整个消息列表的 token 数。"""
-    return sum(estimate_tokens(m) for m in messages)
+    return sum(estimate_tokens(m, include_thinking=include_thinking) for m in messages)
 
 
 def calculate_context_tokens(usage: Usage | None) -> int:
@@ -151,6 +151,8 @@ def should_compact(
 def find_cut_point(
     messages: list[Message],
     keep_recent_tokens: int,
+    *,
+    include_thinking: bool = False,
 ) -> int:
     """找到压缩切割点。
 
@@ -164,7 +166,7 @@ def find_cut_point(
     acc = 0
     cut = len(messages)
     for i in range(len(messages) - 1, -1, -1):
-        msg_tokens = estimate_tokens(messages[i])
+        msg_tokens = estimate_tokens(messages[i], include_thinking=include_thinking)
         if acc + msg_tokens > keep_recent_tokens and i < len(messages) - 1:
             cut = i + 1
             break
@@ -257,7 +259,12 @@ async def compact(
     3. 返回 CompactionResult（summary + retained_tail）。
     """
     settings = settings or CompactionSettings()
-    cut = find_cut_point(messages, settings.keep_recent_tokens)
+    include_thinking = bool(options.pop("include_thinking", False))
+    cut = find_cut_point(
+        messages,
+        settings.keep_recent_tokens,
+        include_thinking=include_thinking,
+    )
     if cut == 0:
         # 全部保留，无需压缩
         return CompactionResult(summary="", retained_tail=list(messages), removed_count=0)

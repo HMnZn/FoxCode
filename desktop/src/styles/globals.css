@@ -418,6 +418,45 @@
   }
 }
 
+/* The session strip is itself resizable because sidebars share the window.
+ * Container queries keep it on one calm line and remove low-priority metrics
+ * before any label can wrap or bleed underneath the composer. */
+.session-status-bar {
+  container-type: inline-size;
+}
+.session-status-context-short {
+  display: none;
+}
+@container (max-width: 760px) {
+  .session-status-io {
+    display: none;
+  }
+}
+@container (max-width: 620px) {
+  .session-status-cost {
+    display: none;
+  }
+  .session-status-context-long {
+    display: none;
+  }
+  .session-status-context-short {
+    display: inline;
+  }
+}
+@container (max-width: 520px) {
+  .session-status-activity {
+    display: none;
+  }
+  .session-status-context {
+    border-left: 0;
+  }
+}
+@container (max-width: 340px) {
+  .session-status-model {
+    display: none;
+  }
+}
+
 /* Motion is decoration here: honour the OS "reduce motion" preference. */
 @media (prefers-reduced-motion: reduce) {
   *,
