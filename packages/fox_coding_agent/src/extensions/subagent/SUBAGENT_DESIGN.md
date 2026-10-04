@@ -39,6 +39,7 @@ runtime = AgentSessionRuntime(
 | 字段 | 默认 | 约束 | 作用 |
 |---|---:|---|---|
 | `max_turns` | `100` | `1..100` | 子会话最大模型轮次，超出后子会话结束 |
+| `report_timeout_seconds` | `60` | `5..300` | 工作已完成但报告丢失时，纯文本恢复轮次的超时 |
 | `auto_activate_tool` | `True` | — | `session_start` 时把 `agent` 幂等合并进当前激活工具列表 |
 
 `auto_activate_tool=False` 时，宿主 allowlist 或会话的人工工具选择保持最终决定权。
@@ -272,19 +273,22 @@ _select_tools()               求交集 / 校验缺口
 构建 child 并登记到 self._children
 订阅子事件 + 启动心跳 + 启动父取消中继
 await child.prompt(prompt)
-取最后一条 AssistantMessage 作为最终报告
+从审计分支读取最后一条 AssistantMessage 和成功工具结果
+必要时关闭工具与思考，追加一次纯文本报告恢复轮次
 finally：取消任务、child.abort()、wait_for_idle()、gather、出列
 ```
 
-最终报告的校验是严格的：
+结果处理区分「没有完成工作」和「工作完成但报告丢失」：
 
 - 没有任何 `AssistantMessage` → `RuntimeError("Sub-agent produced no assistant response")`；
-- `stop_reason in {"error", "aborted"}` → `RuntimeError(final.error_message or "Sub-agent failed")`；
-- 文本为空 → `RuntimeError("Sub-agent ended without a final text report; narrow the task or increase its turn budget")`。
+- 父任务取消 → 立即中止并返回取消错误；
+- 没有成功工具结果且模型以 `error` / `aborted` 结束 → 返回原始模型错误；
+- 已有成功工具结果但最终文本为空或流失败 → 在 60 秒内追加一次禁用工具和思考的报告轮次；
+- 恢复轮次仍无文本 → 返回带警示的合成报告，保留工作区成果供父 Agent 检查。
 
-最后一条错误信息解释了内置提示词里"必须保留一个纯文本收尾轮次"的约束来源：**以工具调用收尾的子 Agent 会被判为失败**，因为父 Agent 拿不到可读结论。
+失败流和 reasoning-only 消息保留在审计日志中，但不会被重放给模型。这样既能排障，又不会把无效消息写回上下文。
 
-成功返回的 `AgentToolResult` details 包含 `agent_type`、`description`、`usage`（来自 `child.session.usage_totals()`）和 `context_usage`。
+成功返回的 `AgentToolResult` details 包含 `agent_type`、`description`、`report_status`（`direct` / `recovered` / `synthesized`）、`report_error`、`usage`（来自 `child.session.usage_totals()`）和 `context_usage`。
 
 ### 8.2 取消
 
@@ -306,7 +310,7 @@ async def relay_parent_cancel() -> None:
 
 阶段（`phase`）随子事件迁移：`正在启动` → `正在请求模型`（`agent_start`）→ `正在思考`（`turn_start`）→ `正在调用 <tool>`（`tool_execution_start`）→ `已完成 <tool>，继续处理`（`tool_execution_end`）。
 
-节流策略是两级的：常规更新 0.2 秒节流（`message_update` 可能每个 token 到达多次），而在 `agent_start`、工具起止、以及 `done`/`text_end`/`thinking_end`/`toolcall_end` 这些语义边界上强制上报。另有一个 5 秒心跳任务，保证长工具调用期间父端不会看起来卡死。
+节流策略是两级的：常规更新 1 秒节流（`message_update` 可能每个 token 到达多次），而在 `agent_start`、工具起止、以及 `done`/`text_end`/`thinking_end`/`toolcall_end` 这些语义边界上强制上报。另有一个 5 秒心跳任务，保证长工具调用期间父端不会看起来卡死。桌面端对 `agent` 工具只保留最新一条进度，避免长任务生成数百行重复状态。
 
 details 携带 `agent_type`、`description`、`elapsed_seconds`、`heartbeat`，以及实时的 `context_usage{context_tokens, output_tokens, estimated}`——`estimated=True` 表示这是启发式估算而非精确 tokenizer。
 

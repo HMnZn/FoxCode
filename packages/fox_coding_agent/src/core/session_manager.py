@@ -395,6 +395,15 @@ class SessionManager:
                     return
                 if not message.content:
                     return
+                # Raw reasoning is intentionally excluded from subsequent
+                # requests. A reasoning-only assistant therefore has no valid
+                # provider-visible content and must stay audit-only too.
+                if not any(
+                    isinstance(block, ToolCall)
+                    or (isinstance(block, TextContent) and block.text.strip())
+                    for block in message.content
+                ):
+                    return
             if isinstance(message, ToolResultMessage) and message.tool_call_id in discarded_tool_calls:
                 discarded_tool_calls.discard(message.tool_call_id)
                 return

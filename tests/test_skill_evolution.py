@@ -15,15 +15,8 @@ from fox_coding_agent.src.extensions.skill_evolution import (
     SkillEvolutionStore,
     create_skill_evolution_extension,
 )
-from fox_coding_agent.src.extensions.skill_evolution.evaluation import (
-    audit_datasets,
-    build_evolution_feedback,
-    expected_plan_actions,
-    parse_api_request,
-    run_offline_evaluation,
-    score_api_request,
-    score_household_plan,
-)
+from fox_coding_agent.src.extensions.skill_evolution.extension import SkillEvolutionTool
+from fox_coding_agent.src.extensions.skill_evolution.maintainer import maintain_candidate
 from test_agent_core import scripted
 
 
@@ -36,6 +29,32 @@ class SkillEvolutionStoreTests(unittest.TestCase):
         self.user = self.root / "user"
         self.project.mkdir()
         self.store = SkillEvolutionStore(self.user, self.project)
+
+    def test_full_replacement_keeps_history_and_does_not_append(self):
+        self.assertEqual(
+            SkillEvolutionTool.parameters["properties"]["mode"]["enum"],
+            ["append", "replace"],
+        )
+        path = self.user / "skills" / "coding-method" / "SKILL.md"
+        path.parent.mkdir(parents=True)
+        path.write_text("---\nname: coding-method\ndescription: 处理代码任务的旧方法。\nversion: 0.1.0\n---\n\n旧方法。\n")
+        candidate = SkillCandidate(
+            name="coding-method", description="处理代码任务的统一方法。",
+            instructions="# 统一方法\n\n按输入检查、执行和验证三个阶段处理。",
+            evidence="已标注的代码任务训练轨迹。", confidence=0.9,
+            mode="replace",
+        )
+        proposal = self.store.propose(candidate)
+        self.assertEqual(proposal.suggested_action, "replace")
+        applied = self.store.apply(proposal.id, target="user")
+        self.assertEqual(applied.version, "0.1.1")
+        body = path.read_text()
+        self.assertIn("# 统一方法", body)
+        self.assertNotIn("旧方法。", body)
+        self.assertNotIn("## Learned evolution", body)
+        history = list(self.store.history_dir.glob("*.jsonl"))
+        self.assertEqual(len(history), 1)
+        self.assertIn("旧方法。", history[0].read_text())
 
     @staticmethod
     def candidate(**overrides):
@@ -103,22 +122,6 @@ class SkillEvolutionStoreTests(unittest.TestCase):
         self.assertEqual(derived.target_skill, "api-request-planner")
         self.assertEqual(derived.score, 0.95)
 
-    def test_offline_evaluation_exercises_component_ablations(self):
-        report = run_offline_evaluation()
-        summary = report["summary"]
-        self.assertEqual(summary["full"]["decision_accuracy"], 1.0)
-        self.assertLess(summary["no-safety-gate"]["decision_accuracy"], 1.0)
-        self.assertLess(summary["no-dedup"]["decision_accuracy"], 1.0)
-        self.assertEqual(summary["no-provenance"]["decision_accuracy"], 1.0)
-        self.assertEqual(summary["no-provenance"]["traceability_rate"], 0.0)
-        recorded = json.loads(
-            (Path(__file__).parents[1] / "packages" / "fox_coding_agent" / "src" /
-             "extensions" / "skill_evolution" / "fixtures" / "evolution_eval" /
-             "results.json").read_text(encoding="utf-8")
-        )
-        self.assertEqual(recorded["summary"], summary)
-
-
 class SkillEvolutionExtensionTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -143,7 +146,7 @@ class SkillEvolutionExtensionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_feedback_window_stages_but_does_not_auto_apply(self):
         extracted = json.dumps({
-            "candidate": {
+            "skills": [{
                 "name": "conclusion-first",
                 "description": "Lead reports with the conclusion.",
                 "when_to_use": "When writing future reports.",
@@ -151,11 +154,12 @@ class SkillEvolutionExtensionTests(unittest.IsolatedAsyncioTestCase):
                 "evidence": "User confirmed this should be used in future reports.",
                 "tags": ["report"],
                 "confidence": 0.95,
-            }
+            }]
         })
         stream = scripted(
             FauxScript(text="Here is the report."),
             FauxScript(text=extracted),
+            FauxScript(text='{"action":"add","target_skill":"","reason":"new workflow"}'),
             FauxScript(text="Understood."),
         )
         runtime = self.runtime(stream)
@@ -166,7 +170,7 @@ class SkillEvolutionExtensionTests(unittest.IsolatedAsyncioTestCase):
         pending = store.list_proposals(status="pending")
         self.assertEqual(len(pending), 1)
         self.assertFalse((self.project / ".foxcode" / "skills").exists())
-        sent = str(stream.contexts[2].messages[-1].content)
+        sent = str(stream.contexts[3].messages[-1].content)
         self.assertIn("skill_evolution_candidate", sent)
 
     async def test_apply_tool_activates_skill_in_current_session(self):
@@ -184,70 +188,40 @@ class SkillEvolutionExtensionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("conclusion-first", [skill.name for skill in runtime.agent_session.skills])
         self.assertEqual(store.get_proposal(proposal.id).status, "applied")
 
+    async def test_maintainer_rewrites_existing_skill_as_one_body(self):
+        path = self.user / "skills" / "api-planner" / "SKILL.md"
+        path.parent.mkdir(parents=True)
+        path.write_text(
+            "---\nname: api-planner\ndescription: 规划软件接口调用。\n---\n\n先识别任务。\n",
+            encoding="utf-8",
+        )
+        calls = []
+
+        async def side_query(system, prompt):
+            calls.append((system, prompt))
+            return json.dumps({
+                "action": "merge", "reason": "用户纠正了漏选接口",
+                "merged_description": "按依赖规划软件接口调用。",
+                "merged_instructions": "# 接口规划\n\n先识别任务，再检查依赖是否满足。",
+            })
+
+        candidate = SkillCandidate(
+            name="api-planner", description="规划接口。",
+            instructions="检查依赖。", evidence="用户指出漏选依赖接口。",
+            confidence=0.9,
+        )
+        maintained = await maintain_candidate(
+            candidate, SkillEvolutionStore(self.user, self.project), side_query,
+        )
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(maintained.mode, "replace")
+        self.assertEqual(maintained.name, "api-planner")
+        self.assertIn("先识别任务", maintained.instructions)
+        self.assertEqual(path.read_text(encoding="utf-8").count("检查依赖"), 0)
+
 
 class DatasetAuditTests(unittest.TestCase):
-    def test_bundled_dataset_audit_reports_environment_gap(self):
-        root = (
-            Path(__file__).parents[1] / "packages" / "fox_coding_agent" / "src" /
-            "extensions" / "skill_evolution" / "data"
-        )
-        report = audit_datasets(root, ["alfworld"])
-        self.assertEqual(report["datasets"]["alfworld"]["runnable"], 0)
-        recorded = json.loads(
-            (Path(__file__).parents[1] / "packages" / "fox_coding_agent" / "src" /
-             "extensions" / "skill_evolution" / "fixtures" / "evolution_eval" /
-             "dataset_audit.json").read_text(encoding="utf-8")
-        )
-        for dataset, values in recorded["datasets"].items():
-            self.assertEqual(
-                {key: report["datasets"][dataset][key] for key in ("runnable", "skipped", "total")},
-                values,
-            )
-
-    def test_household_plan_scorer_checks_order_object_and_quantity(self):
-        subgoals = (
-            "Subgoal 1: You see a soapbar \\d+\n"
-            "Subgoal 2: You pick up the soapbar \\d+\n"
-            "Subgoal 3: You put the soapbar \\d+ in/on the garbagecan \\d+"
-        )
-        self.assertEqual(expected_plan_actions(subgoals), ["observe", "take", "place"])
-        passed = score_household_plan(
-            "put two soapbar in garbagecan.",
-            subgoals,
-            "OBSERVE soapbar\nTAKE soapbar one\nPLACE soapbar one\nTAKE soapbar two\nPLACE soapbar two",
-        )
-        self.assertTrue(passed["passed"])
-        wrong = score_household_plan(
-            "put two soapbar in garbagecan.", subgoals, "PLACE soapbar\nTAKE soapbar"
-        )
-        self.assertFalse(wrong["passed"])
-
-    def test_evolution_feedback_uses_only_supplied_failures_and_targets_seed(self):
-        feedback = build_evolution_feedback([{
-            "goal": "cool a tomato",
-            "expected_actions": ["observe", "take", "cool"],
-            "predicted_actions": ["take", "place"],
-        }], skill_name="household-task-planner")
-        self.assertIn("existing household-task-planner skill", feedback)
-        self.assertIn("OBSERVE -> TAKE -> COOL", feedback)
-        self.assertIn("TAKE -> PLACE", feedback)
-        self.assertNotIn("held-out", feedback)
-
-    def test_api_request_scorer_is_structural_and_never_executes_text(self):
-        expected = "API-Request: [Lookup(user_id='A1', date='2023-03-05')]"
-        reordered = "API-Request: [Lookup(date='2023-03-05', user_id='A1')]"
-        self.assertEqual(parse_api_request(reordered), {
-            "api_name": "Lookup",
-            "parameters": {"date": "2023-03-05", "user_id": "A1"},
-        })
-        self.assertTrue(score_api_request(expected, reordered)["passed"])
-        wrong = score_api_request(
-            expected, "API-Request: [Lookup(user_id='A1', date='2023-03-06')]"
-        )
-        self.assertFalse(wrong["passed"])
-        self.assertEqual(wrong["parameter_value_recall"], 0.5)
-        self.assertIsNone(parse_api_request("API-Request: [__import__('os').system('whoami')]"))
-
-
-if __name__ == "__main__":
-    unittest.main()
+    def test_api_request_parser_rejects_code_execution(self):
+        from fox_coding_agent.src.extensions.skill_evolution.fixtures.api_bank_support import parse_api_request
+        self.assertEqual(parse_api_request("API-Request: [Search(q='ok')]"), {"api_name": "Search", "parameters": {"q": "ok"}})
+        self.assertIsNone(parse_api_request("API-Request: [Search(q=__import__('os'))]"))

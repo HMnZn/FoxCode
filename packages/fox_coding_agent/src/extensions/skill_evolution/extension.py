@@ -18,8 +18,11 @@ from fox_agent_core.src import AgentToolResult
 
 from fox_coding_agent.src.core.skills import LoadSkillsOptions, load_skills
 
-from .extraction import extract_candidate
+from .extraction import extract_candidate, parse_json_object
+from .maintainer import maintain_candidate
+from .online_eval import bind_store, evaluate_online_skill_evolution_async, reset_store
 from .models import SkillCandidate
+from .retrieval import format_retrieved_skill_context, retrieve_relevant_skills
 from .store import SkillEvolutionStore
 
 
@@ -75,6 +78,8 @@ class SkillEvolutionService:
         self.pending_window: list[dict[str, str]] = []
         self.latest_proposal_id = ""
         self.last_extraction_error = ""
+        self.retrieved_hits: list[dict[str, Any]] = []
+        self.pending_reference: dict[str, Any] | None = None
 
     def bind(self, context: Any) -> None:
         self.context = context
@@ -143,23 +148,94 @@ class SkillEvolutionService:
             if remaining <= 0:
                 break
         try:
-            candidate = await extract_candidate(list(reversed(bounded)), self.side_query)
+            candidate = await extract_candidate(list(reversed(bounded)), self.side_query,
+                                                self.pending_reference)
             self.last_extraction_error = ""
         except Exception as exc:  # extraction must never block the user's real prompt
             self.last_extraction_error = f"{type(exc).__name__}: {exc}"[:1000]
+            store.record_online(action="failed", skill="", messages=messages,
+                                result={}, error=self.last_extraction_error)
             return
         finally:
             self.pending_window = []
         if candidate is None or candidate.confidence < self.config.minimum_confidence:
+            store.record_online(action="none", skill="", messages=messages, result={},
+                                retrieved_reference=self.pending_reference)
+            return
+        original_name = candidate.name
+        try:
+            candidate = await maintain_candidate(candidate, store, self.side_query,
+                                                 self.pending_reference)
+        except Exception as exc:  # maintenance must not block the user's prompt
+            self.last_extraction_error = f"{type(exc).__name__}: {exc}"[:1000]
+            store.record_online(action="failed", skill=original_name, messages=messages,
+                                result={}, retrieved_reference=self.pending_reference,
+                                error=self.last_extraction_error)
+            return
+        if candidate is None:
+            store.record_online(action="discard", skill=original_name,
+                                messages=messages, result={},
+                                retrieved_reference=self.pending_reference)
             return
         session_id = str(self.context.session.storage.get_metadata().get("id") or "")
         proposal = store.propose(
             candidate, source_session=session_id, source_messages=messages,
         )
         self.latest_proposal_id = proposal.id
+        store.record_online(
+            action=("merge" if proposal.suggested_action in {"merge", "replace"} else "add"),
+            skill=candidate.name, messages=messages, result=proposal.to_dict(),
+            retrieved_reference=self.pending_reference,
+            error="; ".join(proposal.reasons) if proposal.status == "rejected" else "",
+        )
 
     def capture_run(self, messages: list[Any]) -> None:
         self.pending_window = _compact_messages(messages)
+        self.pending_reference = self.retrieved_hits[0] if self.retrieved_hits else None
+
+    def prepare_retrieval(self, message: Any) -> None:
+        incoming = _text(message)
+        context = self.context
+        if not incoming or context is None:
+            self.retrieved_hits = []
+            return
+        self.retrieved_hits = retrieve_relevant_skills(
+            incoming, list(context.agent_session.skills), limit=3,
+        )
+
+    async def judge_retrieval_use(self, messages: list[Any]) -> None:
+        if not self.retrieved_hits:
+            return
+        compact = _compact_messages(messages)
+        user = next((item["content"] for item in reversed(compact)
+                     if item["role"] == "user"), "")
+        assistant = next((item["content"] for item in reversed(compact)
+                          if item["role"] == "assistant"), "")
+        system = (
+            "Judge whether retrieved skills were relevant to the user request and "
+            "actually used in the assistant reply.\n"
+            'Output ONLY strict JSON: {"judgments":[{"name":"...",'
+            '"relevant":true|false,"used":true|false,"reason":"short"}]}.\n'
+            "A skill is used only if the reply follows its distinctive workflow or policy, "
+            "not merely because it was retrieved."
+        )
+        try:
+            result = parse_json_object(await self.side_query(
+                system, json.dumps({"user_message": user, "assistant_reply": assistant,
+                                    "retrieved_skills": self.retrieved_hits}, ensure_ascii=False),
+            ))
+            raw = result.get("judgments") if isinstance(result.get("judgments"), list) else []
+            by_name = {str(item.get("name") or ""): item for item in raw
+                       if isinstance(item, dict)}
+        except Exception:
+            by_name = {}
+        judgments = [{
+            "name": hit["name"], "retrieved": True,
+            "relevant": bool(by_name.get(hit["name"], {}).get("relevant")),
+            "used": bool(by_name.get(hit["name"], {}).get("used")),
+            "reason": str(by_name.get(hit["name"], {}).get("reason") or "")[:500],
+        } for hit in self.retrieved_hits]
+        self.require_store().record_usage_judgments(judgments)
 
     def candidate_context(self) -> str:
         if not self.latest_proposal_id:
@@ -197,6 +273,7 @@ class SkillEvolutionTool:
             "description": {"type": "string"},
             "when_to_use": {"type": "string"},
             "instructions": {"type": "string"},
+            "mode": {"type": "string", "enum": ["append", "replace"]},
             "evidence": {"type": "string"},
             "tags": {"type": "array", "items": {"type": "string"}, "maxItems": 8},
             "confidence": {"type": "number", "minimum": 0, "maximum": 1},
@@ -224,6 +301,7 @@ class SkillEvolutionTool:
                 description=str(params.get("description") or ""),
                 when_to_use=str(params.get("when_to_use") or ""),
                 instructions=str(params.get("instructions") or ""),
+                mode=str(params.get("mode") or "append"),
                 evidence=str(params.get("evidence") or ""),
                 tags=tuple(params.get("tags") or []),
                 confidence=float(params.get("confidence") or 0.0),
@@ -263,16 +341,21 @@ def create_skill_evolution_extension(config: SkillEvolutionConfig | None = None)
         async def before_prompt(data, context):
             if context.project_trusted:
                 await service.ingest_feedback(data.get("message", ""))
+                service.prepare_retrieval(data.get("message", ""))
 
-        def agent_end(data, context):
+        async def agent_end(data, context):
             if context.project_trusted:
-                service.capture_run(list(getattr(data, "messages", []) or []))
+                messages = list(getattr(data, "messages", []) or [])
+                service.capture_run(messages)
+                await service.judge_retrieval_use(messages)
 
         async def inject_proposal(messages, context):
             if not context.project_trusted:
                 return messages
             staged = service.candidate_context()
-            if not staged:
+            retrieved = format_retrieved_skill_context(service.retrieved_hits)
+            context_block = "\n\n".join(part for part in (retrieved, staged) if part)
+            if not context_block:
                 return messages
             index = next((i for i in range(len(messages) - 1, -1, -1)
                           if isinstance(messages[i], UserMessage)), None)
@@ -281,13 +364,13 @@ def create_skill_evolution_extension(config: SkillEvolutionConfig | None = None)
             updated = list(messages)
             user = messages[index].model_copy(deep=True)
             if isinstance(user.content, str):
-                user.content += "\n\n" + staged
+                user.content += "\n\n" + context_block
             else:
-                user.content = [*user.content, TextContent(text=staged)]
+                user.content = [*user.content, TextContent(text=context_block)]
             updated[index] = user
             return updated
 
-        def command(arguments, context):
+        async def command(arguments, context):
             store = service.require_store()
             parts = shlex.split(arguments)
             action = parts[0] if parts else "status"
@@ -305,8 +388,17 @@ def create_skill_evolution_extension(config: SkillEvolutionConfig | None = None)
                 return store.discard(parts[1], reason=" ".join(parts[2:])).to_dict()
             if action == "dir":
                 return str(store.state_dir)
+            if action == "eval":
+                token = bind_store(store)
+                try:
+                    return await evaluate_online_skill_evolution_async(
+                        side_query=service.side_query,
+                    )
+                finally:
+                    reset_store(token)
             raise ValueError(
-                "Usage: /skill-evolution [status|list|read ID|apply ID [project|user]|discard ID [REASON]|dir]"
+                "Usage: /skill-evolution [status|list|read ID|apply ID [project|user]|"
+                "discard ID [REASON]|eval|dir]"
             )
 
         api.add_prompt_guideline(

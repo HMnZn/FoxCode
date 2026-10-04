@@ -245,6 +245,11 @@ describe('timeline reducer', () => {
           },
         },
       },
+      {
+        type: 'tool_execution_update',
+        tool_call_id: 'child-1',
+        partial_result: '子 Agent 运行中 · 正在调用 write',
+      },
     ])
 
     expect(running.context.used).toBe(0)
@@ -253,6 +258,9 @@ describe('timeline reducer', () => {
       outputTokens: 678,
       estimated: true,
     })
+    expect(toolCalls(running.blocks)[0].updates).toEqual([
+      '子 Agent 运行中 · 正在调用 write',
+    ])
 
     const ended = applyFrame(running, frame({
       type: 'tool_execution_end',

@@ -6,7 +6,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Literal
 
 
-EvolutionAction = Literal["add", "merge", "discard"]
+EvolutionAction = Literal["add", "merge", "replace", "discard"]
 ProposalStatus = Literal["pending", "applied", "discarded", "rejected"]
 
 
@@ -21,6 +21,7 @@ class SkillCandidate:
     evidence: str = ""
     tags: tuple[str, ...] = ()
     confidence: float = 0.0
+    mode: Literal["append", "replace"] = "append"
 
     def to_dict(self) -> dict[str, Any]:
         value = asdict(self)
@@ -70,6 +71,7 @@ class EvolutionProposal:
             evidence=str(raw.get("evidence") or ""),
             tags=tuple(str(item) for item in raw.get("tags", []) if str(item).strip()),
             confidence=float(raw.get("confidence") or 0.0),
+            mode=str(raw.get("mode") or "append"),  # type: ignore[arg-type]
         )
         return cls(
             id=str(value.get("id") or ""),

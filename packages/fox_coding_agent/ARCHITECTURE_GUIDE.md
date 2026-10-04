@@ -4,7 +4,7 @@
 
 配套 [CODING_AGENT_LAB.ipynb](CODING_AGENT_LAB.ipynb) 演示真实模型、文件工具、Session、Skill 和压缩。
 
-这份文档同时承担三种用途：第一次运行请先看第十章；理解设计时按第一至九章阅读；开发或排错时直接查第十一、十二章。文中的能力状态以当前仓库代码为准：Session、Compaction、Skills、Extensions、Memory、子 Agent 与 stdio MCP 已实现，自进化 Skill、TUI 和插件市场仍是设计方向，不能当成已经可用的功能。
+这份文档同时承担三种用途：第一次运行请先看第十章；理解设计时按第一至九章阅读；开发或排错时直接查第十一、十二章。文中的能力状态以当前仓库代码为准：Session、Compaction、Skills、Extensions、Memory、子 Agent、stdio MCP 与插件式自进化 Skill 已实现；TUI 和插件市场仍是设计方向，不能当成已经可用的功能。
 
 <a id="ch01"></a>
 
@@ -658,16 +658,20 @@ runtime = AgentSessionRuntime(
 
 `extensions/subagent/` 注册 `subagent.manager` 服务和一个 `agent` 工具。每次调用创建独立的内存 Session，只继承父会话的模型、认证流、工作目录、思考级别和已启用工具，不复制父对话。`explore` 与 `plan` 固定只读工具集，`general` 使用父工具但排除 `agent`，自定义 Markdown profile 可进一步白名单；每个子工具调用仍重新经过父权限模式检查。项目 profile 只有在项目受信时加载。完整格式见 [子 Agent 设计文档](src/extensions/subagent/SUBAGENT_DESIGN.md)。
 
-### 9.4 自进化 Skill：生成候选，不自动覆盖生效 Skill（设计草案）
+### 9.4 自进化 Skill：已实现的两阶段过程学习
 
-**当前仓库尚未实现 `extensions/skill_evolution/`。** 推荐的自进化流程应拆成四步：观察运行事件 → 生成候选 → 离线评估/人工审核 → 发布。扩展监听 Session 与工具结果，从成功或失败模式生成候选文件：
+当前实现位于 `extensions/skill_evolution/`。扩展在上一轮结束时捕获反馈窗口，在下一轮用户反馈
+到达后调用辅助模型提炼至多一个候选；候选经过本地安全门禁与 add/merge/replace 判定后进入项目隔离
+的 `proposals.json`，不会被正常 Skill loader 加载。只有显式 `apply` 才会把候选写入项目级或
+用户级 `SKILL.md`。
 
-```text
-~/.foxcode/skill-candidates/<candidate-id>/SKILL.md
-<project>/.foxcode/skill-candidates/<candidate-id>/SKILL.md
-```
+发布前会保存旧版本、递增 patch version，并使用同目录临时文件、`fsync` 与 `os.replace` 原子
+更新；随后通过正常 loader 重载，失败则恢复。`provenance.jsonl` 保存 proposed/applied/discarded
+事件，`history/*.jsonl` 保存更新前全文。`replace` 用于整篇 Skill 重写，仍须显式应用；项目未受信时不提炼也不写入。
 
-通过测试和审核后，再由 publisher 原子复制到 `skills/<name>/SKILL.md`，写入版本、来源 Session 和评估结果，然后触发 `/reload`。项目级发布受 trust 控制。不要让当前运行中的模型直接覆盖正在使用的 Skill，否则一次提示注入或错误总结会永久改变 Agent 行为，也难以回滚。
+完整设计与接口见[自进化 Skill 文档](src/extensions/skill_evolution/README.md)；
+工作原理与源码导读见[教学文档](src/extensions/skill_evolution/TUTORIAL.md)；
+中文 API 请求 Skill、无 Skill/初始/进化三组真实实验和复核方法见[实验文档](src/extensions/skill_evolution/fixtures/README.md)。
 
 ### 9.5 扩展之间怎样协作
 

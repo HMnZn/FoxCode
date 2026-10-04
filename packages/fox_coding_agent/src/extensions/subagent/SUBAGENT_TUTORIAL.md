@@ -102,8 +102,8 @@ FoxCode 的答案分两层写死在代码里：
         ├─ 新建内存 AgentSession（全新 transcript、profile 的 system_prompt）
         │     └─ 子会话 read/grep/find/ls…（每次调用过闸门）
         │           └─ 进度经 on_update 回流为 tool_execution_update 事件
-        ├─ 校验最终报告（有无 AssistantMessage / stop_reason / 文本是否为空）
-        └─ 返回 AgentToolResult：final text + usage + context_usage
+        ├─ 校验最终报告；已有工具成果但报告丢失时执行纯文本恢复
+        └─ 返回 AgentToolResult：final text + report_status + usage + context_usage
         ▼
    父会话只增加：一条工具调用 + 一条工具结果
 ```
@@ -289,25 +289,27 @@ profile 的 `system_prompt` 不是随便写的礼貌话术，每一条约束都�
 
 把临时产物钉在 `<cwd>/.foxcode/tmp` 之后，三个问题同时变成可回答的：它在工作区内、它能被统一清理、它能被用户看到。
 
-### 4.4 为什么「以工具调用收尾」会被判失败
+### 4.4 为什么报告阶段需要单独恢复
 
-这是全篇最反直觉的一条约束，来源在代码里（见 §8.2）：
+子 Agent 可能已经写完文件并完成验证，却在最后一轮只留下工具调用或隐藏思考。此时把整项工作判为失败会误导父 Agent。当前实现先检查审计分支中的成功工具结果，再启动一次受限恢复：
 
 ```python
-raise RuntimeError(
-    "Sub-agent ended without a final text report; "
-    "narrow the task or increase its turn budget"
-)
+child.set_active_tools([])
+child.set_thinking_level("off")
+text, report_error = await self._recover_report(child, progress)
 ```
 
-父 Agent 拿到的**只有**子会话最后一条助手消息的文本。如果子 Agent 的最后一轮是「调用一个工具」而没有随后产生文本，那么：
+恢复轮次不再允许继续工作，只负责把已有结果整理成可见文字，并有独立的短超时。如果模型仍不可用，工具成果保留，父 Agent 会收到 `report_status="synthesized"` 的警示报告并自行核验。
+
+父 Agent 拿到的仍是简洁报告。如果子 Agent 的最后一轮是「调用一个工具」而没有随后产生文本，那么恢复逻辑会识别：
 
 - 子会话的 transcript 里最后一条 `AssistantMessage` 的文本是空的；
-- 父 Agent 收到的会是「（空）」——它无法知道子 Agent 做了什么。
+- 审计分支里已经存在成功的 `ToolResultMessage`，说明工作并非没有发生；
+- 系统可以安全地只补交报告，而无需重做耗时工具调用。
 
-所以 `GENERAL_PROMPT` / `TEST_PROMPT` 明确要求保留一个纯文本收尾轮次，而代码把这条约束**强制化**了：违反它不是「返回空字符串」，而是**报错**。
+所以 `GENERAL_PROMPT` / `TEST_PROMPT` 仍要求保留纯文本收尾轮次，代码则为模型连接中断和空输出提供兜底。
 
-> 设计取向：宁可让委派明确失败、让父 Agent 重新措辞或提高轮次预算，也不要让它静默地拿到一个空结论然后基于空结论继续工作。
+> 设计取向：没有任何有效工作的失败保持失败；已经完成工具工作的报告故障不能抹掉成果，也不能伪装成完整成功，合成报告会明确要求父 Agent 核验。
 
 ### 4.5 为什么 `general` 的 `allowed_tools` 是 `None`
 
@@ -583,7 +585,8 @@ _select_tools()               求交集 / 校验缺口
 构建 child 并登记到 self._children
 订阅子事件 + 启动心跳 + 启动父取消中继
 await child.prompt(prompt)
-取最后一条 AssistantMessage 作为最终报告
+从审计分支读取最后一条 AssistantMessage 和成功工具结果
+必要时关闭工具与思考，追加一次纯文本报告恢复轮次
 finally：取消任务、child.abort()、wait_for_idle()、gather、出列
 ```
 
@@ -596,32 +599,24 @@ ValueError: Unknown sub-agent type 'xyz'; available: ['explore', 'general', 'pla
 
 `self._children` 是一个集合，登记所有存活子会话。它的唯一用途是：`close()` 时能一次性回收所有还在跑的子会话（例如模型并行发了三个 `agent` 调用，会话被用户中断）。
 
-### 8.2 严格的结果校验
+### 8.2 结果恢复
 
 ```python
-final = next((m for m in reversed(child.state.messages)
-              if isinstance(m, AssistantMessage)), None)
+final = self._latest_assistant(child)
+completed_tools = self._successful_tool_names(child)
 
 if final is None:
     raise RuntimeError("Sub-agent produced no assistant response")
-if final.stop_reason in {"error", "aborted"}:
-    raise RuntimeError(final.error_message or "Sub-agent failed")
-if not final.text.strip():
-    raise RuntimeError(
-        "Sub-agent ended without a final text report; "
-        "narrow the task or increase its turn budget"
-    )
+if not final.text.strip() and completed_tools:
+    text, report_error = await self._recover_report(child, progress)
 ```
 
-三条错误对应三种不同的病因：
+处理规则如下：
 
-| 错误 | 病因 | 用户该做什么 |
-|---|---|---|
-| `produced no assistant response` | 子会话连一轮都没跑完（模型不可达等） | 检查 provider / 重试 |
-| `error` / `aborted` | 子会话内部失败或被取消 | 看 `error_message` |
-| `ended without a final text report` | 子会话**用工具调用收尾**，或轮次耗尽 | **收窄任务，或提高 `max_turns`** |
-
-注意最后一条错误信息本身就是给用户的处方：`narrow the task or increase its turn budget`。这类「错误信息直接说明下一步」的写法很值得学。
+- 子会话没有完成任何工具工作时，保留原始连接、模型或取消错误；
+- 子会话已经完成工具工作时，最终报告丢失不会抹掉成果；
+- 第一次补救会禁用工具与思考，只允许模型整理可见报告；
+- 补救仍失败时，父 Agent 收到带警示的合成报告并继续检查工作区。
 
 成功返回：
 
@@ -631,6 +626,8 @@ AgentToolResult(
     details={
         "agent_type": ...,
         "description": ...,
+        "report_status": "direct" | "recovered" | "synthesized",
+        "report_error": ...,
         "usage": child.session.usage_totals(),
         "context_usage": ...,
     },
@@ -684,11 +681,11 @@ async def relay_parent_cancel() -> None:
 节流是**两级**的：
 
 ```python
-if not force and now - progress["last_report_at"] < 0.2:
+if not force and now - progress["last_report_at"] < 1.0:
     return
 ```
 
-- **0.2 秒节流**：`message_update` 可能每个 token 触发一次，不节流会把 UI 打爆；
+- **1 秒节流**：`message_update` 可能每个 token 触发一次，不节流会把 UI 打爆；
 - **语义边界强制上报**（`force=True`）：`agent_start`、工具起止、以及 `done`/`text_end`/`thinking_end`/`toolcall_end`。这些时刻的信息价值高，值得绕过节流；
 - **5 秒心跳**：一个独立任务每 5 秒上报一次，保证长工具调用期间父端不会看起来「卡死」。
 
@@ -806,13 +803,13 @@ Read files as requested. After reading, immediately call another read tool.
 Never write a text answer; always end your turn with a tool call.
 ```
 
-委派它，**预期**看到：
+委派它，**预期**看到恢复后的可见报告；如果恢复请求也失败，则看到类似：
 
 ```text
-Sub-agent ended without a final text report; narrow the task or increase its turn budget
+子 Agent 已完成并记录了 1 类工具操作（read），但模型未能生成最终文字报告。
 ```
 
-这是 §8.2 第三条校验的现场验证，也是「为什么 GENERAL_PROMPT 要求保留纯文本收尾轮次」的答案。
+工具结果的 details 中 `report_status` 应为 `recovered` 或 `synthesized`，工作区结果不会因报告丢失被抹掉。
 
 ### 实验 4：观察工具缺口
 
@@ -856,7 +853,7 @@ ValueError: Sub-agent 'reviewer' requests unavailable tools: ['web_search']
 
 **Q：`max_turns` 设多大合适？**
 
-默认 30。`narrow the task or increase its turn budget` 这条错误信息出现时，先问「任务是不是太宽了」，再考虑调大。把它调到 100（上限）通常是在用一个更大的上下文预算掩盖一个描述不清的任务。
+默认 100，与主循环上限一致，避免复杂实现已经完成却没有剩余轮次交付。任务仍应保持边界清晰；报告阶段另有 60 秒独立超时，不会无限等待。
 
 **Q：子 Agent 能再开子 Agent 吗？**
 

@@ -102,6 +102,8 @@ def candidate_rejection_reasons(candidate: SkillCandidate) -> list[str]:
         reasons.append("instructions exceed 20000 characters")
     if not 0.0 <= candidate.confidence <= 1.0:
         reasons.append("confidence must be between 0 and 1")
+    if candidate.mode not in {"append", "replace"}:
+        reasons.append("mode must be append or replace")
     return reasons
 
 
@@ -151,6 +153,53 @@ class SkillEvolutionStore:
         with self.provenance_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
 
+    def record_online(
+        self, *, action: str, skill: str, messages: list[dict[str, str]],
+        result: dict[str, Any], retrieved_reference: dict[str, Any] | None = None,
+        error: str = "",
+    ) -> None:
+        """Write replay lineage without activating a Skill."""
+        row = {
+            "time": _utc_now(), "action": action, "skill": skill,
+            "ok": not error and action != "failed",
+            "messages": _redact_source_messages(messages),
+            "retrieved_reference": retrieved_reference or None,
+            "result": result, "error": error[:1000],
+        }
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        with (self.state_dir / "online_provenance.jsonl").open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
+        if skill:
+            index_path = self.state_dir / "online_skill_provenance.json"
+            try:
+                index = json.loads(index_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                index = {}
+            lineage = index.setdefault(skill, {"skill": skill, "sources": []})
+            lineage["sources"] = [*lineage.get("sources", [])[-99:], row]
+            _atomic_text(index_path, _json(index))
+
+    def record_usage_judgments(self, judgments: list[dict[str, Any]]) -> None:
+        """Aggregate retrieved/relevant/used counters per Skill."""
+        path = self.state_dir / "skill_usage_stats.json"
+        try:
+            stats = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            stats = {}
+        for judgment in judgments:
+            name = str(judgment.get("name") or "")
+            if not name:
+                continue
+            row = stats.setdefault(name, {"retrieved": 0, "relevant": 0, "used": 0})
+            row["retrieved"] += 1
+            row["relevant"] += int(bool(judgment.get("relevant")))
+            row["used"] += int(bool(judgment.get("used")))
+            row["last_retrieved"] = _utc_now()
+            if judgment.get("used"):
+                row["last_used"] = row["last_retrieved"]
+            row["last_reason"] = str(judgment.get("reason") or "")[:500]
+        _atomic_text(path, _json(stats))
+
     def list_proposals(self, *, status: str | None = None) -> list[EvolutionProposal]:
         values = self._read_proposals()
         return [item for item in values if status is None or item.status == status]
@@ -171,7 +220,9 @@ class SkillEvolutionStore:
         skills = self._skills()
         exact = next((skill for skill in skills if skill.name == candidate.name), None)
         if exact is not None:
-            return "merge", exact.name, 1.0
+            return ("replace" if candidate.mode == "replace" else "merge"), exact.name, 1.0
+        if candidate.mode == "replace":
+            return "add", "", 0.0
         derived = sorted(
             (
                 skill for skill in skills
@@ -253,7 +304,7 @@ class SkillEvolutionStore:
         return proposal
 
     def _target_file(self, proposal: EvolutionProposal, target: str) -> Path:
-        if proposal.suggested_action == "merge":
+        if proposal.suggested_action in {"merge", "replace"}:
             for skill in self._skills():
                 if skill.name == proposal.target_skill:
                     return Path(skill.file_path)
@@ -303,10 +354,13 @@ class SkillEvolutionStore:
             with history_path.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(history, ensure_ascii=False, sort_keys=True) + "\n")
             addition = proposal.candidate.instructions.strip()
-            if addition not in body:
+            if proposal.suggested_action == "replace":
+                body = addition
+            elif addition not in body:
                 body = body.rstrip() + f"\n\n## Learned evolution\n\n{addition}\n"
             name = str(metadata.get("name") or proposal.target_skill or proposal.candidate.name)
-            description = str(metadata.get("description") or proposal.candidate.description)
+            description = (proposal.candidate.description if proposal.suggested_action == "replace"
+                           else str(metadata.get("description") or proposal.candidate.description))
         else:
             version = "0.1.0"
             body = proposal.candidate.instructions.strip() + "\n"

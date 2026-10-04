@@ -185,6 +185,69 @@ You are the project reviewer. Inspect evidence and report only findings.
         )
         self.assertEqual(result.content[0].text, "ordered implementation plan")
 
+    async def test_subagent_recovers_report_after_work_ends_without_text(self):
+        write(self.user / "settings.json", {
+            "extensions": ["module:fox_coding_agent.src.extensions.subagent:setup"],
+            "model_retry_attempts": 1,
+        })
+        stream = scripted(
+            FauxScript(tool_calls=[ToolCall(id="delegate", name="agent", arguments={
+                "description": "inspect and report",
+                "prompt": "Inspect the workspace and report",
+                "type": "general",
+            })]),
+            FauxScript(tool_calls=[ToolCall(id="list", name="ls", arguments={"path": "."})]),
+            FauxScript(error="Model stream timeout: produced no event for 300s"),
+            FauxScript(error="connection error: Connection error."),
+            FauxScript(text="Recovered concise delivery report"),
+            FauxScript(text="parent accepted recovered report"),
+        )
+        runtime = self.runtime(stream)
+
+        await runtime.prompt("delegate and continue")
+
+        result = next(
+            message for message in runtime.state.messages
+            if message.role == "toolResult" and message.tool_name == "agent"
+        )
+        self.assertEqual(result.content[0].text, "Recovered concise delivery report")
+        self.assertEqual(result.details["report_status"], "recovered")
+        self.assertIsNone(result.details["report_error"])
+        self.assertFalse(stream.contexts[4].tools)
+        self.assertEqual(
+            [message.role for message in stream.contexts[4].messages],
+            ["user", "assistant", "toolResult", "user"],
+        )
+        self.assertIsNone(stream.options[4].reasoning)
+
+    async def test_subagent_preserves_completed_work_when_report_recovery_is_empty(self):
+        write(self.user / "settings.json", {"extensions": [
+            "module:fox_coding_agent.src.extensions.subagent:setup",
+        ]})
+        stream = scripted(
+            FauxScript(tool_calls=[ToolCall(id="delegate", name="agent", arguments={
+                "description": "inspect workspace",
+                "prompt": "Inspect the workspace",
+                "type": "general",
+            })]),
+            FauxScript(tool_calls=[ToolCall(id="list", name="ls", arguments={"path": "."})]),
+            FauxScript(),
+            FauxScript(),
+            FauxScript(text="parent continued after synthesized report"),
+        )
+        runtime = self.runtime(stream)
+
+        await runtime.prompt("delegate and continue")
+
+        result = next(
+            message for message in runtime.state.messages
+            if message.role == "toolResult" and message.tool_name == "agent"
+        )
+        self.assertIn("工作区改动已保留", result.content[0].text)
+        self.assertIn("ls", result.content[0].text)
+        self.assertEqual(result.details["report_status"], "synthesized")
+        self.assertEqual(result.details["report_error"], "final report was empty")
+
     async def test_subagent_child_tools_use_parent_approval_hook(self):
         write(self.user / "settings.json", {"extensions": [
             "module:fox_coding_agent.src.extensions.subagent:setup",

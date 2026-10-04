@@ -38,7 +38,7 @@ def coerce_candidate(value: dict[str, Any]) -> SkillCandidate | None:
         return None
     tags = value.get("tags") if isinstance(value.get("tags"), list) else []
     try:
-        confidence = float(value.get("confidence") or 0.0)
+        confidence = float(value.get("confidence", 1.0))
     except (TypeError, ValueError):
         confidence = 0.0
     return SkillCandidate(
@@ -55,23 +55,29 @@ def coerce_candidate(value: dict[str, Any]) -> SkillCandidate | None:
 async def extract_candidate(
     messages: list[dict[str, str]],
     side_query: SideQuery,
+    retrieved_reference: dict[str, Any] | None = None,
 ) -> SkillCandidate | None:
     """Extract at most one durable workflow candidate from a feedback window."""
-    system = """You are FoxCode's Skill Evolution Extractor.
-Return only strict JSON in one of these forms:
-{"candidate": null}
-{"candidate": {"name":"kebab-case","description":"...","when_to_use":"...","instructions":"...","evidence":"verbatim or close user evidence","tags":[],"confidence":0.0}}
+    system = """You are FoxCode's online Skill Extractor.
+Extract at most ONE reusable skill candidate from a live conversation window.
+Output ONLY strict JSON: {"skills": []} or {"skills": [{...}]}.
 
-Only USER turns are evidence. Assistant turns provide context but never establish a preference.
-Extract one candidate only when the user states or confirms a durable, reusable workflow,
-correction, output policy, or implementation constraint that should help future similar tasks.
-Do not extract ordinary task requests, assistant guesses, weak acknowledgements, project facts,
-secrets, credentials, URLs, account identifiers, exact dates, or temporary parameters.
-Generalize entities and payloads. Use lowercase kebab-case for name. If evidence is weak,
-return {"candidate": null}. Confidence must reflect evidence strength."""
-    payload = json.dumps({"messages": messages[-12:]}, ensure_ascii=False)
+Candidate fields: name, description, when_to_use, instructions, evidence, tags.
+
+Rules:
+- USER turns are the primary evidence. Assistant turns are context only.
+- A next user feedback turn may confirm, reject, or refine the prior assistant behavior.
+- Do not extract assistant-only guesses, weak confirmations, one-off task payload, secrets, project facts, URLs, account IDs, exact dates, or temporary parameters.
+- Extract only durable workflow, output policy, implementation preference, correction, or repeated constraint likely useful for future similar tasks.
+- Remove entity names and runtime-specific payload; use placeholders where needed.
+- retrieved_reference is identity context only; never treat it as new user evidence.
+- If evidence is weak, generic, or low-value, return {"skills": []}."""
+    payload = json.dumps({"messages": messages[-12:],
+                          "retrieved_reference": retrieved_reference or None}, ensure_ascii=False)
     parsed = parse_json_object(await side_query(system, payload))
-    candidate = parsed.get("candidate")
+    skills = parsed.get("skills")
+    candidate = (skills[0] if isinstance(skills, list) and skills else
+                 parsed.get("candidate"))
     return coerce_candidate(candidate) if isinstance(candidate, dict) else None
 
 

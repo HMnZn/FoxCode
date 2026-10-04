@@ -425,6 +425,21 @@ class SessionAndHarnessTests(unittest.IsolatedAsyncioTestCase):
         restored.append_compaction("summary", [interrupted])
         self.assertEqual(len(restored.build_context()), 1)
 
+    async def test_reasoning_only_success_is_audited_but_not_replayed(self):
+        session = SessionManager(JsonlSessionStorage(self.path / "reasoning-only-stop.jsonl"))
+        session.append_message(UserMessage(content="finish the report"))
+        reasoning_only = AssistantMessage(
+            content=[ThinkingContent(thinking="unfinished private reasoning")],
+            stop_reason="stop",
+        )
+        session.append_message(reasoning_only)
+
+        self.assertEqual([message.role for message in session.build_context()], ["user"])
+        self.assertTrue(any(
+            entry.type == "message" and entry.data == reasoning_only
+            for entry in session.get_entries()
+        ))
+
     async def test_failed_partial_tool_call_and_result_are_not_replayed(self):
         session = SessionManager(JsonlSessionStorage(self.path / "partial-error.jsonl"))
         session.append_message(UserMessage(content="verify in browser"))

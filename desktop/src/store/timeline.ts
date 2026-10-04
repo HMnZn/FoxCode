@@ -910,9 +910,11 @@ function foldFrame(state: TimelineState, frame: HostFrame): TimelineState {
           ? frame.partial_result
           : JSON.stringify(frame.partial_result)
       const childContext = childContextFromDetails(frame.details)
-      const updates = existing.updates.at(-1) === line
-        ? existing.updates
-        : [...existing.updates, line]
+      const updates = existing.name === 'agent'
+        ? [line]
+        : existing.updates.at(-1) === line
+          ? existing.updates
+          : [...existing.updates, line]
       const blocks = patchTool(state.blocks, frame.tool_call_id, {
         updates,
         ...(childContext ? { childContext } : {}),

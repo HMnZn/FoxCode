@@ -6,7 +6,7 @@ import asyncio
 import time
 from dataclasses import dataclass
 
-from fox_ai.src import AssistantMessage, TextContent
+from fox_ai.src import AssistantMessage, TextContent, ToolResultMessage
 from fox_agent_core.src import AgentToolResult
 from fox_agent_core.src._async import maybe_await
 
@@ -27,11 +27,14 @@ class SubAgentExtensionConfig:
     # Match the main harness ceiling so a child does not die after doing the
     # work but before it has one final turn left to report the result.
     max_turns: int = 100
+    report_timeout_seconds: float = 60.0
     auto_activate_tool: bool = True
 
     def __post_init__(self) -> None:
         if not 1 <= self.max_turns <= 100:
             raise ValueError("max_turns must be between 1 and 100")
+        if not 5 <= self.report_timeout_seconds <= 300:
+            raise ValueError("report_timeout_seconds must be between 5 and 300")
 
 
 class SubAgentService:
@@ -74,6 +77,57 @@ class SubAgentService:
         # PowerShell is normally inactive on Linux; the test profile should
         # still run with bash instead of failing profile validation.
         return [available[name] for name in definition.allowed_tools if name in available]
+
+    @staticmethod
+    def _latest_assistant(child: AgentSession) -> AssistantMessage | None:
+        """Read the audit branch, including terminal failures hidden from model context."""
+
+        for entry in reversed(child.session.get_branch()):
+            if entry.type == "message" and isinstance(entry.data, AssistantMessage):
+                return entry.data
+        return None
+
+    @staticmethod
+    def _assistant_text(message: AssistantMessage | None) -> str:
+        if message is None:
+            return ""
+        return "\n".join(
+            block.text for block in message.content if isinstance(block, TextContent)
+        ).strip()
+
+    @staticmethod
+    def _successful_tool_names(child: AgentSession) -> list[str]:
+        names: list[str] = []
+        for entry in child.session.get_branch():
+            message = entry.data if entry.type == "message" else None
+            if not isinstance(message, ToolResultMessage) or message.is_error:
+                continue
+            if message.tool_name not in names:
+                names.append(message.tool_name)
+        return names
+
+    async def _recover_report(self, child: AgentSession, progress: dict) -> tuple[str, str | None]:
+        """Ask for one cheap report-only turn after useful work lost its final prose."""
+
+        progress["phase"] = "正在整理交付报告"
+        child.set_active_tools([])
+        child.set_thinking_level("off")
+        try:
+            async with asyncio.timeout(self.config.report_timeout_seconds):
+                await child.prompt(
+                    "The delegated work phase is over. Do not call any tools and do not reason at length. "
+                    "Return only a concise final report: files changed, work completed, validation run, "
+                    "and any remaining issue. You must include visible text."
+                )
+        except TimeoutError:
+            return "", f"final report timed out after {self.config.report_timeout_seconds:g}s"
+        except Exception as exc:  # noqa: BLE001 - caller can synthesize from audited tool work
+            return "", str(exc) or type(exc).__name__
+        final = self._latest_assistant(child)
+        text = self._assistant_text(final)
+        if final is not None and final.stop_reason in {"error", "aborted"}:
+            return "", final.error_message or "final report generation failed"
+        return text, None if text else "final report was empty"
 
     async def run(
         self,
@@ -180,7 +234,7 @@ class SubAgentService:
             # Message deltas can arrive several times per token.  A short
             # throttle keeps live accounting responsive without flooding the
             # desktop pipe with near-identical tool update frames.
-            if not force and now - progress["last_report_at"] < 0.2:
+            if not force and now - progress["last_report_at"] < 1.0:
                 return
             progress["last_report_at"] = now
             elapsed = max(0, int(time.monotonic() - started_at))
@@ -248,29 +302,42 @@ class SubAgentService:
         )
         try:
             await child.prompt(prompt)
-            final = next(
-                (message for message in reversed(child.state.messages)
-                 if isinstance(message, AssistantMessage)),
-                None,
-            )
+            final = self._latest_assistant(child)
+            text = self._assistant_text(final)
+            completed_tools = self._successful_tool_names(child)
             if final is None:
                 raise RuntimeError("Sub-agent produced no assistant response")
-            if final.stop_reason in {"error", "aborted"}:
-                if final.stop_reason == "aborted" and cancel_event is not None and cancel_event.is_set():
-                    raise RuntimeError("Sub-agent was cancelled because the parent run was interrupted")
-                raise RuntimeError(final.error_message or "Sub-agent failed")
-            text = "\n".join(
-                block.text for block in final.content if isinstance(block, TextContent)
-            ).strip()
+            if final.stop_reason == "aborted" and cancel_event is not None and cancel_event.is_set():
+                raise RuntimeError("Sub-agent was cancelled because the parent run was interrupted")
+            terminal_failed = final.stop_reason in {"error", "aborted"}
+            # A provider may emit a partial text delta before the stream fails.
+            # Keep it in the audit log, but never present that fragment as a
+            # completed child report.
+            if terminal_failed:
+                text = ""
+            report_status = "direct"
+            report_error = None
             if not text:
-                raise RuntimeError(
-                    "Sub-agent ended without a final text report; narrow the task or increase its turn budget"
-                )
+                if completed_tools or not terminal_failed:
+                    text, report_error = await self._recover_report(child, progress)
+                    report_status = "recovered" if text else "synthesized"
+                if not text and completed_tools:
+                    listed = ", ".join(completed_tools)
+                    text = (
+                        f"子 Agent 已完成并记录了 {len(completed_tools)} 类工具操作（{listed}），"
+                        "但模型未能生成最终文字报告。工作区改动已保留；请由父 Agent 检查产物并继续验证。"
+                    )
+                if not text:
+                    if terminal_failed:
+                        raise RuntimeError(final.error_message or report_error or "Sub-agent failed")
+                    raise RuntimeError(report_error or "Sub-agent ended without a final text report")
             usage = child.session.usage_totals()
             return _result(
                 text,
                 agent_type=agent_type,
                 description=description,
+                report_status=report_status,
+                report_error=report_error,
                 usage=usage,
                 context_usage={
                     "context_tokens": progress["context_tokens"],
