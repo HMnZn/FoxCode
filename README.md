@@ -11,7 +11,7 @@
   </p>
 </div>
 
-![FoxCode 工作台](docs/images/workbench.png)
+![FoxCode 浅色工作台](docs/images/workbench.png)
 
 FoxCode 是一个本地优先的桌面 Coding Agent。你可以在同一工作台中与模型对话、操作代码、
 查看 Diff、处理审批，并用长期记忆延续项目约定。桌面端通过 Python sidecar 连接真实运行时；
@@ -36,14 +36,14 @@ FoxCode 是一个本地优先的桌面 Coding Agent。你可以在同一工作�
 在侧栏「插件」启用 `memory` 后，可以直接管理当前工作区的记忆。记录保存在本机 Markdown 文件中，
 编辑或删除立即同步到后端；不同工作区彼此隔离。
 
-![扩展与项目记忆管理](docs/images/memory.png)
+![浅色扩展与项目记忆管理](docs/images/memory.png)
 
 ### 设置中心
 
 配置模型供应商、API Key 和运行默认值。MCP 与 Subagent 的配置入口位于「插件」页。
 凭据只存入用户目录，设置快照不会回显密钥。
 
-![FoxCode 设置中心](docs/images/settings.png)
+![FoxCode 浅色设置中心](docs/images/settings.png)
 
 > 展示图来自真实 Electron 界面；记忆内容是隔离数据目录中的示例，未包含个人凭据或私人会话。
 
@@ -105,7 +105,7 @@ npm run dev
 
 ## 项目结构
 
-![FoxCode 架构](docs/images/architecture.svg)
+![FoxCode 浅色架构图](docs/images/architecture.svg)
 
 依赖方向为 `fox-coding-agent → fox-agent-core → fox-ai`；React 通过 Electron IPC 和
 NDJSON 使用 Python 能力。

@@ -2,7 +2,7 @@
 
 Electron + React 工作台，通过 `FoxBridge` 连接 Python sidecar。界面、终端与工作区操作在一个窗口中完成。
 
-![FoxCode 工作台](../docs/images/workbench.png)
+![FoxCode 浅色工作台](../docs/images/workbench.png)
 
 ## 启动
 
@@ -45,7 +45,7 @@ npm run dev
 删除前需要确认；保存错误保留编辑内容。切换工作区会重新加载对应存储。
 Agent 执行期间，后端拒绝记忆写入与删除。
 
-![记忆管理](../docs/images/memory.png)
+![浅色记忆管理](../docs/images/memory.png)
 
 ## 代码结构
 
