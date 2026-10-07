@@ -32,3 +32,5 @@ uv run fox --resume
 ```bash
 UV_CACHE_DIR=/tmp/foxcode-uv-cache uv run python -m unittest discover -s tests -v
 ```
+
+后端职责划分、去冗余规则与接口变更见 [REFACTORING.md](../REFACTORING.md)。

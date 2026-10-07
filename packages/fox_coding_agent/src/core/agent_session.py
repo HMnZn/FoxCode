@@ -7,9 +7,9 @@
 from __future__ import annotations
 
 import asyncio
-import inspect
 import json
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Literal
@@ -25,8 +25,8 @@ from fox_ai.src import (
 from fox_agent_core.src._async import check_cancelled, maybe_await
 from fox_agent_core.src.agent import AgentOptions
 from fox_agent_core.src.harness import (
-    AgentHarness as CoreAgentHarness,
-    AgentHarnessConfig as CoreAgentHarnessConfig,
+    AgentHarness,
+    AgentHarnessConfig,
     CompactionResult,
     CompactionSettings,
     HarnessHooks,
@@ -45,10 +45,10 @@ from fox_agent_core.src.types import (
 from .session_manager import SessionManager
 from .interaction import (
     INTERACTION_MODES, EffectiveInteractionMode, InteractionMode,
-    is_plan_safe_tool, resolve_interaction_mode,
+    resolve_interaction_mode,
 )
 from .system_prompt import PLAN_MODE_SECTION
-from .plan_tool import SubmitPlanTool
+from .tool_registry import ToolRegistry
 from .sandbox import EXECUTION_MODES, ExecutionMode
 from .skills import LoadSkillsOptions, Skill, format_skill_invocation, format_skills_for_prompt, load_skills
 from .tools import create_coding_tools
@@ -83,7 +83,7 @@ class AgentSessionConfig:
     session: SessionManager | None = None
     cwd: str | Path = "."
     system_prompt: str = "You are a coding assistant. Inspect relevant files before editing."
-    system_prompt_builder: Any = None
+    system_prompt_builder: Callable[[list[Any], list[Skill], Path, EffectiveInteractionMode], str] | None = None
     tools: list[Any] | None = None  # None 使用内置编码工具；[] 表示禁用工具。
     skills: list[Skill] | None = None  # None 自动发现；[] 表示禁用技能。
     skill_options: LoadSkillsOptions | None = None
@@ -106,7 +106,7 @@ class AgentSessionConfig:
     execution_mode: ExecutionMode = "local"
 
 
-class AgentSession(CoreAgentHarness):
+class AgentSession(AgentHarness):
     def __init__(self, config: AgentSessionConfig) -> None:
         # A silent SSE connection used to keep the whole harness busy forever.
         # 60s is deliberately an *idle* budget: a healthy long generation can
@@ -122,17 +122,7 @@ class AgentSession(CoreAgentHarness):
         # from becoming the conversation title or a giant user bubble.
         self._active_skill_context = ""
         tools = list(config.tools) if config.tools is not None else create_coding_tools(self.cwd)
-        self._tools = {tool.name: tool for tool in tools}
-        self._runtime_tool_names: set[str] = set()
-        if len(self._tools) != len(tools):
-            raise ValueError("Tool names must be unique")
-        self._default_tool_names = list(self._tools)
-        self._plan_tool = SubmitPlanTool()
-        if self._plan_tool.name in self._tools:
-            raise ValueError(f"Reserved tool name is already registered: {self._plan_tool.name}")
-        # This control-plane tool is deliberately not part of selected tools:
-        # it appears only in the effective Plan-mode tool set.
-        self._tools[self._plan_tool.name] = self._plan_tool
+        self._tool_registry = ToolRegistry(tools)
         loaded = load_skills(config.skill_options or LoadSkillsOptions(cwd=str(self.cwd))) if config.skills is None else None
         self.skills = list(loaded.skills if loaded else config.skills or [])
         self.skill_diagnostics = loaded.diagnostics if loaded else []
@@ -144,18 +134,17 @@ class AgentSession(CoreAgentHarness):
         if "model" not in saved or Model.model_validate(saved["model"]) != model:
             self.session.append_model_change(model.model_dump(mode="json", by_alias=True))
         level = saved.get("thinking_level", config.thinking_level)
-        active_names = saved.get("active_tools", self._default_tool_names)
-        self._validate_tool_names(active_names)
+        active_names = saved.get("active_tools", list(self._tool_registry.default_names))
+        self._tool_registry.select(active_names)
         interaction_mode = saved.get("interaction_mode", config.interaction_mode)
         if interaction_mode not in INTERACTION_MODES:
             raise ValueError(f"Invalid interaction mode: {interaction_mode}")
-        self._selected_tool_names = list(active_names)
         self._interaction_mode: InteractionMode = interaction_mode
         execution_mode = saved.get("execution_mode", config.execution_mode)
         if execution_mode not in EXECUTION_MODES:
             raise ValueError(f"Invalid execution mode: {execution_mode}")
         self._execution_mode: ExecutionMode = execution_mode
-        self._configure_tool_execution_mode()
+        self._tool_registry.configure_execution(self._execution_mode)
         self._effective_interaction_mode: EffectiveInteractionMode = (
             "plan" if interaction_mode == "plan" else "default"
         )
@@ -167,15 +156,11 @@ class AgentSession(CoreAgentHarness):
             self.session.append_interaction_mode_change(interaction_mode)
         if "execution_mode" not in saved:
             self.session.append_execution_mode_change(execution_mode)
-        effective_tools = self._effective_tools()
+        effective_tools = self._tool_registry.effective_tools(self._effective_interaction_mode)
         self._base_system_prompt = "\n\n".join(part for part in (
             config.system_prompt, f"Working directory: {self.cwd}", format_skills_for_prompt(self.skills)
         ) if part)
-        system = self._base_system_prompt
-        if config.system_prompt_builder:
-            system = self._build_system_prompt(effective_tools)
-        elif self._effective_interaction_mode == "plan":
-            system = f"{system}\n\n{PLAN_MODE_SECTION}"
+        system = self._build_system_prompt(effective_tools)
         stream_options.setdefault("session_id", self.session.storage.get_metadata().get("id"))
         agent_options = AgentOptions(
             initial_state={"model": model, "system_prompt": system, "messages": self.session.build_context(),
@@ -187,10 +172,10 @@ class AgentSession(CoreAgentHarness):
             max_turns=config.max_turns, tool_execution=config.tool_execution,
             steering_mode=config.steering_mode, follow_up_mode=config.follow_up_mode,
         )
-        super().__init__(CoreAgentHarnessConfig(
+        super().__init__(AgentHarnessConfig(
             agent_options=agent_options,
             hooks=HarnessHooks(
-                persist_message=self.session.append_message,
+                persist_message=lambda message: self.session.append_message(message),
                 before_run=self._before_session_run,
                 after_run=self._after_session_run,
             ),
@@ -517,18 +502,9 @@ class AgentSession(CoreAgentHarness):
         self.session.append_thinking_level_change(level)
         self.state.thinking_level = level
 
-    def _validate_tool_names(self, names):
-        if getattr(self, "_plan_tool", None) is not None and self._plan_tool.name in names:
-            raise ValueError(f"Tool '{self._plan_tool.name}' is managed by Plan mode and cannot be selected")
-        missing = set(names) - self._tools.keys()
-        if missing:
-            raise ValueError(f"Tools required by the session are unavailable: {sorted(missing)}")
-        if len(names) != len(set(names)):
-            raise ValueError("Tool names must be unique")
-
     def get_tool(self, name: str):
-        """Return a registered tool, including tools added by a runtime extension."""
-        return self._tools.get(name)
+        """Return a registered tool, including runtime extensions."""
+        return self._tool_registry.get(name)
 
     @property
     def interaction_mode(self) -> InteractionMode:
@@ -540,45 +516,22 @@ class AgentSession(CoreAgentHarness):
 
     @property
     def selected_tool_names(self) -> tuple[str, ...]:
-        return tuple(self._selected_tool_names)
+        return self._tool_registry.selected_names
 
     @property
     def execution_mode(self) -> ExecutionMode:
         return self._execution_mode
 
-    def _configure_tool_execution_mode(self) -> None:
-        for tool in self._tools.values():
-            setter = getattr(tool, "set_execution_mode", None)
-            if callable(setter):
-                setter(self._execution_mode)
-
-    def _effective_tools(self) -> list[Any]:
-        tools = [self._tools[name] for name in self._selected_tool_names]
-        if self._effective_interaction_mode == "plan":
-            tools = [tool for tool in tools if is_plan_safe_tool(tool)]
-            tools.append(self._plan_tool)
-        return tools
-
     def _apply_interaction_policy(self) -> None:
-        self.state.tools = self._effective_tools()
+        self.state.tools = self._tool_registry.effective_tools(self._effective_interaction_mode)
         self._refresh_system_prompt()
 
     def _build_system_prompt(self, tools: list[Any]) -> str:
-        """Call new four-argument builders while preserving the public 3-arg hook."""
-
         builder = self.session_config.system_prompt_builder
-        if builder is None:
-            return self._base_system_prompt
-        try:
-            signature = inspect.signature(builder)
-            signature.bind(tools, self.skills, self.cwd, self._effective_interaction_mode)
-            accepts_mode = True
-        except (TypeError, ValueError):
-            accepts_mode = False
-        if accepts_mode:
-            prompt = builder(tools, self.skills, self.cwd, self._effective_interaction_mode)
-        else:
-            prompt = builder(tools, self.skills, self.cwd)
+        prompt = (
+            builder(tools, self.skills, self.cwd, self._effective_interaction_mode)
+            if builder is not None else self._base_system_prompt
+        )
         if self._effective_interaction_mode == "plan" and PLAN_MODE_SECTION not in prompt:
             prompt = f"{prompt}\n\n{PLAN_MODE_SECTION}"
         if self._active_skill_context:
@@ -636,7 +589,7 @@ class AgentSession(CoreAgentHarness):
         if normalized != self._execution_mode:
             self.session.append_execution_mode_change(normalized)
             self._execution_mode = normalized  # type: ignore[assignment]
-            self._configure_tool_execution_mode()
+            self._tool_registry.configure_execution(self._execution_mode)
         return self._execution_mode
 
     def add_runtime_tools(self, tools: list[Any], *, activate: bool = True) -> None:
@@ -647,44 +600,20 @@ class AgentSession(CoreAgentHarness):
         session from depending on a server that is no longer configured.
         """
         self.ensure_idle()
-        additions = list(tools)
-        names = [tool.name for tool in additions]
-        if len(names) != len(set(names)):
-            raise ValueError("Runtime tool names must be unique")
-        collisions = set(names) & self._tools.keys()
-        if collisions:
-            raise ValueError(f"Runtime tools collide with available tools: {sorted(collisions)}")
-        for tool in additions:
-            if not callable(getattr(tool, "execute", None)) or not getattr(tool, "name", None):
-                raise TypeError("Runtime tools must implement AgentTool")
-            self._tools[tool.name] = tool
-            self._runtime_tool_names.add(tool.name)
-            setter = getattr(tool, "set_execution_mode", None)
-            if callable(setter):
-                setter(self._execution_mode)
-        if activate and additions:
-            self._selected_tool_names.extend(names)
+        self._tool_registry.add_runtime(
+            tools, activate=activate, execution_mode=self._execution_mode,
+        )
+        if activate and tools:
             self._apply_interaction_policy()
 
     def set_active_tools(self, names: list[str]) -> None:
         self.ensure_idle()
-        self._validate_tool_names(names)
-        # Runtime-discovered tools (for example MCP proxies) are deliberately
-        # rediscovered instead of becoming a resume-time dependency.
-        persisted = [name for name in names if name not in self._runtime_tool_names]
-        self.session.append_active_tools_change(persisted)
-        self._selected_tool_names = list(names)
+        self.session.append_active_tools_change(self._tool_registry.persisted_names(names))
+        self._tool_registry.select(names)
         self._apply_interaction_policy()
 
     def _refresh_system_prompt(self):
-        if self.session_config.system_prompt_builder:
-            self.state.system_prompt = self._build_system_prompt(self.state.tools)
-        else:
-            self.state.system_prompt = self._base_system_prompt
-            if self._effective_interaction_mode == "plan":
-                self.state.system_prompt += f"\n\n{PLAN_MODE_SECTION}"
-            if self._active_skill_context:
-                self.state.system_prompt += f"\n\n{self._active_skill_context}"
+        self.state.system_prompt = self._build_system_prompt(self.state.tools)
 
     def move_to(self, entry_id: str | None) -> None:
         self.ensure_idle()
@@ -692,12 +621,12 @@ class AgentSession(CoreAgentHarness):
         saved = self.session.build_settings()
         self.state.model = Model.model_validate(saved["model"]) if saved.get("model") else self._default_model
         self.state.thinking_level = saved.get("thinking_level", self.session_config.thinking_level)
-        names = saved.get("active_tools", self._default_tool_names)
-        self._validate_tool_names(names)
+        names = saved.get("active_tools", list(self._tool_registry.default_names))
+        self._tool_registry.validate_selection(names)
         mode = saved.get("interaction_mode", self.session_config.interaction_mode)
         if mode not in INTERACTION_MODES:
             raise ValueError(f"Invalid interaction mode: {mode}")
-        self._selected_tool_names = list(names)
+        self._tool_registry.select(names)
         self._interaction_mode = mode
         self._effective_interaction_mode = "plan" if mode == "plan" else "default"
         self._apply_interaction_policy()
@@ -710,7 +639,7 @@ class AgentSession(CoreAgentHarness):
         self.ensure_idle()
         forked = self.session.fork(from_id)
         model = None if forked.build_settings().get("model") else self._default_model
-        tools = [tool for name, tool in self._tools.items() if name != self._plan_tool.name]
+        tools = self._tool_registry.fork_tools()
         return AgentSession(replace(self.session_config, session=forked, model=model,
                                     tools=tools, skills=list(self.skills)))
 

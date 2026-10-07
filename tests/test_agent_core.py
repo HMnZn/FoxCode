@@ -358,7 +358,7 @@ class SessionAndHarnessTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(restored.build_context()), 2)
         before = file.read_bytes()
         count = len(restored.get_entries())
-        with patch("fox_coding_agent.src.core.session_manager.os.replace", side_effect=OSError("disk full")):
+        with patch("fox_coding_agent.src.core._io.os.replace", side_effect=OSError("disk full")):
             with self.assertRaises(OSError):
                 restored.append_message(UserMessage(content="lost"))
         self.assertEqual(file.read_bytes(), before)

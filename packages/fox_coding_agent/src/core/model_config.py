@@ -11,6 +11,7 @@ from urllib.parse import urlsplit
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from fox_ai.src import Model
+from .paths import UserPaths
 
 
 class ProviderDefinition(BaseModel):
@@ -54,7 +55,6 @@ def _normalize_model(provider_id: str, provider: ProviderDefinition, item: dict[
     raw = dict(item)
     raw.setdefault("name", raw.get("id"))
     compat = dict(raw.get("compat") or {})
-    effort_map = raw.get("thinkingLevelMap")
     if "reasoningEffortMap" in compat:
         raise ValueError(
             f"Use thinkingLevelMap instead of compat.reasoningEffortMap: {provider_id}/{raw.get('id')}"
@@ -66,8 +66,6 @@ def _normalize_model(provider_id: str, provider: ProviderDefinition, item: dict[
         "baseUrl": provider.base_url,
         "compat": compat,
     })
-    if effort_map is not None:
-        raw["thinkingLevelMap"] = effort_map
     try:
         model = Model.model_validate(raw)
     except ValidationError:
@@ -81,8 +79,8 @@ class ModelConfig:
     """Load the model catalog from the single canonical models.json schema."""
 
     def __init__(self, user_dir: str | Path) -> None:
-        self.user_dir = Path(user_dir).expanduser().resolve()
-        self.path = self.user_dir / "models.json"
+        paths = UserPaths.from_root(user_dir)
+        self.user_dir, self.path = paths.root, paths.models
         self.snapshot = ModelConfigSnapshot((), {}, None)
         self.reload()
 

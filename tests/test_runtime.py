@@ -83,7 +83,7 @@ class SettingsTests(Workspace, unittest.TestCase):
         self.assertEqual(manager.settings.max_turns, 3)
         self.assertEqual(json.loads(manager.user_path.read_text())["max_turns"], 12)
         before = manager.project_path.read_bytes()
-        with patch("fox_coding_agent.src.core.settings.os.replace", side_effect=OSError("disk full")):
+        with patch("fox_coding_agent.src.core._io.os.replace", side_effect=OSError("disk full")):
             with self.assertRaises(OSError):
                 manager.update({"max_turns": 5})
         self.assertEqual(manager.project_path.read_bytes(), before)
@@ -164,7 +164,7 @@ class RuntimeTests(Workspace, unittest.IsolatedAsyncioTestCase):
         self.assertFalse(runtime.session_file.exists())
         await runtime.change_cwd(self.other)
         self.assertFalse(runtime.session_file.exists())
-        with patch("fox_coding_agent.src.core.session_manager.os.replace", side_effect=OSError("disk full")):
+        with patch("fox_coding_agent.src.core._io.os.replace", side_effect=OSError("disk full")):
             with self.assertRaises(OSError):
                 await runtime.prompt("first durable message")
         self.assertFalse(list((self.user / "sessions").rglob("*.jsonl")))

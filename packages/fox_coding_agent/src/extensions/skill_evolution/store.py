@@ -4,15 +4,15 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import re
-import tempfile
 import time
 from pathlib import Path
 from ...core.paths import ProjectPaths, UserPaths
 from typing import Any
 
 import yaml
+
+from ...core._io import atomic_write_text
 
 from fox_coding_agent.src.core.skills import (
     load_skill_from_file,
@@ -43,24 +43,6 @@ def project_evolution_id(cwd: str | Path) -> str:
 
 def _utc_now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-
-
-def _atomic_text(path: Path, value: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode="w", encoding="utf-8", dir=path.parent,
-            prefix=f".{path.name}-", suffix=".tmp", delete=False,
-        ) as handle:
-            temporary = Path(handle.name)
-            handle.write(value)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
-    finally:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
 
 
 def _json(value: Any) -> str:
@@ -145,7 +127,7 @@ class SkillEvolutionStore:
         return [EvolutionProposal.from_dict(item) for item in raw if isinstance(item, dict)]
 
     def _write_proposals(self, proposals: list[EvolutionProposal]) -> None:
-        _atomic_text(self.proposals_path, _json([item.to_dict() for item in proposals]))
+        atomic_write_text(self.proposals_path, _json([item.to_dict() for item in proposals]))
 
     def _append_event(self, event: dict[str, Any]) -> None:
         self.provenance_path.parent.mkdir(parents=True, exist_ok=True)
@@ -177,7 +159,7 @@ class SkillEvolutionStore:
                 index = {}
             lineage = index.setdefault(skill, {"skill": skill, "sources": []})
             lineage["sources"] = [*lineage.get("sources", [])[-99:], row]
-            _atomic_text(index_path, _json(index))
+            atomic_write_text(index_path, _json(index))
 
     def record_usage_judgments(self, judgments: list[dict[str, Any]]) -> None:
         """Aggregate retrieved/relevant/used counters per Skill."""
@@ -198,7 +180,7 @@ class SkillEvolutionStore:
             if judgment.get("used"):
                 row["last_used"] = row["last_retrieved"]
             row["last_reason"] = str(judgment.get("reason") or "")[:500]
-        _atomic_text(path, _json(stats))
+        atomic_write_text(path, _json(stats))
 
     def list_proposals(self, *, status: str | None = None) -> list[EvolutionProposal]:
         values = self._read_proposals()
@@ -378,10 +360,10 @@ class SkillEvolutionStore:
         document = "---\n" + yaml.safe_dump(
             metadata, allow_unicode=True, sort_keys=False
         ).strip() + "\n---\n\n" + body.strip() + "\n"
-        _atomic_text(path, document)
+        atomic_write_text(path, document)
         loaded, diagnostics = load_skill_from_file(path)
         if loaded is None:
-            _atomic_text(path, previous) if previous else path.unlink(missing_ok=True)
+            atomic_write_text(path, previous) if previous else path.unlink(missing_ok=True)
             raise ValueError("Written skill failed validation: " + "; ".join(d.message for d in diagnostics))
 
         proposal.status = "applied"

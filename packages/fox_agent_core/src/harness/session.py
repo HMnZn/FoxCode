@@ -57,7 +57,6 @@ class InMemorySessionStorage:
     def __init__(self, metadata: dict[str, Any] | None = None) -> None:
         self._metadata = {"id": uuid.uuid4().hex, **(metadata or {})}
         self._entries: dict[str, SessionEntry] = {}
-        self._order: list[str] = []
         self._leaf_id: str | None = None
         self._label: str | None = None
 
@@ -76,25 +75,46 @@ class InMemorySessionStorage:
     def set_leaf_id(self, entry_id: str | None) -> None:
         if entry_id is not None and entry_id not in self._entries:
             raise ValueError(f"Unknown session entry: {entry_id}")
+        previous = self._leaf_id
         self._leaf_id = entry_id
+        try:
+            self._save()
+        except BaseException:
+            self._leaf_id = previous
+            raise
 
     def get_entries(self) -> list[SessionEntry]:
-        return [self._entries[eid] for eid in self._order]
+        return list(self._entries.values())
 
     def get_entry(self, entry_id: str) -> SessionEntry | None:
         return self._entries.get(entry_id)
 
     def append_entry(self, entry: SessionEntry) -> None:
         validate_entry(entry, self._entries)
+        previous = self._leaf_id
         self._entries[entry.id] = entry
-        self._order.append(entry.id)
         self._leaf_id = entry.id
+        try:
+            self._save()
+        except BaseException:
+            self._entries.pop(entry.id)
+            self._leaf_id = previous
+            raise
 
     def get_label(self) -> str | None:
         return self._label
 
     def set_label(self, label: str | None) -> None:
+        previous = self._label
         self._label = label
+        try:
+            self._save()
+        except BaseException:
+            self._label = previous
+            raise
+
+    def _save(self) -> None:
+        """Persistence hook; file-backed subclasses share mutation and rollback."""
 
 
 __all__ = [

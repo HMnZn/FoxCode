@@ -23,3 +23,5 @@ FoxCode 的 provider-neutral 模型层，负责模型类型、流式事件、pro
 ```bash
 UV_CACHE_DIR=/tmp/foxcode-uv-cache uv run python -m unittest discover -s tests -v
 ```
+
+重试等待与依赖清理说明见 [REFACTORING.md](../REFACTORING.md)。

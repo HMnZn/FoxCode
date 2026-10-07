@@ -26,6 +26,14 @@ const SHOT_RECENT_WORKSPACE = process.env.FOXCODE_SHOT_RECENT_WORKSPACE
 const SHOT_EVAL_STRICT = process.env.FOXCODE_SHOT_EVAL_STRICT === '1'
 const REPO_ROOT = path.resolve(__dirname, '..', '..')
 
+// Apply software rendering before Chromium initializes. The launcher sets
+// this only for its explicit or previously verified compatibility mode.
+if (process.env.FOXCODE_DEV_SOFT_MODE === '1') {
+  app.disableHardwareAcceleration()
+  app.commandLine.appendSwitch('disable-gpu-compositing')
+  if (process.platform === 'win32') app.commandLine.appendSwitch('disable-direct-composition')
+}
+
 function serveConfiguration() {
   if (process.env.FOXCODE_SERVE_CMD) {
     let args
@@ -131,6 +139,19 @@ function createWindow() {
 
   win.once('ready-to-show', () => {
     win?.show()
+    // Remember a fallback only after the renderer can actually paint. A
+    // successful spawn/ready event alone can still precede a GPU fatal error.
+    if (DEV_URL && process.env.FOXCODE_DEV_SOFT_MODE === '1' && process.env.FOXCODE_DEV_LAUNCH_STATE) {
+      try {
+        const target = process.env.FOXCODE_DEV_LAUNCH_STATE
+        fs.mkdirSync(path.dirname(target), { recursive: true })
+        const temporary = `${target}.${process.pid}.tmp`
+        fs.writeFileSync(temporary, JSON.stringify({ electronVersion: process.versions.electron, softMode: true }))
+        fs.renameSync(temporary, target)
+      } catch (error) {
+        console.error(`[fox desktop] 无法保存启动兼容模式：${error.message}`)
+      }
+    }
     if (SHOT_PATH) {
       // Keep the promise: captureAndQuit waits for the interaction to finish, so
       // `FOXCODE_SHOT_DELAY` means "settle after the last click", not "since launch".

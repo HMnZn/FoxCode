@@ -37,14 +37,6 @@ from fox_agent_core.src._async import cancellable, check_cancelled, maybe_await
 #: ASCII 文本约 4 字符/token；非 ASCII 字符另按 1 字符/token 粗估。
 _CHARS_PER_TOKEN = 4
 
-#: 默认压缩设置。
-DEFAULT_COMPACTION_SETTINGS = {
-    "enabled": True,
-    "reserve_tokens": 16384,  # 为模型输出预留的窗口空间
-    "keep_recent_tokens": 8000,  # 压缩点之后保留的最近 token 数
-}
-
-
 @dataclass
 class CompactionSettings:
     """压缩设置。"""
@@ -74,6 +66,10 @@ class CompactionResult:
 # ============================================================
 
 
+def _non_ascii_chars(text: str) -> int:
+    return len(text) - len(text.encode("ascii", errors="ignore"))
+
+
 def estimate_tokens(message: Message, *, include_thinking: bool = False) -> int:
     """粗估单条消息的 token 数。
 
@@ -85,19 +81,19 @@ def estimate_tokens(message: Message, *, include_thinking: bool = False) -> int:
     content = message.content
     if isinstance(content, str):
         total_chars += len(content)
-        non_ascii += sum(ord(ch) > 127 for ch in content)
+        non_ascii += _non_ascii_chars(content)
     elif isinstance(content, list):
         for block in content:
             if isinstance(block, TextContent):
                 total_chars += len(block.text)
-                non_ascii += sum(ord(ch) > 127 for ch in block.text)
+                non_ascii += _non_ascii_chars(block.text)
             elif isinstance(block, ThinkingContent) and include_thinking:
                 total_chars += len(block.thinking)
-                non_ascii += sum(ord(ch) > 127 for ch in block.thinking)
+                non_ascii += _non_ascii_chars(block.thinking)
             elif isinstance(block, ToolCall):
-                total_chars += len(json.dumps(block.arguments, ensure_ascii=False))
-                total_chars += len(block.name)
-                non_ascii += sum(ord(ch) > 127 for ch in json.dumps(block.arguments, ensure_ascii=False))
+                arguments = json.dumps(block.arguments, ensure_ascii=False)
+                total_chars += len(arguments) + len(block.name)
+                non_ascii += _non_ascii_chars(arguments)
             elif isinstance(block, ImageContent):
                 image_tokens += 1024  # 无 tokenizer 的保守启发式，不解析图片尺寸。
     # role 等元数据开销
@@ -303,7 +299,6 @@ def _serialize_conversation(messages: list[Message]) -> str:
 
 
 __all__ = [
-    "DEFAULT_COMPACTION_SETTINGS",
     "CompactionSettings",
     "CompactionResult",
     "estimate_tokens",

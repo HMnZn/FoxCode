@@ -18,6 +18,7 @@ import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
+from ._async import sleep_with_cancel
 from .types import AssistantMessage
 
 # ============================================================
@@ -133,24 +134,6 @@ class RetryCallbacks:
     on_retry_finished: Callable[[bool, int, str | None], Awaitable[None]] | None = None
 
 
-class _RetrySleepCancelledError(BaseException):
-    """退避 sleep 期间被取消的内部哨兵异常。"""
-
-
-async def _sleep(ms: int, cancel_event: asyncio.Event | None) -> None:
-    """可被 cancel_event 取消的 sleep。"""
-    if cancel_event is not None and cancel_event.is_set():
-        raise _RetrySleepCancelledError
-    try:
-        await asyncio.wait_for(asyncio.sleep(ms / 1000), timeout=None)
-        if cancel_event is not None and cancel_event.is_set():
-            raise _RetrySleepCancelledError
-    except _RetrySleepCancelledError:
-        raise
-    except asyncio.CancelledError as exc:
-        raise _RetrySleepCancelledError from exc
-
-
 async def retry_assistant_call(
     produce: Callable[[], Awaitable[AssistantMessage]],
     policy: RetryPolicy | None,
@@ -199,8 +182,8 @@ async def retry_assistant_call(
             await callbacks.on_retry_scheduled(attempt, max_attempts, delay_ms, err_msg)
 
         try:
-            await _sleep(delay_ms, cancel_event)
-        except _RetrySleepCancelledError:
+            await sleep_with_cancel(delay_ms, cancel_event)
+        except asyncio.CancelledError:
             # 退避期间被取消 → 标准化为 aborted
             if callbacks and callbacks.on_retry_finished:
                 await callbacks.on_retry_finished(False, attempt, err_msg)

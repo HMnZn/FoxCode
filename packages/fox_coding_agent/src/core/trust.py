@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import json
 import os
-import tempfile
 from pathlib import Path
 from .paths import UserPaths
+from ._io import atomic_write_text
 
 
 class ProjectTrustManager:
@@ -39,20 +39,7 @@ class ProjectTrustManager:
 
     def set(self, cwd: str | Path, trusted: bool) -> None:
         next_decisions = {**self._decisions, self.key(cwd): trusted}
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        temporary: Path | None = None
-        try:
-            with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=self.path.parent,
-                                             prefix=".trust-", suffix=".tmp", delete=False) as handle:
-                temporary = Path(handle.name)
-                json.dump(next_decisions, handle, ensure_ascii=False, indent=2)
-                handle.write("\n")
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temporary, self.path)
-        finally:
-            if temporary is not None:
-                temporary.unlink(missing_ok=True)
+        atomic_write_text(self.path, json.dumps(next_decisions, ensure_ascii=False, indent=2) + "\n")
         self._decisions = next_decisions
 
 

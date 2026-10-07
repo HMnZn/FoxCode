@@ -593,7 +593,7 @@ sequenceDiagram
 第 3 片："start":1}
 ```
 
-当前 Provider 先保存完整的原始参数字符串，尝试标准 JSON 解析，失败时使用 `json-repair` 容错，再把阶段性结果更新到 `ToolCall.arguments`。
+当前 Provider 保存完整的原始参数字符串，使用 `parse_partial_json()` 仅补全尚未结束的字符串和容器，用于更新 `ToolCall.arguments` 预览。工具执行前用 `parse_tool_arguments()` 解码完整 JSON 对象；不使用通用 JSON 修复，以免修改源码参数。
 
 这解决的是“生成途中仍能观察参数”的问题，不意味着修复出来的中间对象就已经可以执行。展示层可以显示部分参数；执行层应等待可靠终态，并校验完整参数。
 
@@ -974,7 +974,7 @@ Faux 提供与真实 Provider 相同的调用外形，根据预设脚本输出�
 
 ### 12.4 打包与依赖也影响“架构可用性”
 
-当前顶层 [`pyproject.toml`](../../pyproject.toml) 声明了 `anthropic`、`json-repair` 和 `pydantic`，但 OpenAI Provider 还会导入 `openai`，该依赖没有在这里直接声明。公共入口又会注册并导入这些 Provider，所以干净环境中的依赖完整性需要修复和验证。
+每个包独立声明依赖。[fox-ai 的 pyproject.toml](pyproject.toml) 直接声明 `anthropic`、`openai`、`httpx` 和 `pydantic`；workspace 引用这些本地包。增量 JSON 解析使用标准库，已移除未使用的 `json-repair` 依赖。
 
 `__init__.py` 示例仍使用 `from pi_ai import ...`，而当前目录是 `packages/fox_ai/src`；这不能直接当作已经可安装的公开包导入方式。示例中的 `get_model` 也没有出现在那行导入列表里。
 

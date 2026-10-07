@@ -3,20 +3,20 @@
 from __future__ import annotations
 
 import json
-import os
-import tempfile
 from pathlib import Path
 from typing import Any
 
 from fox_ai.src import ApiKeyCredential, Credential, OAuthCredential
+from ._io import atomic_write_text
+from .paths import UserPaths
 
 
 class CredentialStore:
     """CredentialStore implementation keyed directly by provider id."""
 
     def __init__(self, user_dir: str | Path) -> None:
-        self.user_dir = Path(user_dir).expanduser().resolve()
-        self.path = self.user_dir / "auth.json"
+        paths = UserPaths.from_root(user_dir)
+        self.user_dir, self.path = paths.root, paths.auth
         self._credentials: dict[str, Credential] = {}
         self.reload()
 
@@ -76,7 +76,6 @@ class CredentialStore:
         self._credentials = next_credentials
 
     def _save(self, credentials: dict[str, Credential]) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
         data: dict[str, Any] = {}
         for provider_id, credential in credentials.items():
             if isinstance(credential, ApiKeyCredential):
@@ -86,24 +85,9 @@ class CredentialStore:
                 value = {"type": "oauth", "access": credential.access,
                          "refresh": credential.refresh, "expires": credential.expires}
             data[provider_id] = value
-        temporary: Path | None = None
-        try:
-            with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=self.path.parent,
-                                             prefix=".auth-", suffix=".tmp", delete=False) as handle:
-                temporary = Path(handle.name)
-                json.dump(data, handle, ensure_ascii=False, indent=2)
-                handle.write("\n")
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temporary, self.path)
-            # auth.json is intentionally separate from ordinary settings.  On
-            # POSIX make that boundary enforceable even when the process umask
-            # is permissive; Windows ACLs are inherited from the user profile.
-            if os.name != "nt":
-                self.path.chmod(0o600)
-        finally:
-            if temporary is not None:
-                temporary.unlink(missing_ok=True)
+        atomic_write_text(
+            self.path, json.dumps(data, ensure_ascii=False, indent=2) + "\n", mode=0o600,
+        )
 
 
 __all__ = ["CredentialStore"]

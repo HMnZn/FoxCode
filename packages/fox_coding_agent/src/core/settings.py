@@ -4,14 +4,13 @@ from __future__ import annotations
 
 import copy
 import json
-import os
-import tempfile
 from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 from fox_agent_core.src.harness import CompactionSettings
 from .paths import ProjectPaths, UserPaths
+from ._io import atomic_write_text
 
 
 def merge_settings(base: dict, override: dict) -> dict:
@@ -109,19 +108,6 @@ class SettingsManager:
         updated = merge_settings(user if scope == "user" else project, values)
         candidate = self._validate(updated if scope == "user" else user,
                                    updated if scope == "project" else project)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        temporary = None
-        try:
-            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=target.parent,
-                                             prefix=".settings-", suffix=".tmp", delete=False) as f:
-                temporary = Path(f.name)
-                json.dump(updated, f, ensure_ascii=False, indent=2)
-                f.write("\n")
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(temporary, target)
-        finally:
-            if temporary is not None:
-                temporary.unlink(missing_ok=True)
+        atomic_write_text(target, json.dumps(updated, ensure_ascii=False, indent=2) + "\n")
         self.settings = candidate
         return candidate

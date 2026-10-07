@@ -51,16 +51,16 @@ class PlanModeTests(unittest.IsolatedAsyncioTestCase):
             "default",
         )
 
-    def test_legacy_system_prompt_builder_still_gets_plan_policy(self) -> None:
+    def test_system_prompt_builder_gets_plan_mode_and_policy(self) -> None:
         session = AgentSession(AgentSessionConfig(
             model=FAUX_MODEL,
             cwd=self.root,
             tools=[],
             skills=[],
             interaction_mode="plan",
-            system_prompt_builder=lambda tools, skills, cwd: "custom prompt",
+            system_prompt_builder=lambda tools, skills, cwd, mode: f"custom prompt ({mode})",
         ))
-        self.assertTrue(session.state.system_prompt.startswith("custom prompt"))
+        self.assertTrue(session.state.system_prompt.startswith("custom prompt (plan)"))
         self.assertIn("Mode: plan", session.state.system_prompt)
 
     async def test_manual_plan_mode_filters_without_losing_selected_tools_and_persists(self) -> None:

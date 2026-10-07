@@ -58,8 +58,9 @@ desktop/
 
 | 命令 | 用途 |
 | --- | --- |
-| `npm run dev` | 开发模式 |
+| `npm run dev` | 开发模式，自动沿用成功的 GPU/沙箱兼容模式 |
 | `npm run dev:no-gpu` | 受限环境下关闭 GPU/sandbox 的开发模式 |
+| `npm run dev -- --reset-gpu` | 清除兼容模式记录，重新检测 GPU/沙箱 |
 | `npm run dev:web` | 浏览器 + Mock host |
 | `npm run typecheck` | TypeScript 检查 |
 | `npm test` | Vitest 全量测试 |
@@ -96,6 +97,11 @@ npm run build
 
 - 显示“演示”：确认仓库 `.venv` 存在，或设置 `FOXCODE_SERVE_CMD`。
 - 端口占用：设置 `FOXCODE_DEV_PORT=5300`。
-- Chromium/GPU 启动失败：使用 `npm run dev:no-gpu`，仅用于开发/受限环境。
+- Chromium/GPU 启动失败：启动器会自动用软模式重试一次，并在窗口成功显示后保存记录，
+  后续 `npm run dev` 直接沿用；也可使用 `npm run dev:no-gpu`。软模式关闭硬件加速与
+  Chromium 沙箱，仅用于开发/受限环境。更新显卡驱动后可运行 `npm run dev -- --reset-gpu`
+  重新检测；升级 Electron 后也会自动重新检测。
+- 开发模式的浏览器存储和 GPU 缓存统一位于 `../.build-cache/electron-userdata-dev`，
+  正常启动和兼容模式重试使用同一目录。关闭窗口或按 Ctrl+C 时启动器会清理子进程。
 - 配置保存失败：设置页会显示宿主校验错误；先修复对应 JSON 诊断再重试。
 - 原生终端依赖异常：重新执行 `npm install`，`postinstall` 会准备 `node-pty`。

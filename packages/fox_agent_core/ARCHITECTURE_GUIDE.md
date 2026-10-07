@@ -815,11 +815,11 @@ asyncio.run(main())
 
 Faux 只是离线演示边界。真实宿主会把 `persist_message` 接到自己的 Session 实现，并根据需要组装工具、凭据与 Hook。
 
-### 11.6 HarnessEvent 和 Result 的真实定位
+### 11.6 HarnessEvent 与错误处理
 
 `harness/events.py` 中的 `HarnessEvent` 只是要求对象具有 `type: str` 的 Protocol，用于标注宿主扩展事件。它没有事件注册表，也不会在运行时验证事件。
 
-`harness/result.py` 提供 `HarnessError`、`Ok[T]`、`Err` 和 `Result`，用于宿主希望把“预期中的失败”表达为值的场景。当前 `AgentHarness.run()` 没有自动将异常包成 `Err`，内核主路也没有强制使用 `Result`。这是一组可选的类型词汇，不能把它描述成已实现的全局错误通道。
+错误沿实际调用路径处理：模型与工具失败编码为消息，配置、持久化和事件接收器错误向宿主抛出。没有被运行链路使用的 Result 包装已移除，避免同一失败出现两套表达方式。
 
 <a id="ch12"></a>
 
@@ -979,7 +979,7 @@ uv run --frozen python -m unittest discover -s tests -v
 | 导入路径 | 主要公开能力 |
 | --- | --- |
 | `fox_agent_core.src` | `Agent`、`AgentOptions`、loop 入口、Agent/Harness 主要类型、选定的 Session 契约 |
-| `fox_agent_core.src.harness` | 完整 Harness API，包括 Compaction、`HarnessEvent`、`Result`、`SessionEntryType` |
+| `fox_agent_core.src.harness` | 完整 Harness API，包括 Compaction、`HarnessEvent`、`SessionEntryType` |
 | `fox_ai.src` | Model、Message、Context、Tool、EventStream 等模型边界 |
 
 例如 `CompactionSettings` 和 `compact` 应从 `fox_agent_core.src.harness` 导入，它们并没有被根 `fox_agent_core.src` 重新导出。使用公开 `__all__` 能减少对私有辅助函数的耦合。
@@ -998,7 +998,6 @@ uv run --frozen python -m unittest discover -s tests -v
 | [harness/session.py](src/harness/session.py) | 最小存储 Protocol 和内存后端保证什么？ |
 | [harness/compaction.py](src/harness/compaction.py) | 估算、切割、摘要和提交策略怎样分层？ |
 | [harness/events.py](src/harness/events.py) | 宿主自定义事件的最小标记协议是什么？ |
-| [harness/result.py](src/harness/result.py) | 哪些预期失败可以用值语义表达？ |
 | [harness/__init__.py](src/harness/__init__.py) | Harness 子包真正公开了哪些名称？ |
 
 推荐阅读顺序是：先看契约，再看循环，然后看 Agent 如何归约事件，最后看 Harness 如何把它们组装到宿主生命周期。Compaction 和 SessionStorage 可在理解 Harness 边界后独立阅读。

@@ -24,6 +24,8 @@ import time
 from collections.abc import Awaitable, Callable, Mapping
 from typing import TypeVar
 
+from ._async import sleep_with_cancel
+
 T = TypeVar("T")
 DEFAULT_MAX_RETRY_DELAY_MS = 60_000
 
@@ -91,21 +93,6 @@ def _retry_delay_ms(error: BaseException, retry_index: int, maximum: int | None)
     return float(exponential * (1 - random.random() * 0.25))
 
 
-async def _abortable_sleep(ms: float, cancel_event: asyncio.Event | None) -> None:
-    if cancel_event is None:
-        await asyncio.sleep(ms / 1000)
-        return
-    if cancel_event.is_set():
-        raise asyncio.CancelledError
-    sleeper = asyncio.create_task(asyncio.sleep(ms / 1000))
-    cancelled = asyncio.create_task(cancel_event.wait())
-    done, pending = await asyncio.wait({sleeper, cancelled}, return_when=asyncio.FIRST_COMPLETED)
-    for task in pending:
-        task.cancel()
-    if cancelled in done:
-        raise asyncio.CancelledError
-
-
 async def retry_provider_request(
     request: Callable[[], Awaitable[T]],
     *,
@@ -126,7 +113,7 @@ async def retry_provider_request(
                 raise
             retry_index = max_retries - retries_remaining
             retries_remaining -= 1
-            await _abortable_sleep(
+            await sleep_with_cancel(
                 _retry_delay_ms(error, retry_index, max_retry_delay_ms), cancel_event
             )
 

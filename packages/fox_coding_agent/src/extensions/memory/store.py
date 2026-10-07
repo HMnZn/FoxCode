@@ -5,12 +5,13 @@ from __future__ import annotations
 import hashlib
 import os
 import re
-import tempfile
 from dataclasses import replace
 from datetime import date, datetime, timezone
 from pathlib import Path
 
 import yaml
+
+from ...core._io import atomic_write_text
 
 from ...core.skills import parse_frontmatter
 from .models import MemoryEntry, MemoryStatus, MemoryType, SearchResult, WriteDecision, WriteResult
@@ -41,24 +42,6 @@ def project_memory_id(cwd: str | Path) -> str:
 def _slug(value: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", value.casefold()).strip("-")[:40]
     return slug or "memory"
-
-
-def _atomic_write(path: Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            "w", encoding="utf-8", dir=path.parent, prefix=f".{path.name}-",
-            suffix=".tmp", delete=False,
-        ) as handle:
-            temporary = Path(handle.name)
-            handle.write(text)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
-    finally:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
 
 
 def _iso(value: object, *, required: bool = False) -> str | None:
@@ -290,7 +273,7 @@ class MemoryStore:
 
     def _write_entry(self, entry: MemoryEntry) -> None:
         frontmatter = yaml.safe_dump(_metadata(entry), allow_unicode=True, sort_keys=False).strip()
-        _atomic_write(self.directory / entry.filename, f"---\n{frontmatter}\n---\n{entry.content.strip()}\n")
+        atomic_write_text(self.directory / entry.filename, f"---\n{frontmatter}\n---\n{entry.content.strip()}\n")
 
     def _path(self, filename: str) -> Path:
         if not isinstance(filename, str) or not _FILENAME_RE.fullmatch(filename):
@@ -329,7 +312,7 @@ class MemoryStore:
                 f"| [{entry.name}]({entry.filename}){pin} | {entry.type} | {entry.status} | "
                 f"{entry.topic} | {entry.updated_at} |"
             )
-        _atomic_write(self.index_path, "\n".join(lines).rstrip() + "\n")
+        atomic_write_text(self.index_path, "\n".join(lines).rstrip() + "\n")
 
 
 __all__ = [

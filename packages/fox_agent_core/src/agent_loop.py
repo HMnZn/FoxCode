@@ -226,43 +226,42 @@ async def _stream_assistant_response(context, config, cancel_event, emit, stream
             config.model, llm_context, SimpleStreamOptions(**opts)
         )
         iterator = response.__aiter__()
-        # An HTTP connection can stay open forever without yielding another
-        # SSE chunk.  Provider timeouts are not enough for custom StreamFn
-        # implementations, and historically this left a run stuck immediately
-        # after a fast tool such as `ls`.  Treat timeout_ms as a per-event idle
-        # deadline as well as the provider request timeout.
         idle_timeout_ms = opts.get("timeout_ms")
-        while True:
-            # A buffered iterator can complete anext() in the same tick as the
-            # cancellation waiter. cancellable() deliberately prefers completed
-            # operations (important for writes), so check explicitly between
-            # model events instead of draining the whole backlog after abort.
-            check_cancelled(cancel_event)
-            try:
-                if idle_timeout_ms is not None:
-                    async with asyncio.timeout(float(idle_timeout_ms) / 1000):
-                        event = await cancellable(anext(iterator), cancel_event)
+
+        async def consume_events():
+            nonlocal partial, added_partial
+            while True:
+                # Check between buffered events as well as during a blocked read.
+                check_cancelled(cancel_event)
+                try:
+                    if idle_timeout_ms is not None:
+                        async with asyncio.timeout(float(idle_timeout_ms) / 1000):
+                            event = await anext(iterator)
+                    else:
+                        event = await anext(iterator)
+                except StopAsyncIteration:
+                    break
+                except TimeoutError:
+                    raise RuntimeError(
+                        f"Model stream timeout: produced no event for "
+                        f"{float(idle_timeout_ms) / 1000:g}s"
+                    ) from None
+                if event.type in ("done", "error"):
+                    break
+                partial = event.partial.model_copy(deep=True)
+                if not added_partial:
+                    context.messages.append(partial)
+                    added_partial = True
+                    await _safe_emit(emit, MessageStartEvent(message=partial))
                 else:
-                    event = await cancellable(anext(iterator), cancel_event)
-            except StopAsyncIteration:
-                break
-            except TimeoutError:
-                raise RuntimeError(
-                    f"Model stream timeout: produced no event for "
-                    f"{float(idle_timeout_ms) / 1000:g}s"
-                ) from None
-            if event.type in ("done", "error"):
-                break
-            partial = event.partial.model_copy(deep=True)
-            if not added_partial:
-                context.messages.append(partial)
-                added_partial = True
-                await _safe_emit(emit, MessageStartEvent(message=partial))
-            else:
-                context.messages[-1] = partial
-            if event.type != "start":
-                await _safe_emit(emit, MessageUpdateEvent(
-                    message=partial, assistant_message_event=event.model_copy(deep=True)))
+                    context.messages[-1] = partial
+                if event.type != "start":
+                    await _safe_emit(emit, MessageUpdateEvent(
+                        message=partial, assistant_message_event=event.model_copy(deep=True)))
+
+        # One cancellation scope per response, instead of creating a task and
+        # cancellation waiter for every token. Each read retains its idle deadline.
+        await cancellable(consume_events(), cancel_event)
         final = await cancellable(response.result(), cancel_event)
         if final.stop_reason == "pending":
             raise RuntimeError("Model stream ended without a stop reason")

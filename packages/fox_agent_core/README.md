@@ -18,3 +18,5 @@ input → model stream → tool calls → validated tool results → next turn �
 ```bash
 UV_CACHE_DIR=/tmp/foxcode-uv-cache uv run python -m unittest discover -s tests -v
 ```
+
+后端职责划分与重构约定见 [REFACTORING.md](../REFACTORING.md)。

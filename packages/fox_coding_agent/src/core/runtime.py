@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fox_ai.src import Model, TextContent, UserMessage
 from fox_agent_core.src._async import maybe_await, cancellable
-import asyncio
 from .agent_session import AgentSession, AgentSessionConfig
 from .resources import ResourceLoader
 from .session_manager import InMemorySessionStorage, JsonlSessionStorage, SessionManager
@@ -37,9 +38,9 @@ class AgentSessionRuntime:
                  resource_providers=(), tool_factory=None, before_tool_call=None, after_tool_call=None,
                  extension_paths=(), extension_factories=(), extension_specs=(), summary_fn=None,
                  project_trusted: bool | None = True, trust_resolver=None):
-        self.user_dir = Path(user_dir).expanduser().resolve() if user_dir else Path.home() / ".foxcode"
+        self.user_dir = UserPaths.from_root(user_dir).root
         self.model_runtime = ModelRuntime(self.user_dir, stream_fn=stream_fn)
-        self._overrides = settings_overrides or {}
+        self._overrides = dict(settings_overrides or {})
         self._stream_fn, self._stream_options = stream_fn, dict(stream_options or {})
         self._providers = tuple(resource_providers)
         self._tool_factory = tool_factory or create_all_tools
@@ -105,7 +106,7 @@ class AgentSessionRuntime:
     def _session_layout(manager: SettingsManager) -> SessionLayout:
         # SessionLayout has no cwd/default-root fallback.  SettingsManager's
         # explicit user directory is the sole owner of all transcripts.
-        return SessionLayout(UserPaths.from_root(manager.user_dir).sessions)
+        return SessionLayout(manager.user_paths.sessions)
 
     @classmethod
     def latest_session(cls, cwd: str | Path = ".", *, user_dir=None,
@@ -129,19 +130,13 @@ class AgentSessionRuntime:
         if path.exists():
             raise FileExistsError(f"Refusing to overwrite session: {path}")
         try:
-            storage = JsonlSessionStorage(path, metadata=agent_session.session.storage.get_metadata())
-            for entry in agent_session.session.get_entries():
-                storage.append_entry(entry)
+            storage = JsonlSessionStorage.create(path, agent_session.session.storage)
         except BaseException:
             # This method owns this newly created UUID path; existing sessions never enter here.
             path.unlink(missing_ok=True)
             raise
         agent_session.session = SessionManager(storage)
         agent_session.session_config.session = agent_session.session
-        # AgentSession hooks captured the temporary in-memory session's bound
-        # method during construction. Rebind persistence after publishing the
-        # JSONL-backed session so new messages reach the durable transcript.
-        agent_session.hooks.persist_message = agent_session.session.append_message
 
     def _build(self, cwd, session, model, manager, resources, project_trusted):
         extensions = ExtensionRunner.load(
@@ -348,16 +343,30 @@ class AgentSessionRuntime:
                                                self.agent_session.extension_context)
             self._extensions_started = True
 
-    async def _prepare_start(self):
+    @asynccontextmanager
+    async def _preparation(self):
+        """Reserve the runtime while cancellable extension hooks prepare a run."""
         self._ensure_available()
         self.agent_session.ensure_idle()
         self._preparing = True
         self._hook_cancel = asyncio.Event()
         try:
             await cancellable(self._start_extensions(), self._hook_cancel)
+            yield self._hook_cancel
         finally:
             self._preparing = False
             self._hook_cancel = None
+
+    async def _prepare_start(self):
+        async with self._preparation():
+            pass
+
+    async def _shutdown_extensions(self, reason: str) -> None:
+        if self._extensions_started:
+            await self.agent_session.extensions.emit(
+                "session_shutdown", {"type": "session_shutdown", "reason": reason},
+                self.agent_session.extension_context,
+            )
 
     async def prompt(
         self,
@@ -381,18 +390,13 @@ class AgentSessionRuntime:
             self.agent_session.prepare_interaction_for_prompt(
                 hook_message, effective_mode=effective_mode,
             )
-        self._preparing = True
-        self._hook_cancel = asyncio.Event()
-        try:
-            await cancellable(self._start_extensions(), self._hook_cancel)
-            outcomes = await cancellable(self.agent_session.extensions.emit("before_prompt", {"message": hook_message},
-                self.agent_session.extension_context), self._hook_cancel)
+        async with self._preparation() as cancel:
+            outcomes = await cancellable(self.agent_session.extensions.emit(
+                "before_prompt", {"message": hook_message}, self.agent_session.extension_context,
+            ), cancel)
             for outcome in outcomes:
                 if outcome and "message" in outcome:
                     hook_message = outcome["message"]
-        finally:
-            self._preparing = False
-            self._hook_cancel = None
         if native_message is not None and isinstance(hook_message, str):
             blocks = [] if isinstance(native_message.content, str) else list(native_message.content)
             images = [block for block in blocks if not isinstance(block, TextContent)]
@@ -452,17 +456,10 @@ class AgentSessionRuntime:
         return await self.agent_session.compact()
 
     async def run_command(self, name, arguments=""):
-        self._ensure_available()
-        self.agent_session.ensure_idle()
-        self._preparing = True
-        self._hook_cancel = asyncio.Event()
-        try:
-            await cancellable(self._start_extensions(), self._hook_cancel)
-            return await cancellable(self.agent_session.extensions.command(name, arguments, self.agent_session.extension_context),
-                                     self._hook_cancel)
-        finally:
-            self._preparing = False
-            self._hook_cancel = None
+        async with self._preparation() as cancel:
+            return await cancellable(self.agent_session.extensions.command(
+                name, arguments, self.agent_session.extension_context,
+            ), cancel)
 
     async def _replace(self, *, cwd=None, session_file=None, reload=False, model=None,
                        project_trusted=None):
@@ -506,9 +503,7 @@ class AgentSessionRuntime:
             )
             if is_new_session and selected.reasoning and old.state.thinking_level:
                 candidate.set_thinking_level(old.state.thinking_level)
-            if self._extensions_started:
-                await old.extensions.emit("session_shutdown", {"type": "session_shutdown", "reason": "reload" if reload else "switch"},
-                                          old.extension_context)
+            await self._shutdown_extensions("reload" if reload else "switch")
             if reload:
                 candidate.agent.steering_queue = old.agent.steering_queue
                 candidate.agent.follow_up_queue = old.agent.follow_up_queue
@@ -554,11 +549,7 @@ class AgentSessionRuntime:
             candidate = self._build(
                 self.cwd, forked, selected, settings, resources, self.project_trusted
             )
-            if self._extensions_started:
-                await old.extensions.emit(
-                    "session_shutdown", {"type": "session_shutdown", "reason": "fork"},
-                    old.extension_context,
-                )
+            await self._shutdown_extensions("fork")
             self._persist_new(candidate, path)
             self._install(
                 self.cwd, path, settings, loader, resources, candidate, self.project_trusted
@@ -617,9 +608,7 @@ class AgentSessionRuntime:
                 # still discarding untouched UI drafts and setting-only entries.
                 if any(entry.type == "message" for entry in self.session.get_entries()):
                     self._persist_new(self.agent_session, self.session_file)
-                if self._extensions_started:
-                    await self.agent_session.extensions.emit("session_shutdown", {"type": "session_shutdown", "reason": "close"},
-                                                       self.agent_session.extension_context)
+                await self._shutdown_extensions("close")
             finally:
                 self.agent_session.extensions.dispose()
                 self._unsubscribe()

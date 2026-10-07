@@ -7,7 +7,6 @@ requires-python = ">=3.14"
 dependencies = [
     "anthropic>=1.8.0",
     "httpx>=0.28.1",
-    "json-repair>=0.63.5",
     "openai>=3.19.0",
     "pydantic>=2.13.5",
 ]
