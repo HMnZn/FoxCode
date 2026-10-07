@@ -119,7 +119,17 @@ def _apply_reasoning_options(params: dict[str, Any], model: Model, options: Stre
     # The wire format is a model capability, not something inferred from a
     # provider name. OpenAI semantics are the protocol default.
     kind = compat.get("thinkingFormat", "openai")
-    if kind == "deepseek":
+    if kind == "qwen":
+        # PyTrio's OpenAI-compatible gateway exposes Qwen's switch as a
+        # top-level extension field.  It rejects vLLM/SGLang's nested
+        # chat_template_kwargs form.  Omitting the field is not equivalent to
+        # disabling it because Qwen3.5 thinks by default.
+        body = dict(params.get("extra_body") or {})
+        body.pop("chat_template_kwargs", None)
+        body["enable_thinking"] = bool(level)
+        params["extra_body"] = body
+        params.pop("reasoning_effort", None)
+    elif kind == "deepseek":
         # thinking is a provider-specific body field, not a create() keyword.
         body = dict(params.get("extra_body") or {})
         body.pop("reasoning_effort", None)

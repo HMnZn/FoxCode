@@ -191,3 +191,44 @@ class AuthModelTests(Workspace, unittest.IsolatedAsyncioTestCase):
         self.assertEqual([b["thinking"]["type"] for b in bodies], ["enabled", "enabled", "disabled"])
         self.assertEqual([b.get("reasoning_effort") for b in bodies], ["high", "max", None])
         self.assertTrue(all(b["custom"] for b in bodies))
+
+    async def test_real_openai_sdk_serializes_qwen_thinking_on_and_off(self):
+        self.configure()
+        model = ModelRegistry(ModelConfig(self.user)).default().model.model_copy(update={
+            "compat": {"thinkingFormat": "qwen", "supportsStrictMode": False},
+        })
+        bodies = []
+
+        async def handle(request):
+            bodies.append(json.loads(request.content))
+            payload = {"id": "test", "object": "chat.completion.chunk", "created": 1,
+                       "model": model.id,
+                       "choices": [{"index": 0, "delta": {"content": "ok"},
+                                    "finish_reason": "stop"}]}
+            return httpx.Response(200, headers={"content-type": "text/event-stream"},
+                                  content="data: " + json.dumps(payload) + "\n\ndata: [DONE]\n\n")
+
+        for level in ("high", None):
+            async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+                options = SimpleStreamOptions(
+                    api_key="test-key",
+                    reasoning=level,
+                    http_client=client,
+                    sampling_params={"extra_body": {
+                        "custom": True,
+                    }},
+                )
+                stream = openai_api_provider.stream_simple(
+                    model, Context(messages=[UserMessage(content="hi")]), options
+                )
+                response = await stream.result()
+                await stream.aclose()
+                self.assertEqual(response.stop_reason, "stop", response.error_message)
+
+        self.assertEqual(
+            [body["enable_thinking"] for body in bodies],
+            [True, False],
+        )
+        self.assertTrue(all(body["custom"] for body in bodies))
+        self.assertTrue(all("chat_template_kwargs" not in body for body in bodies))
+        self.assertTrue(all("reasoning_effort" not in body for body in bodies))
