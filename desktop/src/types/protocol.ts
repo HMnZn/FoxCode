@@ -643,6 +643,29 @@ export interface FileContent {
   error?: string | null
 }
 
+export interface MemoryEntry {
+  filename: string
+  name: string
+  description: string
+  type: 'user' | 'feedback' | 'project' | 'reference'
+  content: string
+  pinned: boolean
+  topic: string
+  status: 'active' | 'superseded' | 'expired'
+  updated_at: string
+  expires_at: string | null
+  tags: string[]
+}
+
+export interface MemoryList {
+  entries: MemoryEntry[]
+  directory: string
+}
+
+export type MemorySave =
+  | { name: string; description: string; type: MemoryEntry['type']; content: string; pinned?: boolean }
+  | { filename: string; description?: string; content?: string; pinned?: boolean }
+
 export type HostCommand =
   | { method: 'host.info' }
   | { method: 'config.get' }
@@ -688,6 +711,9 @@ export type HostCommand =
   | { method: 'cwd.change'; params: { cwd: string } }
   | { method: 'permission.answer'; params: PermissionAnswer }
   | { method: 'extensions.set'; params: { id: string; enabled: boolean; scope?: ExtensionScope } }
+  | { method: 'memory.list'; params?: { query?: string } }
+  | { method: 'memory.save'; params: MemorySave }
+  | { method: 'memory.delete'; params: { filename: string } }
   | { method: 'files.list'; params?: { path?: string; limit?: number } }
   | { method: 'files.changes'; params?: { limit?: number } }
   | { method: 'files.diff'; params: { path: string; context?: number } }

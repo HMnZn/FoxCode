@@ -2,7 +2,7 @@
   "name": "foxcode-desktop",
   "private": true,
   "version": "0.1.0",
-  "description": "FoxCode Studio — Electron desktop UI for the FoxCode coding agent (UI-only; does not modify packages/)",
+  "description": "FoxCode Studio — Electron desktop UI for the FoxCode coding agent",
   "main": "electron/main.js",
   "scripts": {
     "dev": "node scripts/dev.mjs",

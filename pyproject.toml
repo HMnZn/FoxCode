@@ -8,7 +8,6 @@ dependencies = [
     "fox-ai",
     "fox-agent-core",
     "fox-coding-agent",
-    "ipykernel>=7.3.0",
 ]
 
 [tool.uv.workspace]

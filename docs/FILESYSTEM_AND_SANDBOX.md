@@ -33,7 +33,8 @@ User-owned durable inputs and cross-project state:
 ├── extensions/
 ├── agents/
 ├── prompts/
-└── sessions/
+├── sessions/
+└── projects/<workspace-hash>/memory/
 ```
 
 Project-owned configuration and generated outputs:
@@ -55,12 +56,15 @@ Project-owned configuration and generated outputs:
 ```
 
 Source files and intentional checked-in fixtures stay in their normal project
-locations. Coverage data, browser profiles, screenshots, generated reports,
+locations. Coverage data, browser profiles, temporary screenshots, generated reports,
 logs, and disposable test helpers belong under `artifacts/`. Shell tools export
 `FOXCODE_ARTIFACTS_DIR`, `FOXCODE_TEST_ARTIFACTS_DIR`, `TMPDIR`, `TEMP`, `TMP`,
 and `COVERAGE_FILE` so test runners have a consistent destination.
 Sandboxed shells receive a minimal environment instead of inheriting provider
 credentials; HOME and common package caches are redirected under `artifacts/`.
+
+Public documentation screenshots live in `docs/images/`; offline memory evaluation
+fixtures live in `tests/fixtures/memory_eval/` and are not runtime state.
 
 The host exposes the resolved layout in `host.info.paths`; the desktop does not
 guess platform-specific locations.

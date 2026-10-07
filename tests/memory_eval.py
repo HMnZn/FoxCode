@@ -1,7 +1,7 @@
 """Offline evaluation and ablation runner for the FoxCode memory pipeline.
 
 Run from the repository root:
-    uv run python -m fox_coding_agent.src.extensions.memory.eval
+    uv run python tests/memory_eval.py
 """
 
 from __future__ import annotations
@@ -10,18 +10,40 @@ import argparse
 import json
 import math
 import tempfile
+from typing import Iterable
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from statistics import mean
 
-from .injection import build_memory_context
-from .models import MemoryEntry, SearchResult
-from .retrieval import HybridRetriever, RetrievalConfig, baseline_search
-from .store import MemoryStore
+from fox_coding_agent.src.extensions.memory.injection import build_memory_context
+from fox_coding_agent.src.extensions.memory.models import MemoryEntry, ScoreBreakdown, SearchResult
+from fox_coding_agent.src.extensions.memory.retrieval import HybridRetriever, RetrievalConfig, normalize, tokens
+from fox_coding_agent.src.extensions.memory.store import MemoryStore
 
 FIXTURE_ROOT = Path(__file__).resolve().parent / "fixtures" / "memory_eval"
 EVAL_NOW = datetime(2026, 9, 27, 12, 0, tzinfo=timezone.utc)
+
+def baseline_search(entries: Iterable[MemoryEntry], query: str, *, limit: int = 5) -> list[SearchResult]:
+    """The pre-redesign algorithm, retained as an honest evaluation baseline."""
+    query_text = normalize(query)
+    query_terms = tokens(query_text)
+    ranked: list[SearchResult] = []
+    for entry in entries:
+        name, description, content = map(normalize, (entry.name, entry.description, entry.content))
+        score = 100.0 if entry.pinned else 0.0
+        score += 12.0 if query_text in name else 0.0
+        score += 8.0 if query_text in description else 0.0
+        score += 3.0 if query_text in content else 0.0
+        score += len(query_terms & tokens(name)) * 6
+        score += len(query_terms & tokens(description)) * 3
+        score += len(query_terms & tokens(content))
+        if score > 0:
+            ranked.append(SearchResult(
+                entry, score, 1.0, ScoreBreakdown(contextual_bm25f=score)
+            ))
+    ranked.sort(key=lambda item: (-item.score, item.entry.filename))
+    return ranked[:limit]
 
 
 @dataclass(frozen=True)

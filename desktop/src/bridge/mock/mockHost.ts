@@ -13,6 +13,7 @@ import type {
   HostFrame,
   HostInfo,
   ModelInfo,
+  MemoryEntry,
   PermissionDecision,
   PermissionRequest,
   ProductConfiguration,
@@ -263,7 +264,7 @@ const SKILLS: SkillInfo[] = [
   { name: 'code-review', description: '按仓库约定审查改动，输出可执行的修复清单', source: 'user', enabled: true },
   { name: 'pr-description', description: '根据 diff 生成 PR 描述与验证步骤', source: 'user', enabled: true },
   { name: 'test-triage', description: '定位失败用例并给出最小复现', source: 'project', enabled: false },
-  { name: 'architecture-note', description: '为一次改动写架构说明（ARCHITECTURE_GUIDE 风格）', source: 'project', enabled: true },
+  { name: 'architecture-note', description: '为一次改动写简洁的架构说明', source: 'project', enabled: true },
 ]
 
 // 名字不带前导斜杠（界面显示时自己补一个），与 `fox_serve/host.py` 的 BUILTIN_COMMANDS 一一对应。
@@ -328,23 +329,6 @@ const EXTENSIONS: ExtensionInfo[] = [
 
 /** 演示用的「可加载」扩展：宿主发现得到，但还没写进 settings.json。 */
 const AVAILABLE_EXTENSIONS: ExtensionInfo[] = [
-  {
-    id: 'module:fox_coding_agent.src.extensions.skill_evolution:setup',
-    spec: 'module:fox_coding_agent.src.extensions.skill_evolution:setup',
-    name: 'skill_evolution',
-    kind: 'module',
-    origin: 'builtin',
-    path: 'packages\\fox_coding_agent\\src\\extensions\\skill_evolution',
-    scope: 'project',
-    enabled: false,
-    hooks: ['agent_end', 'before_prompt', 'session_start'],
-    description: 'Staged, auditable self-evolving skills extension with real evaluation support.',
-    probed: true,
-    tools: ['skill_evolution'],
-    commands: ['skill-evolution'],
-    services: ['skill-evolution.manager'],
-    contextTransforms: ['skill-evolution.staged-candidate'],
-  },
   {
     id: 'module:fox_coding_agent.src.extensions.mcp:setup',
     spec: 'module:fox_coding_agent.src.extensions.mcp:setup',
@@ -466,6 +450,7 @@ export class MockHost implements FoxBridge {
     onMaximizeChange: () => () => {},
   }
 
+  private memories = new Map<string, MemoryEntry[]>()
   private seq = 0
   private frameListeners = new Set<(frame: HostFrame) => void>()
   private permissionListeners = new Set<(request: PermissionRequest) => void>()
@@ -884,6 +869,37 @@ export class MockHost implements FoxBridge {
         return this.deleteSession(command.params.id)
       case 'sessions.rename':
         return this.renameSession(command.params.id, command.params.title)
+      case 'memory.list': {
+        this.requireMemory()
+        const query = command.params?.query?.trim().toLowerCase() ?? ''
+        const entries = (this.memories.get(this.state.cwd) ?? []).filter((entry) =>
+          `${entry.name} ${entry.description} ${entry.content}`.toLowerCase().includes(query))
+        return { entries: structuredClone(entries), directory: '演示数据 · 仅当前窗口' }
+      }
+      case 'memory.save': {
+        this.requireMemory()
+        const values = command.params
+        const entries = this.memories.get(this.state.cwd) ?? []
+        let entry: MemoryEntry
+        if ('filename' in values) {
+          const existing = entries.find((item) => item.filename === values.filename)
+          if (!existing) throw new Error('记忆不存在')
+          entry = { ...existing, ...values, updated_at: new Date().toISOString() }
+        } else {
+          if (![values.name, values.description, values.content].every((value) => value.trim())) throw new Error('需要名称、描述和内容')
+          entry = { ...values, filename: `${values.type}_${uid()}.md`, pinned: values.pinned ?? false,
+            topic: values.name, status: 'active', updated_at: new Date().toISOString(), expires_at: null, tags: [] }
+        }
+        this.memories.set(this.state.cwd, [entry, ...entries.filter((item) => item.filename !== entry.filename)])
+        return { entry: structuredClone(entry) }
+      }
+      case 'memory.delete': {
+        this.requireMemory()
+        const entries = this.memories.get(this.state.cwd) ?? []
+        const next = entries.filter((entry) => entry.filename !== command.params.filename)
+        this.memories.set(this.state.cwd, next)
+        return { deleted: next.length < entries.length }
+      }
       case 'extensions.set':
         return this.setExtension(command.params.id, command.params.enabled)
       case 'session.export':
@@ -1064,6 +1080,11 @@ export class MockHost implements FoxBridge {
    * 演示宿主是渲染进程里的单例（store 在模块加载时就抓住了它），所以测试之间
    * 会有状态残留；这个方法让每个用例从同一份扩展配置出发。
    */
+  private requireMemory(): void {
+    if (!this.state.trusted) throw new Error('信任当前项目后才能访问记忆')
+    if (!this.extensions.some((item) => item.services?.includes('memory.store'))) throw new Error('请先启用 memory 扩展')
+  }
+
   resetExtensions(): void {
     this.extensions = EXTENSIONS.map((item) => ({ ...item }))
     this.availableExtensions = AVAILABLE_EXTENSIONS.map((item) => ({ ...item }))

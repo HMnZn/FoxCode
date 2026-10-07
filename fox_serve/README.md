@@ -32,12 +32,12 @@ uv run python fox_serve/scripts/ndjson_client.py --prompt "只回复：ready" --
 ```
 
 命令按 `host`、`sessions`、`prompt/run`、`model/runtime`、`permission/trust`、
-`skills/extensions`、`files` 和 `config` 分组。完整 DTO 以
+`skills/extensions`、`memory`、`files` 和 `config` 分组。完整 DTO 以
 [desktop/src/types/protocol.ts](../desktop/src/types/protocol.ts) 与 [protocol.py](protocol.py) 为准。
 
 ## 配置控制面
 
-[configuration.py](configuration.py) 是桌面设置唯一的文件写入口：
+[configuration.py](configuration.py) 是桌面配置文件的统一写入口：
 
 - 使用 runtime 的模型、MCP、Subagent 和 Settings schema 做校验；
 - 使用同目录临时文件、`fsync` 和 `os.replace` 原子写入；
@@ -48,6 +48,29 @@ uv run python fox_serve/scripts/ndjson_client.py --prompt "只回复：ready" --
 - MCP/Subagent 保存后启用对应扩展并热重载 runtime；
 - Agent 正在运行时拒绝修改产品配置，避免中途替换能力集。
 - 首次启动没有 `models.json` 时仍保持控制面在线，允许 UI 完成第一个供应商配置。
+
+## 记忆管理接口
+
+记忆管理复用已加载扩展的 `memory.store` 服务，不创建第二套存储。
+访问前要求扩展已启用且项目受信任；Agent 正在运行时拒绝桌面写入和删除。
+
+| 方法 | 参数 | 返回 |
+| --- | --- | --- |
+| `memory.list` | 可选 `query` 文本搜索 | `{entries, directory}` |
+| `memory.save` | 新增：`name`、`description`、`type`、`content`、可选 `pinned` | `{entry}` |
+| `memory.save` | 编辑：`filename`、可选 `description`、`content`、`pinned` | `{entry}` |
+| `memory.delete` | `filename` | `{deleted}` |
+
+列表包含历史记录，搜索覆盖名称、描述、正文、主题与标签。Agent 的语义召回仍由
+`memory_recall` 工具提供。编辑保持文件身份、生命周期和来源；后端校验字段、长度与路径，
+拒绝疑似凭据和非法文件名。详情见 [Memory](../packages/fox_coding_agent/src/extensions/memory/README.md)。
+
+```json
+{"id":"m1","method":"memory.list","params":{"query":"测试"}}
+{"id":"m2","method":"memory.save","params":{"filename":"project_memory-0123456789.md","pinned":true}}
+```
+
+示例文件名仅说明参数形状，实际操作使用列表返回的 `filename`。
 
 ## 权限
 
@@ -71,5 +94,5 @@ sidecar 让 runtime 内部以 `full-access` 运行，把用户可见档位交给
 ## 测试
 
 ```bash
-UV_CACHE_DIR=/tmp/foxcode-uv-cache uv run python -m unittest discover -s fox_serve/tests -v
+uv run python -m unittest discover -s fox_serve/tests -v
 ```

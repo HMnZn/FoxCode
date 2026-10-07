@@ -26,12 +26,7 @@ packages = [
     "fox_coding_agent.src.extensions",
     "fox_coding_agent.src.extensions.memory",
     "fox_coding_agent.src.extensions.mcp",
-    "fox_coding_agent.src.extensions.skill_evolution",
-    "fox_coding_agent.src.extensions.skill_evolution.fixtures",
     "fox_coding_agent.src.extensions.subagent",
-    "fox_coding_agent.src.extensions.memory.fixtures",
-    "fox_coding_agent.src.extensions.memory.fixtures.memory_eval",
-    "fox_coding_agent.src.extensions.memory.fixtures.memory_eval.store",
 ]
 
 [tool.setuptools.package-dir]
@@ -40,26 +35,12 @@ packages = [
 "fox_coding_agent.src.extensions" = "src/extensions"
 "fox_coding_agent.src.extensions.memory" = "src/extensions/memory"
 "fox_coding_agent.src.extensions.mcp" = "src/extensions/mcp"
-"fox_coding_agent.src.extensions.skill_evolution" = "src/extensions/skill_evolution"
 "fox_coding_agent.src.extensions.subagent" = "src/extensions/subagent"
 
 [tool.setuptools.package-data]
-"fox_coding_agent.src.extensions.subagent" = ["SUBAGENT_DESIGN.md"]
-"fox_coding_agent.src.extensions.mcp" = ["MCP_DESIGN.md"]
-"fox_coding_agent.src.extensions.skill_evolution" = [
-    "README.md",
-    "TUTORIAL.md",
-    "fixtures/README.md",
-    "fixtures/data/API-Bank/test-data/level-1-api.json",
-    "fixtures/api_bank_eval/*.json",
-    "fixtures/api_bank_eval/*.md",
-    "fixtures/api_bank_eval/*.gz",
-]
+"fox_coding_agent.src.extensions.subagent" = ["README.md"]
+"fox_coding_agent.src.extensions.mcp" = ["README.md"]
+
 "fox_coding_agent.src.extensions.memory" = [
-    "MEMORY_DESIGN.md",
-    "MEMORY_TUTORIAL.md",
-    "fixtures/memory_eval/*.json",
-    "fixtures/memory_eval/*.jsonl",
-    "fixtures/memory_eval/*.py",
-    "fixtures/memory_eval/store/*.md",
+    "README.md",
 ]

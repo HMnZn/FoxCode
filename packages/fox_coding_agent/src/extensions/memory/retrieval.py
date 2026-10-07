@@ -298,29 +298,8 @@ class HybridRetriever:
         return selected
 
 
-def baseline_search(entries: Iterable[MemoryEntry], query: str, *, limit: int = 5) -> list[SearchResult]:
-    """The pre-redesign algorithm, retained as an honest evaluation baseline."""
-    query_text = normalize(query)
-    query_terms = tokens(query_text)
-    ranked: list[SearchResult] = []
-    for entry in entries:
-        name, description, content = map(normalize, (entry.name, entry.description, entry.content))
-        score = 100.0 if entry.pinned else 0.0
-        score += 12.0 if query_text in name else 0.0
-        score += 8.0 if query_text in description else 0.0
-        score += 3.0 if query_text in content else 0.0
-        score += len(query_terms & tokens(name)) * 6
-        score += len(query_terms & tokens(description)) * 3
-        score += len(query_terms & tokens(content))
-        if score > 0:
-            ranked.append(SearchResult(
-                entry, score, 1.0, ScoreBreakdown(contextual_bm25f=score)
-            ))
-    ranked.sort(key=lambda item: (-item.score, item.entry.filename))
-    return ranked[:limit]
-
 
 __all__ = [
-    "HybridRetriever", "RetrievalConfig", "baseline_search", "concepts", "is_expired",
+    "HybridRetriever", "RetrievalConfig", "concepts", "is_expired",
     "normalize", "token_sequence", "tokens",
 ]

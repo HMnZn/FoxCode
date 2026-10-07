@@ -19,7 +19,7 @@ export interface WindowControls {
  * The single seam between the renderer and a FoxCode host.
  *
  * `IpcBridge` talks to the Electron main process, which in turn drives a
- * Python `fox serve` sidecar (JSON-RPC over stdio/WebSocket). `MockBridge`
+ * Python `fox_serve` sidecar (NDJSON over stdio). `MockBridge`
  * implements the exact same contract entirely in the renderer so the UI can
  * run with no Python sidecar at all (`transport: "mock"` in `HostInfo`).
  */

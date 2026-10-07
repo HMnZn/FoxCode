@@ -44,6 +44,12 @@ def _slug(value: str) -> str:
     return slug or "memory"
 
 
+def _default_topic(name: str) -> str:
+    # ASCII filenames are deliberately lossy. They must not collapse unrelated
+    # Chinese (or mixed-language) records into the same conflict topic.
+    return _slug(name) if name.isascii() else normalize(name)
+
+
 def _iso(value: object, *, required: bool = False) -> str | None:
     if value is None or value == "":
         if required:
@@ -125,7 +131,7 @@ class MemoryStore:
             raise ValueError(f"Invalid memory: {path}: {exc}") from exc
         pinned = metadata.get("pinned", False)
         status = metadata.get("status", "active")
-        topic = metadata.get("topic") or _slug(str(name))
+        topic = metadata.get("topic") or _default_topic(str(name))
         importance = metadata.get("importance", 0.5)
         confidence = metadata.get("confidence", 1.0)
         tags = metadata.get("tags", [])
@@ -191,7 +197,7 @@ class MemoryStore:
             ))
         if expires_at:
             _iso(expires_at)
-        normalized_topic = (topic or _slug(name)).strip().casefold()
+        normalized_topic = (topic or _default_topic(name)).strip().casefold()
         if not normalized_topic or len(normalized_topic) > 100:
             raise ValueError("Memory topic must contain 1-100 characters")
         identity = hashlib.sha256(
@@ -242,7 +248,7 @@ class MemoryStore:
             if duplicate.name.casefold() != name.strip().casefold():
                 return WriteResult(decision, duplicate)
 
-        normalized_topic = (topic or _slug(name)).strip().casefold()
+        normalized_topic = (topic or _default_topic(name)).strip().casefold()
         identity = hashlib.sha256(f"{kind}\0{name.strip().casefold()}".encode("utf-8")).hexdigest()[:10]
         filename = f"{kind}_{_slug(name)}-{identity}.md"
         existing = next((entry for entry in self.list() if entry.filename == filename), None)
@@ -270,6 +276,23 @@ class MemoryStore:
         if not result.decision.accepted or result.entry is None:
             raise ValueError("Memory rejected: " + "; ".join(result.decision.reasons))
         return result.entry
+
+    def update(self, filename: str, **changes) -> MemoryEntry:
+        """Edit an existing record without changing its identity or lifecycle."""
+        if set(changes) - {"description", "content", "pinned"}:
+            raise ValueError("Only description, content and pinned can be edited")
+        current = self.read(filename)
+        entry = replace(current, **changes)
+        self._validate(entry.name, entry.description, entry.type, entry.content)
+        if not isinstance(entry.pinned, bool):
+            raise ValueError("pinned must be a boolean")
+        if any(pattern.search(entry.content) for pattern in _SECRET_PATTERNS):
+            raise ValueError("Memory must not store credentials or private keys")
+        entry = replace(entry, description=entry.description.strip(),
+                        content=entry.content.strip(), updated_at=datetime.now(timezone.utc).isoformat())
+        self._write_entry(entry)
+        self._rebuild_index()
+        return entry
 
     def _write_entry(self, entry: MemoryEntry) -> None:
         frontmatter = yaml.safe_dump(_metadata(entry), allow_unicode=True, sort_keys=False).strip()

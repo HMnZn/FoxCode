@@ -6,12 +6,12 @@ from .models import (
     MemoryEntry, MemoryStatus, MemoryType, ScoreBreakdown, SearchResult,
     WriteDecision, WriteResult,
 )
-from .retrieval import HybridRetriever, RetrievalConfig, baseline_search
+from .retrieval import HybridRetriever, RetrievalConfig
 from .store import MEMORY_TYPES, MemoryStore, project_memory_id
 
 __all__ = [
     "MEMORY_TYPES", "HybridRetriever", "InjectionReport", "MemoryEntry",
     "MemoryExtensionConfig", "MemoryService", "MemoryStatus", "MemoryStore", "MemoryType",
     "RetrievalConfig", "ScoreBreakdown", "SearchResult", "WriteDecision", "WriteResult",
-    "baseline_search", "build_memory_context", "create_memory_extension", "project_memory_id", "setup",
+    "build_memory_context", "create_memory_extension", "project_memory_id", "setup",
 ]

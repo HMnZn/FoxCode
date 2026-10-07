@@ -45,7 +45,7 @@ describe('ExtensionsPage', () => {
     expect(switchIn('subagent').getAttribute('aria-checked')).toBe('true')
     // Discovered but not configured.
     expect(switchIn('mcp').getAttribute('aria-checked')).toBe('false')
-    expect(switchIn('skill_evolution').getAttribute('aria-checked')).toBe('false')
+    expect(screen.queryByTitle('skill_evolution')).toBeNull()
     expect(switchIn('guard_shell').getAttribute('aria-checked')).toBe('false')
 
     // Contributions and the authoritative scope are surfaced, not just names.
@@ -53,9 +53,8 @@ describe('ExtensionsPage', () => {
     expect(within(memory).getByText('memory_recall')).toBeTruthy()
     expect(within(memory).getByText('memory.store')).toBeTruthy()
     expect(within(memory).getByText('上下文变换')).toBeTruthy()
-    const evolution = cardFor('skill_evolution')
-    expect(within(evolution).getAllByText('skill_evolution')).toHaveLength(2)
-    expect(within(evolution).getByText('skill-evolution.manager')).toBeTruthy()
+    const management = screen.getByRole('heading', { name: '扩展管理' }).parentElement?.parentElement
+    expect(management?.contains(screen.getByRole('region', { name: '记忆管理' }))).toBe(true)
     expect(screen.getByText('生效作用域')).toBeTruthy()
     expect(screen.getByText('项目级 .foxcode/settings.json')).toBeTruthy()
 

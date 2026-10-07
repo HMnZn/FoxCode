@@ -127,11 +127,7 @@ class DiscoverTests(unittest.TestCase):
         self.assertIn("memory.store", memory.services)
         self.assertIsNone(by_name["subagent"].probe.error)
         self.assertEqual(by_name["subagent"].probe.tools, ["agent"])
-        evolution = by_name["skill_evolution"].probe
-        self.assertIsNone(evolution.error)
-        self.assertEqual(evolution.tools, ["skill_evolution"])
-        self.assertEqual(evolution.commands, ["skill-evolution"])
-        self.assertIn("skill-evolution.manager", evolution.services)
+        self.assertEqual(set(by_name), {"memory", "mcp", "subagent"})
 
     def test_user_and_project_files_are_only_docstring_probed(self) -> None:
         user_file = self.user_dir / "extensions" / "my_ext.py"
@@ -339,7 +335,4 @@ class HostInfoExtensionTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(subagent["enabled"])
         self.assertEqual(subagent["origin"], "builtin")
         self.assertEqual(subagent["tools"], ["agent"])
-        evolution_spec = "module:fox_coding_agent.src.extensions.skill_evolution:setup"
-        self.assertIn(evolution_spec, available)
-        self.assertEqual(available[evolution_spec]["tools"], ["skill_evolution"])
-        self.assertEqual(available[evolution_spec]["commands"], ["skill-evolution"])
+        self.assertEqual(len(available), 2)

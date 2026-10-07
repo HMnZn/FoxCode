@@ -10,9 +10,10 @@
  * 重新拉 `host.info`（`extensions.set` 的返回里也带了刷新后的两个列表）。
  */
 import { useEffect, useMemo, useState } from 'react'
-import { AlertTriangle, Ban, FolderCog, Info, ShieldCheck, UserCog } from 'lucide-react'
+import { AlertTriangle, Ban, FolderCog, Info, UserCog } from 'lucide-react'
 import { Chip, EmptyState, Switch, Tooltip } from '@/components/ui'
 import { FoxMark } from '@/components/brand/Fox'
+import { MemoryManager } from '@/components/extensions/MemoryManager'
 import { SettingsControlPlane } from '@/components/settings/SettingsControlPlane'
 import { useSession } from '@/store/sessionStore'
 import { shortPath, truncate } from '@/lib/format'
@@ -20,13 +21,6 @@ import type { ExtensionInfo } from '@/types/protocol'
 
 type Tone = 'neutral' | 'accent' | 'success' | 'warn' | 'danger' | 'info' | 'think'
 
-/** 与宿主文档一致的判定顺序，前一步拒绝就不会再往下走。 */
-const HOOK_CHAIN: ReadonlyArray<{ label: string; body: string; tone: Tone }> = [
-  { label: '1 · 未信任项目', body: '项目被标记为未信任时，写入与执行直接拒绝', tone: 'danger' },
-  { label: '2 · 静态权限检查', body: '按当前权限模式判定路径与命令是否越界', tone: 'warn' },
-  { label: '3 · 宿主 before_tool_call', body: '宿主内置规则，例如保护敏感文件', tone: 'info' },
-  { label: '4 · 扩展 before_tool', body: '扩展按注册顺序依次表决', tone: 'accent' },
-]
 
 const KIND_LABEL: Record<string, string> = {
   module: '模块',
@@ -109,10 +103,7 @@ export function ExtensionsPage() {
         </header>
 
         <p className="max-w-[86ch] text-xs leading-relaxed text-fg-muted">
-          扩展与主程序隔离：宿主只在启动（或重载）时读取 settings.json 的{' '}
-          <span className="font-mono">extensions</span> 列表并调用各自的 <span className="font-mono">setup</span>。
-          打开开关 = 把 spec 写进配置文件并热重载（当前会话、模型与历史都保留）；关闭 = 从所有作用域移除。
-          项目级配置里一旦出现 <span className="font-mono">extensions</span> 键，它会整体覆盖用户级列表。
+          启用记忆、MCP 与 Subagent 扩展，为当前工作区添加能力。开关会保存配置并重载扩展；项目级列表优先于用户级列表。
         </p>
 
         {projectLocked && (
@@ -123,27 +114,6 @@ export function ExtensionsPage() {
             </span>
           </div>
         )}
-
-        <section className="surface-card flex flex-col gap-3 p-4">
-          <div className="flex items-center gap-2">
-            <ShieldCheck size={13} className="text-success" aria-hidden="true" />
-            <h2 className="text-xs font-medium text-fg-muted">钩子判定顺序</h2>
-            <span className="ml-auto text-2xs text-fg-subtle">任一层拒绝即终止，钩子只能收紧权限</span>
-          </div>
-          <div className="flex flex-wrap items-stretch gap-2">
-            {HOOK_CHAIN.map((step, index) => (
-              <div key={step.label} className="flex min-w-0 items-center gap-2">
-                {index > 0 && <span className="text-fg-subtle" aria-hidden="true">→</span>}
-                <div className="min-w-[180px] flex-1 rounded-lg border border-line bg-surface-2 px-3 py-2">
-                  <Chip size="xs" tone={step.tone}>
-                    {step.label}
-                  </Chip>
-                  <p className="mt-1.5 text-2xs leading-relaxed text-fg-subtle">{step.body}</p>
-                </div>
-              </div>
-            ))}
-          </div>
-        </section>
 
         <section className="flex flex-col gap-2">
           <div className="flex items-center gap-2">
@@ -209,11 +179,12 @@ export function ExtensionsPage() {
 
         <section className="mt-2 flex flex-col gap-4 border-t border-line pt-6">
           <div>
-            <h2 className="text-sm font-medium text-fg">扩展配置</h2>
+            <h2 className="text-sm font-medium text-fg">扩展管理</h2>
             <p className="mt-1 text-2xs leading-relaxed text-fg-subtle">
-              MCP 服务器和 Subagent 都由扩展提供，在这里管理它们的连接与角色配置。
+              在这里管理项目记忆、MCP 服务器连接与 Subagent 角色。
             </p>
           </div>
+          <MemoryManager />
           <SettingsControlPlane surface="extensions" />
         </section>
 

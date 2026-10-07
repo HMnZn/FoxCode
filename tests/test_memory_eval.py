@@ -3,7 +3,7 @@
 from dataclasses import fields
 
 from fox_coding_agent.src.extensions.memory import ScoreBreakdown
-from fox_coding_agent.src.extensions.memory.eval import run
+from memory_eval import run
 
 
 def test_retrieval_score_has_exactly_three_explainable_signals():

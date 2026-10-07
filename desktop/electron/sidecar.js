@@ -1,10 +1,7 @@
 /**
- * Minimal NDJSON client for a future Python `fox serve` sidecar.
- *
- * The FoxCode Python packages are untouched by this UI project, so the sidecar
- * is opt-in: set `FOXCODE_SERVE_CMD` (and optionally `FOXCODE_SERVE_ARGS`) to a
- * command that speaks one JSON object per line on stdin/stdout, then the shell
- * forwards frames to the renderer instead of falling back to the demo host.
+ * NDJSON client for the Python fox_serve sidecar.
+ * The shell discovers the repository Python environment during development;
+ * installed apps can configure FOXCODE_SERVE_CMD and FOXCODE_SERVE_ARGS_JSON.
  *
  * Line protocol (both directions):
  *   -> {"id":"c1","method":"prompt","params":{...}}      request

@@ -5,7 +5,7 @@
 - :mod:`fox_serve.protocol` 负责「宿主对象 → 线协议 JSON」；
 - :mod:`fox_serve.approvals` 负责「能不能执行」；
 - :mod:`fox_serve.sessions` 负责会话索引；
-- 本模块负责**编排**：订阅事件、分发 20 个命令、把授权请求接到
+- 本模块负责**编排**：订阅事件、分发宿主命令、把授权请求接到
   `AgentSessionRuntime(before_tool_call=...)` 上。
 
 关于权限（重要，见 `approvals.py` 的模块注释）：宿主固定的判定顺序是
@@ -1935,6 +1935,75 @@ class ServeHost:
     def _extension_api(self) -> Any:
         session = getattr(self._runtime, "agent_session", None)
         return getattr(getattr(session, "extensions", None), "api", None)
+
+    def _memory_service(self) -> Any:
+        runtime = self._require_runtime()
+        api = self._extension_api()
+        service = api.get_service("memory.store") if api is not None else None
+        if service is None:
+            raise HostError("请先在扩展页启用 memory 扩展")
+        try:
+            # Runtime lifecycle hooks start on the first prompt. The management
+            # UI must work before that, without starting unrelated MCP servers.
+            if service.store is None:
+                service.bind(runtime.agent_session.extension_context)
+            service.require_store()
+        except (RuntimeError, PermissionError) as exc:
+            raise HostError(str(exc)) from exc
+        return service
+
+    async def _cmd_memory_list(self, params: dict[str, Any]) -> dict[str, Any]:
+        store = self._memory_service().require_store()
+        query = params.get("query", "")
+        if not isinstance(query, str):
+            raise HostError("query 必须是字符串")
+        # Management search includes historical entries; agent recall uses its
+        # own relevance and expiry policy and must not be reused as a file list.
+        entries = store.list()
+        if query.strip():
+            needle = query.strip().casefold()
+            entries = [entry for entry in entries if needle in " ".join(
+                (entry.name, entry.description, entry.content, entry.topic, *entry.tags)
+            ).casefold()]
+        return {"entries": to_jsonable(entries), "directory": str(store.directory)}
+
+    async def _cmd_memory_save(self, params: dict[str, Any]) -> dict[str, Any]:
+        service = self._memory_service()
+        if id(self._runtime) in self._running_runtimes:
+            raise HostError("请等待当前 Agent 运行结束后修改记忆")
+        allowed = {"filename", "name", "description", "type", "content", "pinned"}
+        if set(params) - allowed:
+            raise HostError("记忆包含不支持的字段")
+        if "pinned" in params and not isinstance(params["pinned"], bool):
+            raise HostError("pinned 必须是布尔值")
+        store = service.require_store()
+        try:
+            values = dict(params)
+            filename = values.pop("filename", None)
+            if filename is not None:
+                if set(values) - {"description", "content", "pinned"}:
+                    raise HostError("已有记忆的名称和类型不可修改")
+                entry = store.update(filename, **values)
+            else:
+                if not {"name", "description", "type", "content"} <= set(values):
+                    raise HostError("需要名称、描述、类型和内容")
+                result = service.save(**values)
+                if not result.decision.accepted or result.entry is None:
+                    raise HostError("；".join(result.decision.reasons))
+                entry = result.entry
+        except (ValueError, FileNotFoundError, TypeError) as exc:
+            raise HostError(str(exc)) from exc
+        return {"entry": to_jsonable(entry)}
+
+    async def _cmd_memory_delete(self, params: dict[str, Any]) -> dict[str, Any]:
+        store = self._memory_service().require_store()
+        if id(self._runtime) in self._running_runtimes:
+            raise HostError("请等待当前 Agent 运行结束后删除记忆")
+        try:
+            deleted = store.delete(params.get("filename"))
+        except (ValueError, TypeError) as exc:
+            raise HostError(str(exc)) from exc
+        return {"deleted": deleted}
 
     def _commands(self) -> list[dict[str, Any]]:
         items: list[dict[str, Any]] = [dict(item) for item in BUILTIN_COMMANDS]
