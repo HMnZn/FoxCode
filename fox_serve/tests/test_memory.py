@@ -135,3 +135,40 @@ class MemoryRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual((await host.handle('memory.list'))['entries'], [])
             finally:
                 await host.stop()
+
+    async def test_extension_toggle_preserves_memory_and_derives_tool_selection(self):
+        import json
+        with temp_dir_obj() as directory:
+            root = Path(directory)
+            workspace, user = root / 'workspace', root / 'user'
+            workspace.mkdir(); user.mkdir()
+            spec = 'module:fox_coding_agent.src.extensions.memory:setup'
+            (user / 'settings.json').write_text(json.dumps({'extensions': [spec]}))
+            host = ServeHost(cwd=workspace, user_dir=user)
+            await host.start()
+            try:
+                session = host._runtime.agent_session
+                memory_tools = {'memory_forget', 'memory_recall', 'memory_remember'}
+                self.assertTrue(memory_tools <= set(session.selected_tool_names))
+                self.assertFalse(memory_tools & set(session.session.build_settings()['active_tools']))
+                # Normalize transcripts created before extension tools became ephemeral.
+                session.session.append_active_tools_change(list(session.selected_tool_names))
+                await host.handle('reload')
+                session = host._runtime.agent_session
+                self.assertFalse(memory_tools & set(session.session.build_settings()['active_tools']))
+                saved = (await host.handle('memory.save', {
+                    'name': 'Project rule', 'description': 'Long-lived rule',
+                    'type': 'project', 'content': 'Run tests after code changes.'
+                }))['entry']
+                await host.handle('extensions.set', {'id': 'memory', 'enabled': False})
+                self.assertFalse(memory_tools & set(host._runtime.agent_session.selected_tool_names))
+                with self.assertRaisesRegex(HostError, '启用'):
+                    await host.handle('memory.list')
+                await host.handle('extensions.set', {'id': 'memory', 'enabled': True})
+                self.assertTrue(memory_tools <= set(host._runtime.agent_session.selected_tool_names))
+                self.assertEqual((await host.handle('memory.list'))['entries'][0]['filename'], saved['filename'])
+                fork = host._runtime.agent_session.fork()
+                self.assertTrue(memory_tools <= set(fork.selected_tool_names))
+                self.assertFalse(memory_tools & set(fork.session.build_settings()['active_tools']))
+            finally:
+                await host.stop()

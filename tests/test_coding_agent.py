@@ -16,7 +16,7 @@ from fox_ai.src import TextContent, ToolCall, UserMessage
 from fox_ai.src.providers.faux import FAUX_MODEL, FauxScript
 from fox_agent_core.src import AgentToolResult
 from fox_coding_agent.src import (
-    AgentSessionRuntime, BashTool, ExtensionRunner, FindTool, GrepTool, LsTool, ModelConfig,
+    AgentSessionRuntime, BashTool, FindTool, GrepTool, LsTool, ModelConfig,
     ModelRegistry, PowerShellTool,
     ResourceLoader, SettingsManager, ReadTool, WriteTool, build_system_prompt,
 )

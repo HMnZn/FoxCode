@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 from .event_stream import EventStream
-from .events import AssistantMessageEvent, ErrorEvent
+from .events import AssistantMessageEvent
 from .models import get_api_provider
 from .types import AssistantMessage, Context, Model, SimpleStreamOptions, StreamOptions
 
@@ -53,17 +53,6 @@ async def complete_simple(
     """非流式（带思考级别）。"""
     event_stream = stream_simple(model, context, options)
     return await event_stream.result()
-
-
-def _make_error_stream(
-    message: AssistantMessage, reason: str
-) -> EventStream[AssistantMessageEvent, AssistantMessage]:
-    """构造一个只发单个 error 事件就结束的流（用于 provider 缺失等同步失败）。"""
-    es: EventStream[AssistantMessageEvent, AssistantMessage] = EventStream()
-    ev = ErrorEvent(reason=reason, error=message)
-    es.push(ev)
-    es.end(message)
-    return es
 
 
 __all__ = ["stream", "stream_simple", "complete", "complete_simple"]

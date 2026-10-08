@@ -139,14 +139,6 @@ def register_builtins() -> None:
     _builtins_registered = True
 
 
-def _reset_for_testing() -> None:
-    """测试专用：重置全部注册表与幂等标记。"""
-    global _builtins_registered
-    clear_models()
-    clear_api_providers()
-    _builtins_registered = False
-
-
 __all__ = [
     "ProviderStreams",
     "register_model",

@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 from pathlib import Path
+from typing import Any
 
 
 def atomic_write_text(
@@ -36,3 +38,8 @@ def atomic_write_text(
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)
+
+
+def atomic_write_json(path: Path, value: Any, *, mode: int | None = None) -> None:
+    """Use the same atomic publishing path for UTF-8 JSON configuration."""
+    atomic_write_text(path, json.dumps(value, ensure_ascii=False, indent=2) + "\n", mode=mode)

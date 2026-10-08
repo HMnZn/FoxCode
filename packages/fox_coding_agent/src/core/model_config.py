@@ -89,7 +89,12 @@ class ModelConfig:
         if source is None:
             self.snapshot = ModelConfigSnapshot((), {}, None)
             return self.snapshot
-        data = _read_json(source)
+        self.snapshot = self.parse(_read_json(source), source=source)
+        return self.snapshot
+
+    @staticmethod
+    def parse(data: dict[str, Any], *, source: Path | None = None) -> ModelConfigSnapshot:
+        """Validate a complete catalog in memory before publishing or loading it."""
         try:
             config = ModelsFile.model_validate(data)
         except ValidationError as exc:
@@ -105,8 +110,7 @@ class ModelConfig:
                 models.append(ConfiguredModel(f"{provider_id}/{model.id}", model))
         if len({entry.reference.lower() for entry in models}) != len(models):
             raise ValueError(f"Duplicate model reference in {source}")
-        self.snapshot = ModelConfigSnapshot(tuple(models), config.providers, source)
-        return self.snapshot
+        return ModelConfigSnapshot(tuple(models), config.providers, source)
 
 
 __all__ = [

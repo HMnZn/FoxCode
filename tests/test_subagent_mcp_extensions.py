@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from fox_ai.src import TextContent, ToolCall
+from fox_ai.src import ToolCall
 from fox_ai.src.providers.faux import FAUX_MODEL, FauxScript, clear_scripts
 from fox_coding_agent.src import AgentSessionRuntime
 from fox_coding_agent.src.extensions.mcp import McpConnection, McpServerConfig, load_mcp_config

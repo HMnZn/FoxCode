@@ -994,7 +994,7 @@ function concat(a: Token[], b: Token[]): Token[] {
  * Detect the language a diff is about — from the `--- a/x.py` header when it
  * has a useful extension, otherwise from the first added line's shape.
  */
-export function detectDiffLanguage(code: string): Language {
+function detectDiffLanguage(code: string): Language {
   const header = /^(?:\+\+\+|---)\s+\S*?\.([A-Za-z0-9]+)/m.exec(code)
   if (header) {
     const fromExt = detectLanguage('', header[1])
@@ -1306,26 +1306,6 @@ function tokenizeInline(tokens: Token[], text: string): void {
 /* ------------------------------------------------------------------ *
  * Public API
  * ------------------------------------------------------------------ */
-
-const CLikeLanguages = new Set<Language>([
-  'ts',
-  'tsx',
-  'js',
-  'jsx',
-  'java',
-  'go',
-  'rust',
-  'c',
-  'cpp',
-  'css',
-  'sql',
-  'json',
-])
-
-/** True when `language` is compiled by the C-like scanner. */
-export function isCLike(language: Language): boolean {
-  return CLikeLanguages.has(language)
-}
 
 export function tokenize(code: string, language: Language): Token[] {
   if (code === '') return []

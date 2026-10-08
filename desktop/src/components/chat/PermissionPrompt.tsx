@@ -1,7 +1,8 @@
 import { useMemo } from 'react'
 import { AlertTriangle, FolderOpen, ShieldAlert, Terminal } from 'lucide-react'
 import { Button, Chip } from '@/components/ui'
-import { DiffView, parseUnifiedDiff } from '@/components/content/DiffView'
+import { DiffView } from '@/components/content/DiffView'
+import { parseUnifiedDiff } from '@/lib/diff'
 import { shortPath } from '@/lib/format'
 import {
   PERMISSION_LABEL,

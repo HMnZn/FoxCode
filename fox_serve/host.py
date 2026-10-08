@@ -21,10 +21,9 @@ import asyncio
 import base64
 import copy
 import contextlib
-import sys
 import time
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Awaitable, Callable
 
 from . import __version__
 from . import extension_catalog as catalog
@@ -44,6 +43,7 @@ from .protocol import (
     to_jsonable,
 )
 from fox_coding_agent.src.core.session_layout import session_id_from_path
+from fox_coding_agent.src.core._io import atomic_write_text
 from fox_coding_agent.src.core.paths import ProjectPaths, UserPaths
 from fox_coding_agent.src.core.sandbox import detect_sandbox
 from fox_ai.src import ImageContent, TextContent, ToolResultMessage, UserMessage
@@ -208,7 +208,6 @@ class ServeHost:
         self._seq = 0
         self._started_at = time.time()
         self._closed = False
-        self._unsubscribe: Callable[[], None] | None = None
         # A newly-created conversation must not tear down a run that is still
         # producing output. The active runtime drives the visible workbench;
         # older busy runtimes stay alive here until their own prompt finishes.
@@ -223,7 +222,7 @@ class ServeHost:
         #: 再从同一会话继续，不能和旧 prompt 并发改写 transcript。
         self._runtime_tasks: dict[int, asyncio.Task[Any]] = {}
         #: 前端靠帧推进状态，所以「一轮到底还在不在跑」必须由宿主自己给出：
-        #: 只在收到 `agent_start`/`agent_end`/`error` 时翻转（见 `_emit_frame`）。
+        #: 任务排队、结束以及 `agent_start`/`agent_end`/`error` 都会更新状态。
         #: 少了这个信号，一轮如果在模型请求里静默卡住，前端会永远停在「生成中」。
         self._agent_running = False
         self._last_frame_at = self._started_at
@@ -274,10 +273,7 @@ class ServeHost:
             before_tool_call=self._before_tool_call,
             project_trusted=self.project_trusted,
         )
-        self._tools = {
-            str(getattr(tool, "name", "")): tool
-            for tool in (getattr(self._runtime.state, "tools", None) or [])
-        }
+        self._refresh_tools(self._runtime)
         self._policy.set_cwd(self._runtime.cwd)
         self._sessions = SessionIndex(cwd=self._runtime.cwd, user_dir=self.user_dir)
         await self._reset_workspace_snapshot(self._runtime)
@@ -324,12 +320,7 @@ class ServeHost:
         self._runtimes.clear()
         self._workspace_snapshots.clear()
         self._running_runtimes.clear()
-        self._unsubscribe = None
         self._runtime = None
-
-    @property
-    def started(self) -> bool:
-        return self._runtime is not None and not self._closed
 
     # ------------------------------------------------------------------
     # 输出通道
@@ -414,20 +405,17 @@ class ServeHost:
             lambda event, cancel=None, owner=runtime: self._on_runtime_event(owner, event, cancel)
         )
         self._runtime_unsubscribes[marker] = unsubscribe
-        if runtime is self._runtime:
-            self._unsubscribe = unsubscribe
+
+    def _refresh_tools(self, runtime: Any) -> None:
+        self._tools = {str(getattr(tool, "name", "")): tool for tool in (getattr(runtime.state, "tools", None) or [])}
 
     def _activate_runtime(self, runtime: Any) -> None:
         self._runtime = runtime
         self._workspace_snapshot = self._workspace_snapshots.get(id(runtime))
         self._register_runtime(runtime)
-        self._unsubscribe = self._runtime_unsubscribes.get(id(runtime))
         self._agent_running = id(runtime) in self._running_runtimes
         self.cwd = Path(runtime.cwd)
-        self._tools = {
-            str(getattr(tool, "name", "")): tool
-            for tool in (getattr(runtime.state, "tools", None) or [])
-        }
+        self._refresh_tools(runtime)
         if self._policy is not None:
             self._policy.reset_allowlist()
             self._policy.set_cwd(runtime.cwd)
@@ -1116,22 +1104,8 @@ class ServeHost:
         # 一轮对话可能要跑几分钟，而前端 sidecar 客户端对单个请求有超时。
         # 所以这里立刻返回，把这一轮放到后台 task 里跑：进度/结束全部由帧
         # （agent_start / tool_execution_* / agent_end）驱动，和 UI 的模型一致。
-        self._agent_running = True
-        running = getattr(self, "_running_runtimes", None)
-        if running is not None:
-            running.add(id(runtime))
-        task = self._spawn_task(
-            self._run_prompt(message, runtime=runtime, effective_mode=effective_mode),
-            name="prompt",
-        )
-        marker = id(runtime)
-        self._runtime_tasks[marker] = task
-
-        def _clear_runtime_task(done: asyncio.Task[Any]) -> None:
-            if self._runtime_tasks.get(marker) is done:
-                self._runtime_tasks.pop(marker, None)
-
-        task.add_done_callback(_clear_runtime_task)
+        kwargs = {"effective_mode": effective_mode} if effective_mode is not None else {}
+        self._queue_operation(runtime, lambda: runtime.prompt(message, **kwargs), name="prompt")
         return {
             "queued": "prompt",
             "effectiveInteractionMode": getattr(
@@ -1139,37 +1113,37 @@ class ServeHost:
             ),
         }
 
-    async def _run_prompt(
-        self,
-        message: Any,
-        *,
-        runtime: Any | None = None,
-        effective_mode: str | None = None,
-    ) -> None:
-        runtime = runtime or self._runtime
-        if runtime is None:
-            self._agent_running = False
-            return
+    def _queue_operation(self, runtime: Any, operation: Callable[[], Awaitable[Any]], *, name: str) -> None:
+        """Track prompt and skill runs through the same background-task lifecycle."""
+        self._agent_running = True
+        marker = id(runtime)
+        self._running_runtimes.add(marker)
+        task = self._spawn_task(self._run_operation(runtime, operation, name=name), name=name)
+        self._runtime_tasks[marker] = task
+
+        task.add_done_callback(lambda done: self._finish_operation(runtime, done))
+
+    async def _run_operation(self, runtime: Any, operation: Callable[[], Awaitable[Any]], *, name: str) -> None:
         try:
-            if effective_mode is None:
-                await runtime.prompt(message)
-            else:
-                await runtime.prompt(message, effective_mode=effective_mode)
-        except asyncio.CancelledError:  # pragma: no cover - 退出时取消
+            await operation()
+        except asyncio.CancelledError:
             raise
-        except Exception as exc:  # noqa: BLE001 - 失败要变成错误帧，前端才会显示
-            self._log(f"prompt 失败：{type(exc).__name__}: {exc}")
+        except Exception as exc:
+            self._log(f"{name} 失败：{type(exc).__name__}: {exc}")
             if runtime is self._runtime:
                 self._emit_frame({"type": "error", "error": f"{type(exc).__name__}: {exc}"})
         finally:
-            # `runtime.prompt()` 返回或抛错都代表这一轮真的结束了（它 await 的是
-            # 整轮 agent loop），所以这里必须把忙碌标志放下：否则一轮异常收尾后
-            # `host.info.busy` 会永远停在 true，前端只能一直显示「生成中」。
-            running = getattr(self, "_running_runtimes", None)
-            if running is not None:
-                running.discard(id(runtime))
-            if runtime is self._runtime:
-                self._agent_running = False
+            self._finish_operation(runtime, asyncio.current_task())
+
+    def _finish_operation(self, runtime: Any, task: asyncio.Task[Any] | None) -> None:
+        marker = id(runtime)
+        owner = self._runtime_tasks.get(marker)
+        if owner is not None and owner is not task:
+            return
+        self._runtime_tasks.pop(marker, None)
+        self._running_runtimes.discard(marker)
+        if runtime is self._runtime:
+            self._agent_running = False
 
     def _spawn_task(self, coro: Any, *, name: str) -> asyncio.Task[Any]:
         task = asyncio.ensure_future(coro)
@@ -1303,43 +1277,15 @@ class ServeHost:
 
         # Like a normal prompt, a skill run may take minutes.  Return to the
         # renderer immediately and let runtime frames carry progress/results.
-        self._agent_running = True
-        self._running_runtimes.add(id(runtime))
-        task = self._spawn_task(
-            self._run_skill(runtime, name, instructions), name=f"skill:{name}"
-        )
-        marker = id(runtime)
-        self._runtime_tasks[marker] = task
-        task.add_done_callback(
-            lambda done: self._runtime_tasks.pop(marker, None)
-            if self._runtime_tasks.get(marker) is done
-            else None
-        )
+        self._queue_operation(runtime, lambda: runtime.invoke_skill(name, instructions), name=f"skill:{name}")
         return {"queued": "skill", "name": name}
-
-    async def _run_skill(self, runtime: Any, name: str, instructions: str) -> None:
-        try:
-            await runtime.invoke_skill(name, instructions)
-        except asyncio.CancelledError:  # pragma: no cover - host shutdown
-            raise
-        except Exception as exc:  # noqa: BLE001 - surface failures as timeline frames
-            self._log(f"skill {name} 失败：{type(exc).__name__}: {exc}")
-            if runtime is self._runtime:
-                self._emit_frame({"type": "error", "error": f"{type(exc).__name__}: {exc}"})
-        finally:
-            self._running_runtimes.discard(id(runtime))
-            if runtime is self._runtime:
-                self._agent_running = False
 
     async def _reload_runtime(self) -> None:
         """重载设置/扩展，并刷新 cwd 绑定的工具表。"""
 
         runtime = self._require_runtime()
         await runtime.reload()
-        self._tools = {
-            str(getattr(tool, "name", "")): tool
-            for tool in (getattr(runtime.state, "tools", None) or [])
-        }
+        self._refresh_tools(runtime)
         self._emit_session_start()
 
     async def _cmd_reload(self, _params: dict[str, Any]) -> dict[str, Any]:
@@ -1493,10 +1439,7 @@ class ServeHost:
             mode = runtime.set_interaction_mode(str(params.get("mode") or ""))
         except (RuntimeError, ValueError) as exc:
             raise HostError(str(exc)) from exc
-        self._tools = {
-            str(getattr(tool, "name", "")): tool
-            for tool in (getattr(runtime.state, "tools", None) or [])
-        }
+        self._refresh_tools(runtime)
         self._log(f"交互模式 → {mode}（当前生效：{runtime.effective_interaction_mode}）")
         return {
             "interactionMode": mode,
@@ -1844,9 +1787,6 @@ class ServeHost:
             manager = settings_manager_cls(
                 str(self.cwd), user_dir=str(self.user_dir), project_trusted=self.project_trusted
             )
-            reload_fn = getattr(manager, "reload", None)
-            if callable(reload_fn):
-                reload_fn()
             mode = getattr(getattr(manager, "settings", None), "permission_mode", None)
             if isinstance(mode, str) and mode:
                 return mode
@@ -2052,14 +1992,14 @@ class ServeHost:
         """(当前生效的扩展、可发现但未生效的扩展)。"""
 
         user_path, project_path, trusted = self._extension_settings()
-        scope = catalog.effective_scope(user_path, project_path)
-        present = catalog.specs_present_in(user_path, project_path)
+        settings = catalog.ExtensionSettings.read(user_path, project_path)
+        present = settings.present_in
         configured = catalog.describe_configured(
-            catalog.effective_specs(user_path, project_path), scope=scope, present_in=present
+            settings.specs, scope=settings.scope, present_in=present
         )
         available = catalog.describe_available(
             self._extension_candidates(),
-            scope=catalog.suggested_scope(user_path, project_path, project_trusted=trusted),
+            scope=settings.suggested_scope(project_trusted=trusted),
             configured={str(item["spec"]) for item in configured},
             present_in=present,
         )
@@ -2072,12 +2012,7 @@ class ServeHost:
             self._log(f"扩展信息读取失败：{exc}")
             return [], []
 
-    def _extensions(self) -> list[dict[str, Any]]:
-        """当前生效的扩展（含探测出的贡献面）。"""
-
-        return self._extension_views_safe()[0]
-
-    def _resolve_extension_spec(self, raw: str) -> str:
+    def _resolve_extension_spec(self, raw: str, settings: catalog.ExtensionSettings) -> str:
         """把前端给的花名 / 文件路径 / spec 归一成能写进 settings 的字符串。"""
 
         spec = raw.strip()
@@ -2086,11 +2021,10 @@ class ServeHost:
             return spec
         if kind == "file" and (spec.endswith(".py") or "/" in spec or "\\" in spec):
             return str(Path(spec).expanduser().resolve())
-        user_path, project_path, _trusted = self._extension_settings()
         for candidate in self._extension_candidates():
             if spec in {candidate.name, candidate.spec, Path(candidate.path).stem}:
                 return candidate.spec
-        for existing in catalog.effective_specs(user_path, project_path):
+        for existing in settings.specs:
             if catalog.spec_name(existing) == spec:
                 return existing
         return spec
@@ -2123,22 +2057,20 @@ class ServeHost:
         if not raw:
             raise HostError("extensions.set 需要 id（扩展名、spec 或文件路径）")
         enabled = bool(params.get("enabled", True))
-        spec = self._resolve_extension_spec(raw)
-
         user_path, project_path, trusted = self._extension_settings()
         locations = {"user": user_path, "project": project_path}
-        present = catalog.specs_present_in(user_path, project_path)
+        settings = catalog.ExtensionSettings.read(user_path, project_path)
+        spec = self._resolve_extension_spec(raw, settings)
+        present = settings.present_in
         here = present.get(spec, [])
 
         target = str(params.get("scope") or "").strip()
         if target not in catalog.SCOPES:
-            target = here[0] if here else catalog.suggested_scope(
-                user_path, project_path, project_trusted=trusted
-            )
+            target = here[0] if here else settings.suggested_scope(project_trusted=trusted)
         if target == "project" and not trusted:
             raise HostError('项目未受信任，不能写入项目级扩展配置（可传 scope:"user"，或先信任项目）')
 
-        before = {scope: catalog.read_configured(path) for scope, path in locations.items()}
+        before = {scope: list(settings.layers[scope] or []) for scope in catalog.SCOPES}
         desired = {scope: list(specs) for scope, specs in before.items()}
         if enabled:
             current = desired[target]
@@ -2152,18 +2084,31 @@ class ServeHost:
                 desired[scope] = [item for item in desired[scope] if item != spec]
 
         touched = [scope for scope in catalog.SCOPES if desired[scope] != before[scope]]
-        for scope in touched:
-            self._write_extensions(scope, desired[scope])
         if touched:
+            backups = {scope: locations[scope].read_text(encoding="utf-8")
+                       if locations[scope].is_file() else None for scope in touched}
+            written: list[str] = []
             try:
+                for scope in touched:
+                    self._write_extensions(scope, desired[scope])
+                    written.append(scope)
                 await self._reload_runtime()
             except Exception as exc:
-                for scope in touched:
+                errors: list[str] = []
+                for scope in reversed(written):
+                    try:
+                        backup = backups[scope]
+                        if backup is None:
+                            locations[scope].unlink(missing_ok=True)
+                        else:
+                            atomic_write_text(locations[scope], backup)
+                    except OSError as restore_error:
+                        errors.append(f"{scope}: {restore_error}")
+                if written:
                     with contextlib.suppress(Exception):
-                        self._write_extensions(scope, before[scope])
-                with contextlib.suppress(Exception):
-                    await self._reload_runtime()
-                raise HostError(f"扩展没能加载，已回滚到原来的配置：{exc}") from exc
+                        await self._reload_runtime()
+                detail = f"配置回滚失败：{'；'.join(errors)}" if errors else "已回滚到原来的配置"
+                raise HostError(f"扩展更新失败，{detail}：{exc}") from exc
 
         configured, available = self._extension_views_safe()
         live = {str(item["spec"]) for item in configured}

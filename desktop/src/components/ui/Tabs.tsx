@@ -1,11 +1,10 @@
 /**
- * Tabs / TabPanel — controlled tab strip with optional counts and icons.
+ * Tabs — controlled tab strip with optional counts and icons.
  *
  * `variant="line"` draws an underline indicator for pane headers;
  * `variant="pill"` renders a filled segment for floating toolbars. The tab
  * buttons follow the WAI-ARIA tabs pattern (roving `tabIndex`, Arrow keys,
  * Home/End) and announce themselves with `aria-pressed` for simple strips.
- * `TabPanel` renders its children only while active.
  */
 import type { ReactNode } from 'react'
 import { cn } from '@/lib/cn'
@@ -143,23 +142,6 @@ export function Tabs({
           </button>
         )
       })}
-    </div>
-  )
-}
-
-export interface TabPanelProps {
-  /** Renders children only when this equals the parent's `value`. */
-  value: string
-  activeValue: string
-  children: ReactNode
-  className?: string
-}
-
-export function TabPanel({ value, activeValue, children, className }: TabPanelProps) {
-  if (value !== activeValue) return null
-  return (
-    <div role="tabpanel" className={cn('min-h-0 min-w-0', className)}>
-      {children}
     </div>
   )
 }

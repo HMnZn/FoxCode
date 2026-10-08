@@ -221,12 +221,3 @@ export function TraceList({ blocks, status }: TraceListProps) {
     </div>
   )
 }
-
-/** Exported for tests: how many tool-call groups and notice events a trace shows. */
-export function traceEntryCounts(blocks: Block[]): { tools: number; notices: number } {
-  const entries = buildEntries(blocks)
-  return {
-    tools: entries.filter((entry) => entry.kind === 'tools').length,
-    notices: entries.filter((entry) => entry.kind === 'notice').length,
-  }
-}

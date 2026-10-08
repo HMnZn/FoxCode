@@ -21,12 +21,6 @@ export interface ToolOutputProps {
   onCopy?: (text: string) => void
 }
 
-export interface CliLineProps {
-  text: string
-  tone?: 'default' | 'success' | 'danger' | 'muted'
-  prompt?: string
-}
-
 export interface OutputSectionProps {
   label: string
   children: ReactNode
@@ -302,29 +296,6 @@ function OutputSectionBase({
 
 export const OutputSection = memo(OutputSectionBase)
 OutputSection.displayName = 'OutputSection'
-
-/* ------------------------------------------------------------------ *
- * CliLine
- * ------------------------------------------------------------------ */
-
-const CLI_TONE: Record<NonNullable<CliLineProps['tone']>, string> = {
-  default: 'text-fg',
-  success: 'text-success',
-  danger: 'text-danger',
-  muted: 'text-fg-muted',
-}
-
-function CliLineBase({ text, tone = 'default', prompt = '$' }: CliLineProps): ReactNode {
-  return (
-    <div className="flex min-w-0 items-start gap-2 font-mono text-[12px] leading-[1.55]">
-      {prompt ? <span className="shrink-0 select-none text-accent">{prompt}</span> : null}
-      <span className={cn('min-w-0 whitespace-pre-wrap break-all', CLI_TONE[tone])}>{text}</span>
-    </div>
-  )
-}
-
-export const CliLine = memo(CliLineBase)
-CliLine.displayName = 'CliLine'
 
 /* ------------------------------------------------------------------ *
  * ToolOutput

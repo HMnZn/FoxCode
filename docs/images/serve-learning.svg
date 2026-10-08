@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="570" viewBox="0 0 1200 570" role="img" aria-labelledby="title desc">
+<title id="title">fox_serve · 请求与事件的双向通道</title>
+<desc id="desc">按箭头追踪一次请求：接收 → 编排 → Runtime → 序列化 → 推送；两个完成信号：result 表示命令已处理；agent_end + busy 表示 Agent 一轮结束</desc>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#8c98a8"/></marker></defs>
+<rect width="1200" height="570" rx="20" fill="#f7f9fc"/>
+<g font-family="-apple-system,BlinkMacSystemFont,Segoe UI,PingFang SC,Microsoft YaHei,sans-serif">
+<text x="42" y="58" font-size="28" font-weight="700" fill="#202b3a">fox_serve · 请求与事件的双向通道</text>
+<text x="42" y="93" font-size="16" fill="#596779">按箭头追踪一次请求：接收 → 编排 → Runtime → 序列化 → 推送</text>
+<rect x="42" y="136" width="324" height="138" rx="14" fill="#fff" stroke="#d8e0e9"/>
+<circle cx="70" cy="166" r="14" fill="#fff0e5"/>
+<text x="70" y="171" font-size="14" font-weight="600" text-anchor="middle" fill="#a34f20">1</text>
+<text x="94" y="172" font-size="20" font-weight="600" fill="#202b3a">NDJSON 请求</text>
+<text x="64" y="213" font-size="16" fill="#465366">id · method · params</text>
+<text x="64" y="244" font-size="15" fill="#657489">stdin 逐行读取</text>
+<rect x="438" y="136" width="324" height="138" rx="14" fill="#fff" stroke="#d8e0e9"/>
+<circle cx="466" cy="166" r="14" fill="#fff0e5"/>
+<text x="466" y="171" font-size="14" font-weight="600" text-anchor="middle" fill="#a34f20">2</text>
+<text x="490" y="172" font-size="20" font-weight="600" fill="#202b3a">NdjsonServer</text>
+<text x="460" y="213" font-size="16" fill="#465366">每条请求独立 task</text>
+<text x="460" y="244" font-size="15" fill="#657489">响应优先，输出统一排队</text>
+<rect x="834" y="136" width="324" height="138" rx="14" fill="#fff" stroke="#d8e0e9"/>
+<circle cx="862" cy="166" r="14" fill="#fff0e5"/>
+<text x="862" y="171" font-size="14" font-weight="600" text-anchor="middle" fill="#a34f20">3</text>
+<text x="886" y="172" font-size="20" font-weight="600" fill="#202b3a">ServeHost</text>
+<text x="856" y="213" font-size="16" fill="#465366">命令分发与生命周期</text>
+<text x="856" y="244" font-size="15" fill="#657489">配置 · 记忆 · 会话 · 审批</text>
+<rect x="834" y="322" width="324" height="138" rx="14" fill="#fff" stroke="#d8e0e9"/>
+<circle cx="862" cy="352" r="14" fill="#fff0e5"/>
+<text x="862" y="357" font-size="14" font-weight="600" text-anchor="middle" fill="#a34f20">4</text>
+<text x="886" y="358" font-size="18" font-weight="600" fill="#202b3a">AgentSessionRuntime</text>
+<text x="856" y="399" font-size="16" fill="#465366">模型与工具运行</text>
+<text x="856" y="430" font-size="15" fill="#657489">长任务在后台执行</text>
+<rect x="438" y="322" width="324" height="138" rx="14" fill="#fff" stroke="#d8e0e9"/>
+<circle cx="466" cy="352" r="14" fill="#fff0e5"/>
+<text x="466" y="357" font-size="14" font-weight="600" text-anchor="middle" fill="#a34f20">5</text>
+<text x="490" y="358" font-size="20" font-weight="600" fill="#202b3a">protocol.py</text>
+<text x="460" y="399" font-size="16" fill="#465366">event_payload / to_jsonable</text>
+<text x="460" y="430" font-size="15" fill="#657489">流事件增量化 · DTO 对齐</text>
+<rect x="42" y="322" width="324" height="138" rx="14" fill="#fff" stroke="#d8e0e9"/>
+<circle cx="70" cy="352" r="14" fill="#fff0e5"/>
+<text x="70" y="357" font-size="14" font-weight="600" text-anchor="middle" fill="#a34f20">6</text>
+<text x="94" y="358" font-size="20" font-weight="600" fill="#202b3a">NDJSON 输出</text>
+<text x="64" y="399" font-size="16" fill="#465366">result / frame / event</text>
+<text x="64" y="430" font-size="15" fill="#657489">stdout 返回给 Electron</text>
+<path d="M 370 205 H 429" fill="none" stroke="#8c98a8" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M 766 205 H 825" fill="none" stroke="#8c98a8" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M 996 278 V 313" fill="none" stroke="#8c98a8" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M 830 391 H 771" fill="none" stroke="#8c98a8" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M 434 391 H 375" fill="none" stroke="#8c98a8" stroke-width="2" marker-end="url(#arrow)"/>
+<rect x="42" y="495" width="1116" height="40" rx="10" fill="#edf2f8"/>
+<text x="600" y="521" text-anchor="middle" font-size="15" fill="#465366">两个完成信号：result 表示命令已处理；agent_end + busy 表示 Agent 一轮结束</text>
+</g></svg>

@@ -8,13 +8,12 @@ the runtime, write atomically, and only expose redacted credential metadata.
 from __future__ import annotations
 
 import json
-import os
 import re
-import tempfile
 from pathlib import Path
 from typing import Any, Literal
 
 from fox_ai.src import ApiKeyCredential
+from fox_coding_agent.src.core._io import atomic_write_json, atomic_write_text
 from fox_coding_agent.src.core.credentials import CredentialStore
 from fox_coding_agent.src.core.model_config import ModelConfig
 from fox_coding_agent.src.core.paths import ProjectPaths, UserPaths
@@ -42,45 +41,6 @@ def _read_object(path: Path) -> dict[str, Any]:
     return value
 
 
-def _atomic_json(path: Path, value: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            "w", encoding="utf-8", dir=path.parent, prefix=f".{path.stem}-", suffix=".tmp",
-            delete=False,
-        ) as handle:
-            temporary = Path(handle.name)
-            json.dump(value, handle, ensure_ascii=False, indent=2)
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
-        if os.name != "nt":
-            path.chmod(0o600)
-    finally:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
-
-
-def _atomic_text(path: Path, value: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            "w", encoding="utf-8", dir=path.parent, prefix=f".{path.stem}-", suffix=".tmp",
-            delete=False,
-        ) as handle:
-            temporary = Path(handle.name)
-            handle.write(value)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
-    finally:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
-
-
 class ConfigurationService:
     """Validated mutations and redacted snapshots for desktop settings."""
 
@@ -102,6 +62,7 @@ class ConfigurationService:
         )
         models = ModelConfig(self.user_paths.root)
         credentials = CredentialStore(self.user_paths.root)
+        configured_credentials = set(credentials.list())
         providers: list[dict[str, Any]] = []
         for provider_id, provider in models.snapshot.providers.items():
             providers.append({
@@ -109,7 +70,7 @@ class ConfigurationService:
                 "baseUrl": provider.base_url,
                 "api": provider.api,
                 "models": provider.models,
-                "credentialConfigured": provider_id in credentials.list(),
+                "credentialConfigured": provider_id in configured_credentials,
             })
 
         mcp = load_mcp_config(
@@ -198,21 +159,16 @@ class ConfigurationService:
         if not isinstance(providers, dict):
             raise ValueError("models.json 的 providers 必须是对象")
         providers[provider_id] = {"baseUrl": base_url, "api": api, "models": models}
-        path.parent.mkdir(parents=True, exist_ok=True)
-        # Validate a complete candidate before publishing it.  This avoids even
-        # a brief interval where another process could observe invalid JSON.
-        with tempfile.TemporaryDirectory(dir=path.parent, prefix=".models-validate-") as temp_dir:
-            candidate = Path(temp_dir) / "models.json"
-            candidate.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
-            ModelConfig(temp_dir)
-        _atomic_json(path, data)
+        # The loader and settings editor share exactly the same validation.
+        ModelConfig.parse(data, source=path)
+        atomic_write_json(path, data, mode=0o600)
 
     def delete_provider(self, provider_id: str) -> None:
         data = _read_object(self.user_paths.models)
         providers = data.get("providers", {})
         if isinstance(providers, dict):
             providers.pop(provider_id, None)
-        _atomic_json(self.user_paths.models, data)
+        atomic_write_json(self.user_paths.models, data, mode=0o600)
         CredentialStore(self.user_paths.root).delete(provider_id)
 
     def set_credential(self, provider_id: str, api_key: str) -> None:
@@ -222,8 +178,6 @@ class ConfigurationService:
         if not key:
             raise ValueError("API Key 不能为空")
         CredentialStore(self.user_paths.root).write(provider_id, ApiKeyCredential(key=key))
-        if os.name != "nt":
-            self.user_paths.auth.chmod(0o600)
 
     def delete_credential(self, provider_id: str) -> None:
         CredentialStore(self.user_paths.root).delete(provider_id)
@@ -277,7 +231,7 @@ class ConfigurationService:
         # Validate the edited scope in isolation before making it visible.
         from fox_coding_agent.src.extensions.mcp.config import _parse_server
         _parse_server(name, raw, path)
-        _atomic_json(path, data)
+        atomic_write_json(path, data, mode=0o600)
         self._ensure_extension(_MCP_EXTENSION, preferred_scope=scope)
 
     def delete_mcp(self, name: str, *, scope: Scope) -> None:
@@ -286,7 +240,7 @@ class ConfigurationService:
         servers = data.get("mcpServers") if "mcpServers" in data else data
         if isinstance(servers, dict):
             servers.pop(name, None)
-        _atomic_json(path, data)
+        atomic_write_json(path, data, mode=0o600)
 
     def save_subagent(self, payload: Any, *, scope: Scope) -> None:
         if not isinstance(payload, dict):
@@ -313,7 +267,7 @@ class ConfigurationService:
             "---\n\n"
             f"{definition.system_prompt.rstrip()}\n"
         )
-        _atomic_text(directory / f"{definition.name}.md", text)
+        atomic_write_text(directory / f"{definition.name}.md", text)
         self._ensure_extension(_SUBAGENT_EXTENSION, preferred_scope=scope)
 
     def delete_subagent(self, name: str, *, scope: Scope) -> None:

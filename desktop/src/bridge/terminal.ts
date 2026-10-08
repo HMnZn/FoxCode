@@ -3,8 +3,7 @@
  *
  * This is a *shell* feature, not a host feature: it is the Electron main process
  * that spawns the shell (`electron/terminal.js`), so it works with and without a
- * `fox serve` sidecar — the same reason `nativeShell()` exists for "reveal in
- * file manager". Both bridges therefore share one driver factory:
+ * `fox serve` sidecar. Both bridges share one driver factory:
  *
  *  - inside Electron, `window.foxcode.terminal` is the real thing;
  *  - in a plain browser (or jsdom, which is where the component tests run) there
@@ -46,14 +45,7 @@ export interface TerminalDriver {
 }
 
 /** The surface `desktop/electron/preload.js` exposes as `window.foxcode.terminal`. */
-export interface TerminalApi {
-  start(options: TerminalStartOptions): Promise<TerminalSessionInfo>
-  write(id: string, data: string): Promise<boolean>
-  resize(id: string, cols: number, rows: number): Promise<boolean>
-  kill(id: string): Promise<boolean>
-  onData(listener: (payload: TerminalDataEvent) => void): () => void
-  onExit(listener: (payload: TerminalExitEvent) => void): () => void
-}
+export type TerminalApi = Omit<TerminalDriver, 'kind'>
 
 /**
  * Pick the best available driver.

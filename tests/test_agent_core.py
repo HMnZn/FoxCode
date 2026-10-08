@@ -11,10 +11,10 @@ from unittest.mock import patch
 from fox_ai.src import AssistantMessage, EventStream, StartEvent, TextContent, ThinkingContent, ToolCall, ToolResultMessage, UserMessage
 from fox_ai.src.providers.faux import FAUX_MODEL, FauxScript, clear_scripts, faux_api_provider, push_script
 from fox_agent_core.src import (
-    Agent, AgentOptions, AgentContext, AgentLoopConfig, AgentState, AgentToolResult, agent_loop, agent_loop_continue
+    Agent, AgentOptions, AgentContext, AgentLoopConfig, AgentToolResult, agent_loop_continue
 )
 from fox_coding_agent.src import (
-    AgentSession, AgentSessionConfig, CompactionSettings, SessionManager, JsonlSessionStorage, compact, find_cut_point
+    AgentSession, AgentSessionConfig, CompactionSettings, SessionManager, JsonlSessionStorage, find_cut_point
 )
 from fox_agent_core.src.harness import estimate_tokens
 

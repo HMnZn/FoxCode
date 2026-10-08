@@ -39,20 +39,13 @@ contextBridge.exposeInMainWorld('foxcode', {
       'window:minimize',
       'window:toggle-maximize',
       'window:close',
-      'window:state',
       'dialog:pick-directory',
-      'dialog:save-file',
       'shell:open-external',
       'shell:show-item',
-      'terminal:open',
       'terminal:start',
       'terminal:write',
       'terminal:resize',
       'terminal:kill',
-      'app:theme-flash',
-      'host:mode',
-      'host:info',
-      'host:sessions',
       'host:command',
     ])
     if (!allowed.has(channel)) return Promise.reject(new Error(`channel not allowed: ${channel}`))
@@ -79,7 +72,6 @@ contextBridge.exposeInMainWorld('foxcode', {
   pickDirectory: () => ipcRenderer.invoke('dialog:pick-directory'),
   openExternal: (url) => ipcRenderer.invoke('shell:open-external', url),
   revealPath: (target) => ipcRenderer.invoke('shell:show-item', target),
-  openTerminal: (target) => ipcRenderer.invoke('terminal:open', target),
   // The in-app terminal is a shell feature of the main process, not part of the
   // `fox serve` sidecar, so it stays available in demo mode too.
   terminal: {
@@ -90,5 +82,4 @@ contextBridge.exposeInMainWorld('foxcode', {
     onData: (listener) => subscribe('terminal:data', listener),
     onExit: (listener) => subscribe('terminal:exit', listener),
   },
-  themeFlash: () => ipcRenderer.invoke('app:theme-flash'),
 })

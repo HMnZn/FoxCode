@@ -18,7 +18,7 @@ import re
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Iterable, Sequence
+from typing import Sequence
 
 from .models import MemoryEntry, ScoreBreakdown, SearchResult
 

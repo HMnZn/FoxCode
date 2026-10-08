@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
@@ -27,10 +28,6 @@ from fox_coding_agent.src.core.paths import ProjectPaths, UserPaths
 
 #: 配置里 `extensions` 数组的两种作用域。项目级存在时整体覆盖用户级。
 SCOPES: tuple[str, str] = ("project", "user")
-
-#: 文件扩展的搜索目录（相对于各自的根）。
-EXTENSION_SUBDIR = "extensions"
-PROJECT_DIR = ".foxcode"
 
 
 def spec_kind(spec: str) -> str:
@@ -91,7 +88,7 @@ class Probe:
         }
 
 
-_PROBE_CACHE: dict[tuple[str, float], Probe] = {}
+_PROBE_CACHE: dict[str, tuple[tuple[str, int, int], Probe]] = {}
 
 
 def _module_file(spec: str) -> str:
@@ -107,13 +104,14 @@ def _module_file(spec: str) -> str:
     return str(getattr(found, "origin", "") or "")
 
 
-def _mtime(path: str) -> float:
+def _file_stamp(path: str) -> tuple[int, int]:
     if not path:
-        return 0.0
+        return 0, 0
     try:
-        return Path(path).stat().st_mtime
+        stat = Path(path).stat()
+        return stat.st_mtime_ns, stat.st_size
     except OSError:
-        return 0.0
+        return 0, 0
 
 
 def _file_docstring(path: Path) -> tuple[str, str | None]:
@@ -131,15 +129,15 @@ def _file_docstring(path: Path) -> tuple[str, str | None]:
 
 
 def probe_spec(spec: str) -> Probe:
-    """探测一个扩展 spec；结果按 (spec, 文件 mtime) 缓存。"""
+    """探测一个扩展 spec；每个 spec 只保留一个版本，文件变化时替换缓存。"""
 
     location = _module_file(spec) if spec_kind(spec) != "file" else str(Path(spec))
-    key = (spec, _mtime(location))
-    cached = _PROBE_CACHE.get(key)
-    if cached is not None:
-        return cached
+    stamp = (location, *_file_stamp(location))
+    cached = _PROBE_CACHE.get(spec)
+    if cached is not None and cached[0] == stamp:
+        return cached[1]
     probe = _probe_uncached(spec, location)
-    _PROBE_CACHE[key] = probe
+    _PROBE_CACHE[spec] = (stamp, probe)
     return probe
 
 
@@ -195,10 +193,6 @@ class Candidate:
     origin: str  # 'builtin' | 'user' | 'project'
     path: str
     probe: Probe
-
-    @property
-    def id(self) -> str:
-        return self.spec
 
 
 def _package_extensions_dir() -> tuple[Path | None, str]:
@@ -268,74 +262,43 @@ def discover(
 
 
 @dataclass(frozen=True)
-class Configured:
-    """配置里的一个扩展条目 + 它写在哪个文件里。"""
+class ExtensionSettings:
+    """One request-local read of both scopes; None distinguishes an absent key."""
 
-    spec: str
-    scope: str
-    enabled: bool = True
+    layers: dict[str, list[str] | None]
 
+    @classmethod
+    def read(cls, user_path: Path, project_path: Path) -> ExtensionSettings:
+        layers: dict[str, list[str] | None] = {}
+        for scope, path in (("project", project_path), ("user", user_path)):
+            try:
+                data = json.loads(path.read_text(encoding="utf-8-sig"))
+            except (OSError, ValueError):
+                data = None
+            items = data.get("extensions") if isinstance(data, dict) else None
+            layers[scope] = [item for item in items if isinstance(item, str)] if isinstance(items, list) else None
+        return cls(layers)
 
-def read_configured(path: Path) -> list[str]:
-    """读一个 settings.json 的 `extensions` 原始列表（不解析、不写回）。"""
+    @property
+    def scope(self) -> str:
+        return "project" if self.layers["project"] is not None else "user"
 
-    import json
+    @property
+    def specs(self) -> list[str]:
+        return self.layers[self.scope] or []
 
-    if not path.is_file():
-        return []
-    try:
-        data = json.loads(path.read_text(encoding="utf-8-sig"))
-    except (OSError, ValueError):
-        return []
-    if not isinstance(data, dict):
-        return []
-    items = data.get("extensions")
-    if not isinstance(items, list):
-        return []
-    return [item for item in items if isinstance(item, str)]
+    @property
+    def present_in(self) -> dict[str, list[str]]:
+        found: dict[str, list[str]] = {}
+        for scope in SCOPES:
+            for spec in self.layers[scope] or []:
+                found.setdefault(spec, []).append(scope)
+        return found
 
-
-def has_extensions_key(path: Path) -> bool:
-    """该文件是否显式定义了 `extensions`（决定合并时谁覆盖谁）。"""
-
-    import json
-
-    if not path.is_file():
-        return False
-    try:
-        data = json.loads(path.read_text(encoding="utf-8-sig"))
-    except (OSError, ValueError):
-        return False
-    return isinstance(data, dict) and isinstance(data.get("extensions"), list)
-
-
-def effective_scope(user_path: Path, project_path: Path) -> str:
-    """`RuntimeSettings` 的合并规则是「列表整体替换」，所以项目级有键就赢。"""
-
-    return "project" if has_extensions_key(project_path) else "user"
-
-
-def effective_specs(user_path: Path, project_path: Path) -> list[str]:
-    scope = effective_scope(user_path, project_path)
-    return read_configured(project_path if scope == "project" else user_path)
-
-
-def suggested_scope(user_path: Path, project_path: Path, *, project_trusted: bool) -> str:
-    """新扩展默认写哪儿：跟随当前生效的文件；都没有时项目已信任就写项目。"""
-
-    if has_extensions_key(project_path) or has_extensions_key(user_path):
-        return effective_scope(user_path, project_path)
-    return "project" if project_trusted else "user"
-
-
-def specs_present_in(user_path: Path, project_path: Path) -> dict[str, list[str]]:
-    """spec → 出现在哪些作用域（用于「已写在另一处」的提示与关闭时全清）。"""
-
-    found: dict[str, list[str]] = {}
-    for scope, path in (("project", project_path), ("user", user_path)):
-        for spec in read_configured(path):
-            found.setdefault(spec, []).append(scope)
-    return found
+    def suggested_scope(self, *, project_trusted: bool) -> str:
+        if any(items is not None for items in self.layers.values()):
+            return self.scope
+        return "project" if project_trusted else "user"
 
 
 def describe_configured(
@@ -343,15 +306,13 @@ def describe_configured(
     *,
     scope: str,
     present_in: dict[str, list[str]] | None = None,
-    probes: dict[str, Probe] | None = None,
 ) -> list[dict[str, Any]]:
     """把生效的 spec 列表变成前端要的条目。"""
 
     presence = present_in or {}
-    cache = probes or {}
     out: list[dict[str, Any]] = []
     for spec in specs:
-        probe = cache.get(spec) or probe_spec(spec)
+        probe = probe_spec(spec)
         scopes = presence.get(spec, [scope])
         out.append(
             {
@@ -403,23 +364,15 @@ def describe_available(
 
 __all__ = [
     "Candidate",
-    "Configured",
-    "EXTENSION_SUBDIR",
-    "PROJECT_DIR",
+    "ExtensionSettings",
     "Probe",
     "SCOPES",
     "clear_probe_cache",
     "describe_available",
     "describe_configured",
     "discover",
-    "effective_scope",
-    "effective_specs",
-    "has_extensions_key",
     "module_target",
     "probe_spec",
-    "read_configured",
     "spec_kind",
     "spec_name",
-    "specs_present_in",
-    "suggested_scope",
 ]

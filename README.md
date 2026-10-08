@@ -119,6 +119,20 @@ NDJSON 使用 Python 能力。
 | [`packages/fox_ai/`](packages/fox_ai/) | 模型类型、供应商适配、流式事件与重试 | [模型层](packages/fox_ai/README.md) |
 | [`tests/`](tests/) | 运行时回归测试与记忆评估 fixtures | [记忆扩展](packages/fox_coding_agent/src/extensions/memory/README.md) |
 
+### 学习路线
+
+从底层到界面，按下面的顺序阅读；每份指南均包含浅色图解、源码导航、示例与验证方法。
+
+| 顺序 | 学习内容 | 指南 |
+| --- | --- | --- |
+| 1 | 统一模型类型、供应商适配与流式事件 | [fox-ai](packages/fox_ai/README.md) |
+| 2 | 模型/工具循环、状态、队列与 Harness | [Agent Core](packages/fox_agent_core/README.md) |
+| 3 | 工作区、配置、会话、权限与扩展装配 | [Coding Runtime](packages/fox_coding_agent/README.md) |
+| 4 | NDJSON 命令、事件推送、审批与管理接口 | [Serve](fox_serve/README.md) |
+| 5 | Electron、Bridge、Zustand 与真实 UI 调用 | [Desktop](desktop/README.md) |
+
+Python 指南中的入门示例使用 Faux 或临时数据目录，可在不调用真实模型的情况下学习主要链路。
+
 扩展文档：[Memory](packages/fox_coding_agent/src/extensions/memory/README.md) ·
 [MCP](packages/fox_coding_agent/src/extensions/mcp/README.md) ·
 [Subagent](packages/fox_coding_agent/src/extensions/subagent/README.md)。

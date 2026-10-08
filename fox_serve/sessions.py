@@ -363,44 +363,21 @@ class SessionIndex:
             return None
         return max(files, key=lambda path: path.stat().st_mtime)
 
-    def list(
-        self,
-        *,
-        live_file: str | Path | None = None,
-        include_empty: bool = False,
-    ) -> list[dict[str, Any]]:
-        """新→旧返回会话摘要。
+    def list(self, *, live_file: str | Path | None = None,
+             include_empty: bool = False) -> list[dict[str, Any]]:
+        """Recent summaries from the current workspace."""
+        return self._summaries(self.files(), live_file=live_file, include_empty=include_empty)
 
-        空白草稿不会落盘，因此这里通常只会遇到真正提交过消息的会话。
-        """
+    def list_all(self, *, live_file: str | Path | None = None,
+                 include_empty: bool = False) -> list[dict[str, Any]]:
+        """Recent summaries across all user-level workspace buckets."""
+        return self._summaries(self.all_files(), live_file=live_file, include_empty=include_empty)
 
+    def _summaries(self, files: Iterable[Path], *, live_file: str | Path | None,
+                   include_empty: bool) -> list[dict[str, Any]]:
         live_path = Path(live_file).resolve() if live_file else None
         summaries: list[SessionFile] = []
-        for path in self.files():
-            try:
-                is_live = live_path is not None and path.resolve() == live_path
-            except OSError:  # pragma: no cover
-                is_live = False
-            session = read_session_file(path, live=is_live)
-            if session is None:
-                continue
-            if not include_empty and session.message_count == 0 and not is_live:
-                continue
-            summaries.append(session)
-        summaries.sort(key=lambda item: item.updated_at, reverse=True)
-        return [item.to_summary() for item in summaries[: self.limit]]
-
-    def list_all(
-        self,
-        *,
-        live_file: str | Path | None = None,
-        include_empty: bool = False,
-    ) -> list[dict[str, Any]]:
-        """Return recent sessions across all user-level workspace buckets."""
-
-        live_path = Path(live_file).resolve() if live_file else None
-        summaries: list[SessionFile] = []
-        for path in self.all_files():
+        for path in files:
             try:
                 is_live = live_path is not None and path.resolve() == live_path
             except OSError:  # pragma: no cover
@@ -462,26 +439,6 @@ class SessionIndex:
         return path
 
 
-def iter_message_dicts(path: Path) -> Iterable[dict[str, Any]]:
-    """只读遍历会话文件里的消息 dict（camelCase，来自宿主落盘格式）。"""
-
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return
-    for line in lines[1:]:
-        if not line.strip():
-            continue
-        try:
-            entry = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(entry, dict) and entry.get("type") == "message":
-            data = entry.get("data")
-            if isinstance(data, dict):
-                yield data
-
-
 __all__ = [
     "BRANCH_SUFFIX",
     "DEFAULT_LIMIT",
@@ -489,7 +446,6 @@ __all__ = [
     "SessionFile",
     "SessionIndex",
     "branch_label",
-    "iter_message_dicts",
     "read_session_file",
     "set_session_label",
 ]

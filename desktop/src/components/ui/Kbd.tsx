@@ -42,16 +42,6 @@ export function Kbd({ children, size = 'xs', className, muted = false }: KbdProp
 
 export type KbdPlatform = 'mac' | 'win' | 'linux' | 'unknown'
 
-export interface KbdComboProps {
-  /** Chord members in order, e.g. `['mod', 'shift', 'K']`. */
-  keys: string[]
-  platform?: KbdPlatform
-  size?: KbdSize
-  className?: string
-  /** Hide the `+` separators and let caps sit flush. */
-  compact?: boolean
-}
-
 /** Best-effort platform detection that never touches `navigator` during SSR. */
 export function detectPlatform(): KbdPlatform {
   if (typeof navigator === 'undefined') return 'unknown'
@@ -66,63 +56,4 @@ export function detectPlatform(): KbdPlatform {
   if (/win/i.test(probe)) return 'win'
   if (/linux|x11|android/i.test(probe)) return 'linux'
   return 'unknown'
-}
-
-const ALIASES: Record<string, string> = {
-  escape: 'Esc',
-  esc: 'Esc',
-  arrowup: '↑',
-  arrowdown: '↓',
-  arrowleft: '←',
-  arrowright: '→',
-  enter: '⏎',
-  return: '⏎',
-  backspace: '⌫',
-  delete: 'Del',
-  tab: 'Tab',
-  space: 'Space',
-  up: '↑',
-  down: '↓',
-  left: '←',
-  right: '→',
-}
-
-export function KbdCombo({
-  keys,
-  platform,
-  size = 'xs',
-  className,
-  compact = false,
-}: KbdComboProps) {
-  const resolved =
-    platform ?? detectPlatform()
-  const isMac = resolved === 'mac'
-
-  return (
-    <span className={cn('inline-flex items-center gap-1', compact && 'gap-0.5', className)}>
-      {keys.map((raw, index) => {
-        const lower = raw.toLowerCase()
-        let text = raw
-        if (lower === 'mod' || lower === 'cmd' || lower === 'meta' || lower === 'ctrl') {
-          text = isMac ? '⌘' : 'Ctrl'
-        } else if (lower === 'alt' || lower === 'option' || lower === 'opt') {
-          text = isMac ? '⌥' : 'Alt'
-        } else if (lower === 'shift') {
-          text = isMac ? '⇧' : 'Shift'
-        } else if (lower in ALIASES) {
-          text = ALIASES[lower] ?? raw
-        }
-        return (
-          <span key={`${raw}-${index}`} className="inline-flex items-center gap-1">
-            {index > 0 && !compact && (
-              <span className="text-2xs text-fg-subtle" aria-hidden="true">
-                +
-              </span>
-            )}
-            <Kbd size={size}>{text}</Kbd>
-          </span>
-        )
-      })}
-    </span>
-  )
 }

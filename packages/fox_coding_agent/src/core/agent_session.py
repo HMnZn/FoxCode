@@ -85,6 +85,7 @@ class AgentSessionConfig:
     system_prompt: str = "You are a coding assistant. Inspect relevant files before editing."
     system_prompt_builder: Callable[[list[Any], list[Skill], Path, EffectiveInteractionMode], str] | None = None
     tools: list[Any] | None = None  # None 使用内置编码工具；[] 表示禁用工具。
+    runtime_tool_names: tuple[str, ...] = ()  # 扩展工具随运行时注册，不成为会话恢复依赖。
     skills: list[Skill] | None = None  # None 自动发现；[] 表示禁用技能。
     skill_options: LoadSkillsOptions | None = None
     compaction: CompactionSettings = field(default_factory=CompactionSettings)
@@ -122,7 +123,7 @@ class AgentSession(AgentHarness):
         # from becoming the conversation title or a giant user bubble.
         self._active_skill_context = ""
         tools = list(config.tools) if config.tools is not None else create_coding_tools(self.cwd)
-        self._tool_registry = ToolRegistry(tools)
+        self._tool_registry = ToolRegistry(tools, runtime_names=config.runtime_tool_names)
         loaded = load_skills(config.skill_options or LoadSkillsOptions(cwd=str(self.cwd))) if config.skills is None else None
         self.skills = list(loaded.skills if loaded else config.skills or [])
         self.skill_diagnostics = loaded.diagnostics if loaded else []
@@ -135,7 +136,8 @@ class AgentSession(AgentHarness):
             self.session.append_model_change(model.model_dump(mode="json", by_alias=True))
         level = saved.get("thinking_level", config.thinking_level)
         active_names = saved.get("active_tools", list(self._tool_registry.default_names))
-        self._tool_registry.select(active_names)
+        self._tool_registry.restore_selection(active_names)
+        durable_names = self._tool_registry.persisted_names(list(self._tool_registry.selected_names))
         interaction_mode = saved.get("interaction_mode", config.interaction_mode)
         if interaction_mode not in INTERACTION_MODES:
             raise ValueError(f"Invalid interaction mode: {interaction_mode}")
@@ -150,8 +152,8 @@ class AgentSession(AgentHarness):
         )
         if "thinking_level" not in saved:
             self.session.append_thinking_level_change(level)
-        if "active_tools" not in saved:
-            self.session.append_active_tools_change(active_names)
+        if saved.get("active_tools") != durable_names:
+            self.session.append_active_tools_change(durable_names)
         if "interaction_mode" not in saved:
             self.session.append_interaction_mode_change(interaction_mode)
         if "execution_mode" not in saved:
@@ -626,7 +628,7 @@ class AgentSession(AgentHarness):
         mode = saved.get("interaction_mode", self.session_config.interaction_mode)
         if mode not in INTERACTION_MODES:
             raise ValueError(f"Invalid interaction mode: {mode}")
-        self._tool_registry.select(names)
+        self._tool_registry.restore_selection(names)
         self._interaction_mode = mode
         self._effective_interaction_mode = "plan" if mode == "plan" else "default"
         self._apply_interaction_policy()

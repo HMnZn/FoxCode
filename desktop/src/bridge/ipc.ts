@@ -27,9 +27,7 @@ export interface FoxcodeApi {
   pickDirectory(): Promise<string | null>
   openExternal(url: string): Promise<void>
   revealPath(path: string): Promise<boolean>
-  openTerminal(path: string): Promise<boolean>
   terminal: TerminalApi
-  themeFlash(): void
 }
 
 declare global {
@@ -78,15 +76,11 @@ export class IpcBridge implements FoxBridge {
   }
 
   info(): Promise<HostInfo> {
-    return this.api.invoke('host:info').catch((error) => {
-      throw unwrapIpcError(error)
-    }) as Promise<HostInfo>
+    return this.send({ method: 'host.info' }) as Promise<HostInfo>
   }
 
   sessions(): Promise<SessionSummary[]> {
-    return this.api.invoke('host:sessions').catch((error) => {
-      throw unwrapIpcError(error)
-    }) as Promise<SessionSummary[]>
+    return this.send({ method: 'sessions.list' }) as Promise<SessionSummary[]>
   }
 
   send(command: HostCommand): Promise<unknown> {
@@ -111,19 +105,7 @@ export class IpcBridge implements FoxBridge {
     return this.api.pickDirectory()
   }
 
-  openExternal(url: string): Promise<void> {
-    return this.api.openExternal(url)
-  }
-
   reveal(path: string): Promise<boolean> {
     return this.api.revealPath(path)
-  }
-
-  openTerminal(path: string): Promise<boolean> {
-    return this.api.openTerminal(path)
-  }
-
-  themeFlash(): void {
-    this.api.themeFlash()
   }
 }

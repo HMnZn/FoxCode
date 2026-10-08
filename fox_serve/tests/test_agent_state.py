@@ -399,7 +399,7 @@ class RunPromptTests(unittest.IsolatedAsyncioTestCase):
 
         host = _bare_host(_Ok())
         host._agent_running = True
-        await host._run_prompt("你好")
+        await host._run_operation(host._runtime, lambda: host._runtime.prompt("你好"), name="prompt")
         self.assertFalse(host._agent_running)
         self.assertEqual(host.frames, [])
 
@@ -410,12 +410,70 @@ class RunPromptTests(unittest.IsolatedAsyncioTestCase):
 
         host = _bare_host(_Broken())
         host._agent_running = True
-        await host._run_prompt("你好")
+        await host._run_operation(host._runtime, lambda: host._runtime.prompt("你好"), name="prompt")
 
         self.assertFalse(host._agent_running)
         kinds = [payload["frame"]["type"] for payload in host.frames]
         self.assertEqual(kinds, ["error"])
         self.assertIn("provider exploded", host.frames[0]["frame"]["error"])
+
+    async def test_cancelled_skill_drains_task_and_clears_busy(self) -> None:
+        runtime = _StubRuntime()
+        runtime.agent_session.skills = [types.SimpleNamespace(name="review")]
+        started, released = asyncio.Event(), asyncio.Event()
+        async def invoke_skill(name, instructions):
+            self.assertEqual((name, instructions), ("review", "inspect changes"))
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                released.set()
+        runtime.invoke_skill = invoke_skill
+        host = _bare_host(runtime)
+        self.assertEqual(await host.handle("invoke_skill", {
+            "name": "review", "instructions": "inspect changes",
+        }), {"queued": "skill", "name": "review"})
+        await asyncio.wait_for(started.wait(), 1)
+        self.assertTrue(host._agent_running)
+        task = host._runtime_tasks[id(runtime)]
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+        self.assertTrue(released.is_set())
+        self.assertFalse(host._agent_running)
+        self.assertEqual(host._runtime_tasks, {})
+        self.assertEqual(host._tasks, set())
+        self.assertEqual(host._running_runtimes, set())
+
+    async def test_prompt_cancelled_before_start_does_not_leave_host_busy(self) -> None:
+        runtime = _StubRuntime()
+        async def prompt(message):
+            self.fail("cancelled task must not start the model request")
+        runtime.prompt = prompt
+        host = _bare_host(runtime)
+        result = await host.handle("prompt", {"message": "hello"})
+        self.assertEqual(result["queued"], "prompt")
+        task = host._runtime_tasks[id(runtime)]
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+        self.assertFalse(host._agent_running)
+        self.assertEqual(host._runtime_tasks, {})
+        self.assertEqual(host._running_runtimes, set())
+        self.assertEqual(host._tasks, set())
+        self.assertEqual(host.frames, [])
+
+    async def test_background_failure_keeps_active_session_running(self) -> None:
+        active, background = _StubRuntime(), _StubRuntime()
+        host = _bare_host(active)
+        host._agent_running = True
+        host._running_runtimes.update((id(active), id(background)))
+        async def fail():
+            raise RuntimeError("background error")
+        await host._run_operation(background, fail, name="prompt")
+        self.assertTrue(host._agent_running)
+        self.assertEqual(host._running_runtimes, {id(active)})
+        self.assertEqual(host.frames, [])
 
 
 class HostInfoBusyTests(unittest.IsolatedAsyncioTestCase):

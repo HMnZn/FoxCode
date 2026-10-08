@@ -5,6 +5,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from fox_serve.configuration import ConfigurationService
 from fox_serve.host import ServeHost
@@ -66,6 +67,29 @@ class ConfigurationServiceTests(unittest.TestCase):
                 "api": "openai-completions", "models": [MODEL],
             })
         self.assertEqual((self.user / "models.json").read_bytes(), before)
+
+    def test_provider_validation_does_not_create_temporary_catalogs(self) -> None:
+        replace = os.replace
+        def publish(source, destination):
+            if os.name != "nt":
+                self.assertEqual(Path(source).stat().st_mode & 0o777, 0o600)
+            return replace(source, destination)
+        with patch("tempfile.TemporaryDirectory", side_effect=AssertionError("disk validation")), patch(
+            "fox_coding_agent.src.core._io.os.replace", side_effect=publish,
+        ) as replacement:
+            self.service.save_provider({
+                "id": "demo", "baseUrl": "https://example.test/v1",
+                "api": "openai-completions", "models": [MODEL],
+            })
+        self.assertEqual(replacement.call_count, 1)
+        self.assertEqual([path.name for path in self.user.iterdir()], ["models.json"])
+
+    def test_invalid_first_provider_leaves_no_configuration_artifacts(self) -> None:
+        with self.assertRaises(ValueError):
+            self.service.save_provider({
+                "id": "demo", "baseUrl": "invalid", "api": "openai-completions", "models": [MODEL],
+            })
+        self.assertFalse(self.user.exists())
 
     def test_mcp_edit_preserves_redacted_environment_values(self) -> None:
         self.service.save_mcp({

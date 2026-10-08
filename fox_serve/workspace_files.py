@@ -278,15 +278,6 @@ def _safe_int(value: str) -> int:
         return 0
 
 
-def top_segment(path: str) -> str:
-    """路径的第一段（`\\` 也当分隔符）。"""
-
-    head = path.replace("\\", "/")
-    while head.startswith("./"):
-        head = head[2:]
-    return head.split("/", 1)[0]
-
-
 def is_excluded(path: str, excludes: tuple[str, ...]) -> bool:
     """路径的**任意一段**命中忽略名单就算忽略。
 

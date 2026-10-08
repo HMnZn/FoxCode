@@ -15,7 +15,7 @@ from ...core._io import atomic_write_text
 
 from ...core.skills import parse_frontmatter
 from .models import MemoryEntry, MemoryStatus, MemoryType, SearchResult, WriteDecision, WriteResult
-from .retrieval import HybridRetriever, RetrievalConfig, normalize, tokens
+from .retrieval import HybridRetriever, RetrievalConfig, normalize
 
 MEMORY_TYPES = ("user", "feedback", "project", "reference")
 MEMORY_STATUSES = ("active", "superseded", "expired")

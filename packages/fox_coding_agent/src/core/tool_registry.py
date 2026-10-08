@@ -12,13 +12,16 @@ from .sandbox import ExecutionMode
 class ToolRegistry:
     """Own registered tools and distinguish durable choices from runtime tools."""
 
-    def __init__(self, tools: list[Any]) -> None:
+    def __init__(self, tools: list[Any], *, runtime_names: tuple[str, ...] = ()) -> None:
         self._tools = {tool.name: tool for tool in tools}
         if len(self._tools) != len(tools):
             raise ValueError("Tool names must be unique")
-        self.default_names = tuple(self._tools)
-        self._selected_names = list(self.default_names)
-        self._runtime_names: set[str] = set()
+        if set(runtime_names) - self._tools.keys():
+            raise ValueError("Runtime tool names must refer to registered tools")
+        self._default_runtime_names = runtime_names
+        self._runtime_names = set(runtime_names)
+        self.default_names = tuple(name for name in self._tools if name not in self._runtime_names)
+        self._selected_names = list(self._tools)
         self._plan_tool = SubmitPlanTool()
         if self._plan_tool.name in self._tools:
             raise ValueError(f"Reserved tool name is already registered: {self._plan_tool.name}")
@@ -43,6 +46,12 @@ class ToolRegistry:
     def select(self, names: list[str]) -> None:
         self.validate_selection(names)
         self._selected_names = list(names)
+
+    def restore_selection(self, names: list[str]) -> None:
+        """Restore durable choices and derive extension tools from this runtime."""
+        selected = list(names)
+        selected.extend(name for name in self._default_runtime_names if name not in selected)
+        self.select(selected)
 
     def persisted_names(self, names: list[str]) -> list[str]:
         self.validate_selection(names)

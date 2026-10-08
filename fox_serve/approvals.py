@@ -27,7 +27,7 @@ import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Literal
+from typing import Any, Callable, Literal
 
 #: 权限档位（与 `packages/fox_coding_agent/src/core/permissions.py:9-12` 一致）。
 PermissionMode = Literal["read-only", "workspace-modify", "full-access"]

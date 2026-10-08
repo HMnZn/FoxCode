@@ -8,24 +8,6 @@ import { Markdown, StreamingMarkdown } from './Markdown'
 type Icon = ComponentType<{ size?: number | string; className?: string }>
 
 /* ------------------------------------------------------------------ *
- * TextPart
- * ------------------------------------------------------------------ */
-
-export interface TextPartProps {
-  text: string
-  streaming?: boolean
-  className?: string
-}
-
-function TextPartImpl({ text, streaming = false, className }: TextPartProps) {
-  if (streaming) return <StreamingMarkdown content={text} streaming className={className} />
-  return <Markdown content={text} className={className} />
-}
-
-export const TextPart = memo(TextPartImpl)
-TextPart.displayName = 'TextPart'
-
-/* ------------------------------------------------------------------ *
  * ThinkingPart
  * ------------------------------------------------------------------ */
 

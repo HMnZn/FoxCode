@@ -104,16 +104,3 @@ export function uid(prefix = 'id'): string {
 export function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value))
 }
-
-/** Pretty-print JSON with a bounded size so huge payloads stay renderable. */
-export function prettyJson(value: unknown, maxChars = 20_000): string {
-  let text: string
-  try {
-    text = typeof value === 'string' ? value : JSON.stringify(value, null, 2)
-  } catch {
-    text = String(value)
-  }
-  if (text == null) return ''
-  if (text.length <= maxChars) return text
-  return `${text.slice(0, maxChars)}\n… (已截断，共 ${text.length} 字符)`
-}

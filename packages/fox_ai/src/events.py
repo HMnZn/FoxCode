@@ -18,7 +18,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .types import AssistantMessage, StopReason, ToolCall
+from .types import AssistantMessage, ToolCall
 
 
 class _EventBase(BaseModel):

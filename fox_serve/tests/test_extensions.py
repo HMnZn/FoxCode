@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 from typing import Any
 
@@ -64,44 +65,65 @@ class ScopeTests(unittest.TestCase):
     def test_project_key_wins_because_lists_are_replaced(self) -> None:
         _write_json(self.user_path, {"extensions": ["module:user-only:setup"]})
         _write_json(self.project_path, {"extensions": ["module:project-only:setup"]})
-        self.assertEqual(catalog.effective_scope(self.user_path, self.project_path), "project")
+        self.assertEqual(catalog.ExtensionSettings.read(self.user_path, self.project_path).scope, "project")
         self.assertEqual(
-            catalog.effective_specs(self.user_path, self.project_path),
+            catalog.ExtensionSettings.read(self.user_path, self.project_path).specs,
             ["module:project-only:setup"],
         )
         self.assertEqual(
-            catalog.specs_present_in(self.user_path, self.project_path),
+            catalog.ExtensionSettings.read(self.user_path, self.project_path).present_in,
             {"module:user-only:setup": ["user"], "module:project-only:setup": ["project"]},
         )
 
     def test_user_settings_apply_when_the_project_has_no_key(self) -> None:
         _write_json(self.user_path, {"extensions": ["module:user-only:setup"]})
-        self.assertEqual(catalog.effective_scope(self.user_path, self.project_path), "user")
+        self.assertEqual(catalog.ExtensionSettings.read(self.user_path, self.project_path).scope, "user")
         self.assertEqual(
-            catalog.effective_specs(self.user_path, self.project_path), ["module:user-only:setup"]
+            catalog.ExtensionSettings.read(self.user_path, self.project_path).specs, ["module:user-only:setup"]
         )
 
     def test_suggested_scope_follows_the_active_file_then_trust(self) -> None:
         _write_json(self.project_path, {"extensions": []})
         self.assertEqual(
-            catalog.suggested_scope(self.user_path, self.project_path, project_trusted=True),
+            catalog.ExtensionSettings.read(self.user_path, self.project_path).suggested_scope(project_trusted=True),
             "project",
         )
         empty_project = self.root / "other" / ".foxcode" / "settings.json"
         self.assertEqual(
-            catalog.suggested_scope(self.user_path, empty_project, project_trusted=True), "project"
+            catalog.ExtensionSettings.read(self.user_path, empty_project).suggested_scope(project_trusted=True), "project"
         )
         self.assertEqual(
-            catalog.suggested_scope(self.user_path, empty_project, project_trusted=False), "user"
+            catalog.ExtensionSettings.read(self.user_path, empty_project).suggested_scope(project_trusted=False), "user"
         )
 
-    def test_read_configured_ignores_junk(self) -> None:
+    def test_snapshot_ignores_invalid_extension_lists(self) -> None:
         path = self.root / "user" / "settings.json"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("{ not json", encoding="utf-8")
-        self.assertEqual(catalog.read_configured(path), [])
+        self.assertEqual(catalog.ExtensionSettings.read(path, self.root / "missing.json").specs, [])
         _write_json(path, {"extensions": [1, "module:ok:setup", None]})
-        self.assertEqual(catalog.read_configured(path), ["module:ok:setup"])
+        self.assertEqual(catalog.ExtensionSettings.read(path, self.root / "missing.json").specs, ["module:ok:setup"])
+
+    def test_snapshot_reads_once_and_distinguishes_missing_from_empty(self) -> None:
+        _write_json(self.user_path, {"extensions": ["module:user:setup"]})
+        _write_json(self.project_path, {"max_turns": 5})
+        reads = []
+        original = Path.read_text
+        def read(path, *args, **kwargs):
+            reads.append(path)
+            return original(path, *args, **kwargs)
+        with patch.object(Path, "read_text", read):
+            snapshot = catalog.ExtensionSettings.read(self.user_path, self.project_path)
+            self.assertEqual(snapshot.scope, "user")
+            self.assertEqual(snapshot.specs, ["module:user:setup"])
+            self.assertEqual(snapshot.present_in, {"module:user:setup": ["user"]})
+            self.assertEqual(snapshot.suggested_scope(project_trusted=True), "user")
+        self.assertEqual(reads, [self.project_path, self.user_path])
+        _write_json(self.project_path, {"extensions": []})
+        updated = catalog.ExtensionSettings.read(self.user_path, self.project_path)
+        self.assertEqual(updated.scope, "project")
+        self.assertEqual(updated.specs, [])
+        self.assertEqual(snapshot.specs, ["module:user:setup"])
 
 
 class DiscoverTests(unittest.TestCase):
@@ -151,6 +173,14 @@ class DiscoverTests(unittest.TestCase):
         self.assertEqual(candidates["my_ext"].probe.tools, [])
         self.assertIsNone(candidates["my_ext"].probe.error)
         self.assertEqual(candidates["proj_ext"].probe.description, "项目级扩展。")
+
+    def test_file_probe_refreshes_without_retaining_old_versions(self) -> None:
+        path = self.root / "extension.py"
+        with patch.dict(catalog._PROBE_CACHE, clear=True):
+            for description in ("one", "updated version", "the final version"):
+                path.write_text(f'"""{description}"""\n', encoding="utf-8")
+                self.assertEqual(catalog.probe_spec(str(path)).description, description)
+                self.assertEqual(len(catalog._PROBE_CACHE), 1)
 
 
 class _FakeState:
@@ -286,6 +316,38 @@ class HostExtensionsSetTests(unittest.IsolatedAsyncioTestCase):
         first = await self.host.handle("extensions.set", {"id": "module:alpha:setup"})
         self.assertEqual(first["updatedScopes"], [])
         self.assertEqual(self.runtime.reload_calls, 0)
+
+    async def test_failed_reload_restores_an_absent_extensions_key(self) -> None:
+        _write_json(self.project_path, {"max_turns": 42})
+        before = self.project_path.read_bytes()
+        self.runtime.fail_reloads = 1
+        with self.assertRaisesRegex(HostError, "已回滚"):
+            await self.host.handle("extensions.set", {"id": "module:beta:setup", "scope": "project"})
+        self.assertEqual(self.project_path.read_bytes(), before)
+
+    async def test_failed_reload_removes_a_new_settings_file(self) -> None:
+        self.project_path.unlink()
+        self.runtime.fail_reloads = 1
+        with self.assertRaisesRegex(HostError, "已回滚"):
+            await self.host.handle("extensions.set", {"id": "module:beta:setup", "scope": "project"})
+        self.assertFalse(self.project_path.exists())
+        self.assertEqual(_read_json(self.user_path), {"extensions": []})
+
+    async def test_second_scope_write_failure_restores_the_first_scope(self) -> None:
+        spec = "module:beta:setup"
+        for path in (self.project_path, self.user_path):
+            _write_json(path, {"extensions": [spec]})
+        before = {path: path.read_bytes() for path in (self.project_path, self.user_path)}
+        write = self.host._write_extensions
+        def fail_user(scope, specs):
+            if scope == "user":
+                raise OSError("injected write failure")
+            write(scope, specs)
+        with patch.object(self.host, "_write_extensions", side_effect=fail_user):
+            with self.assertRaisesRegex(HostError, "已回滚"):
+                await self.host.handle("extensions.set", {"id": spec, "enabled": False})
+        for path, content in before.items():
+            self.assertEqual(path.read_bytes(), content)
 
 
 class HostInfoExtensionTests(unittest.IsolatedAsyncioTestCase):

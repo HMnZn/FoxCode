@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from fox_ai.src import ApiKeyCredential, Credential, OAuthCredential
-from ._io import atomic_write_text
+from ._io import atomic_write_json
 from .paths import UserPaths
 
 
@@ -85,9 +85,7 @@ class CredentialStore:
                 value = {"type": "oauth", "access": credential.access,
                          "refresh": credential.refresh, "expires": credential.expires}
             data[provider_id] = value
-        atomic_write_text(
-            self.path, json.dumps(data, ensure_ascii=False, indent=2) + "\n", mode=0o600,
-        )
+        atomic_write_json(self.path, data, mode=0o600)
 
 
 __all__ = ["CredentialStore"]

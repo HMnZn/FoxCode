@@ -70,7 +70,7 @@
     '真实宿主和工作区信息',
     60000,
   )
-  const initialHost = await window.foxcode.invoke('host:info')
+  const initialHost = await window.foxcode.invoke('host:command', { method: 'host.info' })
   assert(initialHost.transport === 'sidecar' && initialHost.sidecarConnected, '意外连接到了演示宿主')
   assert(initialHost.model?.displayName?.includes('DeepSeek'), '真实模型信息没有加载')
   results.push({ case: '真实 Electron/sidecar/model 连接', passed: true })
@@ -170,8 +170,8 @@
   )
   results.push({ case: '/压缩真实宿主链路', passed: true })
 
-  const historyInfo = await window.foxcode.invoke('host:info')
-  const historyRows = await window.foxcode.invoke('host:sessions')
+  const historyInfo = await window.foxcode.invoke('host:command', { method: 'host.info' })
+  const historyRows = await window.foxcode.invoke('host:command', { method: 'sessions.list' })
   const historyRow = historyRows.find((row) => row.file === historyInfo.sessionFile)
   assert(historyRow, '历史测试会话不存在')
   const historyTitle = `UI_PREVIEW_${Date.now()}`
@@ -192,7 +192,7 @@
     node.getAttribute('aria-label') === `打开会话 ${historyTitle}`), '侧栏历史会话按钮')
   historyButton.click()
   await waitFor(() => body().includes('UI_REASONING_STEER_OK'), '历史会话回放')
-  const previewRows = await window.foxcode.invoke('host:sessions')
+  const previewRows = await window.foxcode.invoke('host:command', { method: 'sessions.list' })
   const previewRow = previewRows.find((row) => row.id === historyRow.id)
   assert(previewRow?.updatedAt === historyRow.updatedAt, '仅点击预览就刷新了最后活动时间')
   assert(!body().includes('本轮出错'), '历史里的正常中止显示为红色错误')
@@ -210,7 +210,7 @@
   const switchStarted = Date.now()
   let switchedHost
   while (Date.now() - switchStarted < 60000) {
-    switchedHost = await window.foxcode.invoke('host:info')
+    switchedHost = await window.foxcode.invoke('host:command', { method: 'host.info' })
     if (switchedHost.cwd.endsWith('/e2e-live-project-two')) break
     await sleep(200)
   }

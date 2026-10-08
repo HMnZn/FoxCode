@@ -215,6 +215,7 @@ class AgentSessionRuntime:
 
         agent_session = AgentSession(AgentSessionConfig(
             model=model, cwd=cwd, session=session, tools=tools, skills=resources.skills,
+            runtime_tool_names=tuple(tool.name for tool in extensions.api.tools),
             system_prompt_builder=prompt_builder,
             compaction=settings.compaction, max_turns=settings.max_turns,
             model_retry_attempts=settings.model_retry_attempts,

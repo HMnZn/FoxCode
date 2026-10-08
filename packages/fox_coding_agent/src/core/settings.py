@@ -10,7 +10,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 from fox_agent_core.src.harness import CompactionSettings
 from .paths import ProjectPaths, UserPaths
-from ._io import atomic_write_text
+from ._io import atomic_write_json
 
 
 def merge_settings(base: dict, override: dict) -> dict:
@@ -108,6 +108,6 @@ class SettingsManager:
         updated = merge_settings(user if scope == "user" else project, values)
         candidate = self._validate(updated if scope == "user" else user,
                                    updated if scope == "project" else project)
-        atomic_write_text(target, json.dumps(updated, ensure_ascii=False, indent=2) + "\n")
+        atomic_write_json(target, updated)
         self.settings = candidate
         return candidate

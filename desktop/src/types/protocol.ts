@@ -39,12 +39,6 @@ export const INTERACTION_MODES: InteractionMode[] = ['auto', 'default', 'plan']
 export const EXECUTION_MODES: ExecutionMode[] = ['local', 'sandbox']
 export const THINKING_LEVELS: ThinkingLevel[] = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh']
 
-export const PERMISSION_LEVEL: Record<PermissionMode, number> = {
-  'read-only': 0,
-  'workspace-modify': 1,
-  'full-access': 2,
-}
-
 export const PERMISSION_LABEL: Record<PermissionMode, string> = {
   'read-only': '只读',
   'workspace-modify': '工作区修改',
@@ -719,5 +713,3 @@ export type HostCommand =
   | { method: 'files.diff'; params: { path: string; context?: number } }
   | { method: 'files.read'; params: { path: string; maxBytes?: number } }
   | { method: 'reload' }
-
-export type HostCommandMethod = HostCommand['method']

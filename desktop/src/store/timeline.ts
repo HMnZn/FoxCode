@@ -1209,8 +1209,4 @@ export function assistantUsageTotal(block: AssistantBlock): Usage | undefined {
   return block.usage
 }
 
-export function timelineMessageCount(blocks: Block[]): number {
-  return blocks.filter((b) => b.kind === 'user' || b.kind === 'assistant').length
-}
-
 export type { AssistantMessage }

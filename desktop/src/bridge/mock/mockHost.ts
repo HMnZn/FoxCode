@@ -4,7 +4,6 @@ import type {
   WindowControls,
 } from '@/bridge/types'
 import { branchLabel, uid } from '@/lib/format'
-import { nativeShell } from '@/bridge/native'
 import { terminalDriver, type TerminalDriver } from '@/bridge/terminal'
 import type {
   AssistantStreamEvent,
@@ -594,27 +593,14 @@ export class MockHost implements FoxBridge {
     return CWD
   }
 
-  async openExternal(url: string): Promise<void> {
-    if (typeof window !== 'undefined') window.open(url, '_blank', 'noreferrer')
-  }
-
   /**
    * 演示宿主没有 sidecar，但「在文件管理器里显示」是 Electron 主进程的事 —— 外壳在
    * 就把这活转给它，不在（浏览器里跑 vite dev）才回 false。
    */
   async reveal(path: string): Promise<boolean> {
-    const shell = nativeShell()
-    if (!shell) return false
-    return shell.revealPath(path)
+    const api = typeof window === 'undefined' ? undefined : window.foxcode
+    return api?.revealPath ? api.revealPath(path) : false
   }
-
-  async openTerminal(path: string): Promise<boolean> {
-    const shell = nativeShell()
-    if (!shell) return false
-    return shell.openTerminal(path)
-  }
-
-  themeFlash(): void {}
 
   /* --------------------- workspace files (demo data) -------------------- */
 

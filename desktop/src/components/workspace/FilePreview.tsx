@@ -22,7 +22,7 @@ import {
   svgDataUrl,
 } from '@/lib/preview'
 import type { RenderKind } from '@/lib/preview'
-import type { DiffLine, ParsedDiff } from '@/lib/diff'
+import type { DiffLine, FileDiff } from '@/lib/diff'
 import type { FileContent } from '@/types/protocol'
 import { fileTabId, useRail } from '@/store/railStore'
 import { useFiles, type PreviewMode } from '@/store/filesStore'
@@ -38,29 +38,27 @@ function copy(text: string, what: string) {
 /** 差异行：旧/新两个行号槽 + 内容，颜色按增删区分。 */
 function DiffRow({ line }: { line: DiffLine }) {
   const tone =
-    line.kind === 'add'
+    line.kind === 'added'
       ? 'bg-success/10 text-success'
-      : line.kind === 'del'
+      : line.kind === 'removed'
         ? 'bg-danger/10 text-danger'
-        : line.kind === 'hunk'
-          ? 'bg-surface-2 text-fg-subtle'
-          : line.kind === 'meta'
-            ? 'text-fg-subtle'
-            : 'text-fg-muted'
+        : line.kind === 'meta'
+          ? 'text-fg-subtle'
+          : 'text-fg-muted'
   return (
     <div className={cn('flex w-max min-w-full items-start', tone)}>
       <span className="w-10 shrink-0 select-none px-1.5 text-right font-mono text-[10px] leading-[18px] text-fg-subtle/70 tabular-nums">
-        {line.oldNo ?? ''}
+        {line.oldNumber ?? ''}
       </span>
       <span className="w-10 shrink-0 select-none px-1.5 text-right font-mono text-[10px] leading-[18px] text-fg-subtle/70 tabular-nums">
-        {line.newNo ?? ''}
+        {line.newNumber ?? ''}
       </span>
       <span className="flex-1 whitespace-pre px-1.5 leading-[18px]">{line.text || ' '}</span>
     </div>
   )
 }
 
-function DiffBody({ parsed, path }: { parsed: ParsedDiff; path: string }) {
+function DiffBody({ parsed, path }: { parsed: FileDiff; path: string }) {
   if (parsed.hunks.length === 0) {
     return <p className="px-3 py-3 text-2xs text-fg-subtle">这份差异里没有可显示的 hunk。</p>
   }
@@ -277,7 +275,7 @@ export function FileTab({ path }: { path: string }) {
   const setMode = useFiles((s) => s.setMode)
   const openFiles = useRail((s) => s.openFiles)
   const parsed = useMemo(
-    () => (preview?.diff?.diff ? parseUnifiedDiff(preview.diff.diff) : null),
+    () => (preview?.diff?.diff ? parseUnifiedDiff(preview.diff.diff)[0] ?? null : null),
     [preview?.diff?.diff],
   )
 

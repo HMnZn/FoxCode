@@ -15,8 +15,8 @@ Electron 前端驱动的进程。
 
 约定：
 - **stdout 只输出 NDJSON**，每行一个 JSON 对象；日志一律走 stderr。
-- 请求之间**并发**处理（每条请求一个 asyncio task），因为 ``prompt`` 会在整轮
-  结束前一直挂起，而 UI 需要在同一时间发 ``permission.answer``。
+- 请求之间**并发**处理（每条请求一个 asyncio task）；``prompt`` 立即返回排队结果，
+  后台执行与 ``permission.answer`` 等控制请求并行。
 """
 
 from __future__ import annotations
